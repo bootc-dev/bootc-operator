@@ -18,9 +18,11 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -28,6 +30,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -53,11 +56,173 @@ type BootcNodePoolReconciler struct {
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 func (r *BootcNodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("pool", req.Name)
 
-	// TODO: implement reconciliation logic
+	// Fetch the pool.
+	var pool bootcv1alpha1.BootcNodePool
+	if err := r.Get(ctx, req.NamespacedName, &pool); err != nil {
+		if apierrors.IsNotFound(err) {
+			log.Info("Pool deleted, nothing to do")
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, fmt.Errorf("fetching pool: %w", err)
+	}
+
+	// Sync pool membership.
+	if err := r.syncMembership(ctx, &pool); err != nil {
+		return ctrl.Result{}, fmt.Errorf("syncing membership: %w", err)
+	}
 
 	return ctrl.Result{}, nil
+}
+
+// syncMembership reconciles the set of BootcNodes owned by this pool
+// against the set of Nodes matching the pool's nodeSelector.
+func (r *BootcNodePoolReconciler) syncMembership(ctx context.Context, pool *bootcv1alpha1.BootcNodePool) error {
+	log := logf.FromContext(ctx).WithValues("pool", pool.Name)
+
+	// List all nodes matching the pool's selector.
+	matchingNodes, err := r.listMatchingNodes(ctx, pool)
+	if err != nil {
+		return fmt.Errorf("listing matching nodes: %w", err)
+	}
+	matchingSet := map[string]*corev1.Node{}
+	for i := range matchingNodes {
+		matchingSet[matchingNodes[i].Name] = &matchingNodes[i]
+	}
+
+	// List all BootcNodes and partition into owned by this pool vs others.
+	allBootcNodes, err := r.listAllBootcNodes(ctx)
+	if err != nil {
+		return fmt.Errorf("listing BootcNodes: %w", err)
+	}
+	ownedSet := map[string]*bootcv1alpha1.BootcNode{}
+	for name, bn := range allBootcNodes {
+		if metav1.IsControlledBy(bn, pool) {
+			ownedSet[name] = bn
+		}
+	}
+
+	// Create BootcNodes for new matches and sync spec for existing ones.
+	for nodeName, node := range matchingSet {
+		if bn, exists := ownedSet[nodeName]; exists {
+			// Sync spec fields if needed.
+			if err := r.syncBootcNodeSpec(ctx, pool, bn); err != nil {
+				return fmt.Errorf("syncing BootcNode spec for %s: %w", nodeName, err)
+			}
+		} else {
+			// New match: create BootcNode and label the node.
+			log.Info("Creating BootcNode for new match", "node", nodeName)
+			if err := r.createBootcNode(ctx, pool, node); err != nil {
+				return fmt.Errorf("creating BootcNode for %s: %w", nodeName, err)
+			}
+		}
+	}
+
+	// Delete BootcNodes for nodes that no longer match.
+	for nodeName, bn := range ownedSet {
+		if _, stillMatches := matchingSet[nodeName]; !stillMatches {
+			log.Info("Removing BootcNode for departed node", "node", nodeName)
+			if err := r.removeBootcNode(ctx, bn); err != nil {
+				return fmt.Errorf("removing BootcNode for %s: %w", nodeName, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// createBootcNode creates a BootcNode for a node joining the pool and
+// labels the node as managed.
+func (r *BootcNodePoolReconciler) createBootcNode(ctx context.Context, pool *bootcv1alpha1.BootcNodePool, node *corev1.Node) error {
+	bn := &bootcv1alpha1.BootcNode{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: node.Name,
+		},
+		Spec: bootcv1alpha1.BootcNodeSpec{
+			DesiredImage:      pool.Spec.Image.Ref,
+			DesiredImageState: bootcv1alpha1.DesiredImageStateStaged,
+		},
+	}
+
+	// Copy pull secret ref from pool if set.
+	if pool.Spec.PullSecretRef != nil {
+		bn.Spec.PullSecretRef = pool.Spec.PullSecretRef.DeepCopy()
+	}
+
+	// Set ownerReference so the BootcNode is cleaned up if the pool is
+	// deleted and so the Owns() watch routes BootcNode events to this pool.
+	if err := controllerutil.SetControllerReference(pool, bn, r.Scheme); err != nil {
+		return fmt.Errorf("setting owner reference: %w", err)
+	}
+
+	if err := r.Create(ctx, bn); err != nil {
+		return fmt.Errorf("creating BootcNode: %w", err)
+	}
+
+	// Label the node as managed.
+	if err := r.ensureManagedLabel(ctx, node, true); err != nil {
+		return fmt.Errorf("labeling node: %w", err)
+	}
+
+	return nil
+}
+
+// removeBootcNode deletes a BootcNode for a node leaving the pool,
+// removes the managed label, and restores prior cordon state.
+func (r *BootcNodePoolReconciler) removeBootcNode(ctx context.Context, bn *bootcv1alpha1.BootcNode) error {
+	// Try to clean up the node (label + cordon state) before deleting
+	// the BootcNode. The node may have been deleted from the cluster.
+	var node corev1.Node
+	if err := r.Get(ctx, types.NamespacedName{Name: bn.Name}, &node); err == nil {
+		// No point in cleaning up the Node object if it's going away anyway...
+		if node.DeletionTimestamp == nil {
+			if err := r.restoreCordonState(ctx, &node); err != nil {
+				return fmt.Errorf("restoring cordon state: %w", err)
+			}
+			if err := r.ensureManagedLabel(ctx, &node, false); err != nil {
+				return fmt.Errorf("removing managed label: %w", err)
+			}
+		}
+	} else if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("fetching node %s: %w", bn.Name, err)
+	}
+
+	if err := r.Delete(ctx, bn); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("deleting BootcNode: %w", err)
+	}
+
+	return nil
+}
+
+// syncBootcNodeSpec updates a BootcNode's spec fields to match the pool.
+func (r *BootcNodePoolReconciler) syncBootcNodeSpec(ctx context.Context, pool *bootcv1alpha1.BootcNodePool, bn *bootcv1alpha1.BootcNode) error {
+	modified := bn.DeepCopy()
+	desiredImage := pool.Spec.Image.Ref
+	needPatch := false
+
+	if modified.Spec.DesiredImage != desiredImage {
+		modified.Spec.DesiredImage = desiredImage
+		// desiredImage changed; reset desired state to Staged to revoke any
+		// pending reboot approval
+		modified.Spec.DesiredImageState = bootcv1alpha1.DesiredImageStateStaged
+		needPatch = true
+	}
+
+	newPullSecretRef := pool.Spec.PullSecretRef.DeepCopy()
+	if !reflect.DeepEqual(modified.Spec.PullSecretRef, newPullSecretRef) {
+		modified.Spec.PullSecretRef = newPullSecretRef
+		needPatch = true
+	}
+
+	if needPatch {
+		if err := r.Patch(ctx, modified, client.MergeFrom(bn)); err != nil {
+			return fmt.Errorf("patching BootcNode: %w", err)
+		}
+		*bn = *modified
+	}
+
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -154,6 +319,86 @@ func nodePredicates() predicate.Predicate {
 			return true
 		},
 	}
+}
+
+// listMatchingNodes returns all Nodes whose labels match the pool's
+// nodeSelector.
+func (r *BootcNodePoolReconciler) listMatchingNodes(ctx context.Context, pool *bootcv1alpha1.BootcNodePool) ([]corev1.Node, error) {
+	selector, err := metav1.LabelSelectorAsSelector(pool.Spec.NodeSelector)
+	if err != nil {
+		return nil, fmt.Errorf("parsing nodeSelector: %w", err)
+	}
+
+	var nodeList corev1.NodeList
+	if err := r.List(ctx, &nodeList, client.MatchingLabelsSelector{Selector: selector}); err != nil {
+		return nil, fmt.Errorf("listing nodes: %w", err)
+	}
+	return nodeList.Items, nil
+}
+
+// listAllBootcNodes returns all BootcNodes keyed by name.
+func (r *BootcNodePoolReconciler) listAllBootcNodes(ctx context.Context) (map[string]*bootcv1alpha1.BootcNode, error) {
+	var bnList bootcv1alpha1.BootcNodeList
+	if err := r.List(ctx, &bnList); err != nil {
+		return nil, fmt.Errorf("listing BootcNodes: %w", err)
+	}
+
+	all := make(map[string]*bootcv1alpha1.BootcNode, len(bnList.Items))
+	for i := range bnList.Items {
+		all[bnList.Items[i].Name] = &bnList.Items[i]
+	}
+	return all, nil
+}
+
+// ensureManagedLabel adds or removes the bootc.dev/managed label on a Node.
+func (r *BootcNodePoolReconciler) ensureManagedLabel(ctx context.Context, node *corev1.Node, managed bool) error {
+	_, hasLabel := node.Labels[bootcv1alpha1.LabelManaged]
+	if managed && hasLabel {
+		return nil
+	}
+	if !managed && !hasLabel {
+		return nil
+	}
+
+	modified := node.DeepCopy()
+	if managed {
+		if modified.Labels == nil {
+			modified.Labels = map[string]string{}
+		}
+		modified.Labels[bootcv1alpha1.LabelManaged] = ""
+	} else {
+		delete(modified.Labels, bootcv1alpha1.LabelManaged)
+	}
+	if err := r.Patch(ctx, modified, client.StrategicMergeFrom(node)); err != nil {
+		return err
+	}
+	*node = *modified
+	return nil
+}
+
+// restoreCordonState restores a node's cordon state based on the
+// bootc.dev/was-cordoned annotation. If the annotation is "true", the
+// node was already cordoned before the operator touched it, so we leave
+// it as is. Otherwise we uncordon it. The annotation is removed.
+func (r *BootcNodePoolReconciler) restoreCordonState(ctx context.Context, node *corev1.Node) error {
+	_, hasAnnotation := node.Annotations[bootcv1alpha1.AnnotationWasCordoned]
+	if !hasAnnotation {
+		return nil
+	}
+
+	modified := node.DeepCopy()
+	wasCordoned := modified.Annotations[bootcv1alpha1.AnnotationWasCordoned] == "true"
+	if !wasCordoned {
+		// Node was not cordoned before we touched it; uncordon it.
+		modified.Spec.Unschedulable = false
+	}
+
+	delete(modified.Annotations, bootcv1alpha1.AnnotationWasCordoned)
+	if err := r.Patch(ctx, modified, client.StrategicMergeFrom(node)); err != nil {
+		return err
+	}
+	*node = *modified
+	return nil
 }
 
 // nodeSelectorMatchesNode evaluates whether a node's labels match a
