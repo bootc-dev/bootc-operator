@@ -36,6 +36,9 @@ type BootcNodePoolReconciler struct {
 // +kubebuilder:rbac:groups=node.bootc.dev,resources=bootcnodepools,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=node.bootc.dev,resources=bootcnodepools/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=node.bootc.dev,resources=bootcnodepools/finalizers,verbs=update
+// +kubebuilder:rbac:groups=node.bootc.dev,resources=bootcnodes,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=node.bootc.dev,resources=bootcnodes/status,verbs=get
+// +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch;update;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
