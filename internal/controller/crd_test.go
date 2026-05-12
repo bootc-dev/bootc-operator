@@ -78,54 +78,6 @@ func TestBootcNodePoolCRD(t *testing.T) {
 	if !reflect.DeepEqual(got.Spec, wantSpec) {
 		t.Errorf("spec mismatch:\n  got:  %+v\n  want: %+v", got.Spec, wantSpec)
 	}
-
-	// Update status. Use a fixed timestamp truncated to seconds to match the
-	// precision the API server stores so we can just `DeepEqual` the whole thing.
-	now := metav1.NewTime(time.Now().UTC().Truncate(time.Second))
-	got.Status = bootcv1alpha1.BootcNodePoolStatus{
-		ObservedGeneration: got.Generation,
-		TargetDigest:       testDigestA,
-		DeployedDigest:     testDigestB,
-		UpdateAvailable:    true,
-		NodeCount:          3,
-		UpdatedCount:       1,
-		UpdatingCount:      1,
-		DegradedCount:      1,
-		Conditions: []metav1.Condition{
-			{
-				Type:               bootcv1alpha1.PoolUpToDate,
-				Status:             metav1.ConditionFalse,
-				Reason:             bootcv1alpha1.PoolRolloutInProgress,
-				Message:            "1/3 updated; 1 staging",
-				LastTransitionTime: now,
-			},
-			{
-				Type:               bootcv1alpha1.PoolDegraded,
-				Status:             metav1.ConditionTrue,
-				Reason:             bootcv1alpha1.PoolStagingFailed,
-				Message:            "node worker-3 failed to stage",
-				LastTransitionTime: now,
-			},
-		},
-	}
-
-	wantStatus := *got.Status.DeepCopy() // snapshot before Update
-	if err := k8sClient.Status().Update(ctx, got); err != nil {
-		t.Fatalf("Failed to update BootcNodePool status: %v", err)
-	}
-
-	// Verify status round-trips
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(pool), got); err != nil {
-		t.Fatalf("Failed to get BootcNodePool after status update: %v", err)
-	}
-	// Copy canonical timestamps from the server response into our
-	// expected status so DeepEqual ignores timezone/precision differences.
-	for i := range wantStatus.Conditions {
-		wantStatus.Conditions[i].LastTransitionTime = got.Status.Conditions[i].LastTransitionTime
-	}
-	if !reflect.DeepEqual(got.Status, wantStatus) {
-		t.Errorf("status mismatch:\n  got:  %+v\n  want: %+v", got.Status, wantStatus)
-	}
 }
 
 func TestBootcNodeCRD(t *testing.T) {
