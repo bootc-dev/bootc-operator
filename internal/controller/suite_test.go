@@ -17,14 +17,18 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"k8s.io/client-go/kubernetes/scheme"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	bootcv1alpha1 "github.com/jlebon/bootc-operator/api/v1alpha1"
 )
@@ -35,6 +39,8 @@ var (
 )
 
 func TestMain(m *testing.M) {
+	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
+
 	if err := bootcv1alpha1.AddToScheme(scheme.Scheme); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to add scheme: %v\n", err)
 		os.Exit(1)
@@ -57,7 +63,43 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
+	// Start a manager with the reconciler so controller logic runs
+	// against the envtest API server.
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+		Scheme: scheme.Scheme,
+		Metrics: metricsserver.Options{
+			BindAddress: "0", // disable metrics server in tests
+		},
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to create manager: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := (&BootcNodePoolReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to setup reconciler: %v\n", err)
+		os.Exit(1)
+	}
+
+	mgrCtx, mgrCancel := context.WithCancel(context.Background())
+
+	mgrDone := make(chan struct{})
+	go func() {
+		defer close(mgrDone)
+		if err := mgr.Start(mgrCtx); err != nil {
+			fmt.Fprintf(os.Stderr, "Manager exited with error: %v\n", err)
+			os.Exit(1)
+		}
+	}()
+
 	code := m.Run()
+
+	// Stop the manager; this implicitly tests that it can shut down cleanly.
+	mgrCancel()
+	<-mgrDone
 
 	if err := testEnv.Stop(); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to stop envtest: %v\n", err)
