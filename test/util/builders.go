@@ -19,6 +19,7 @@ limitations under the License.
 package testutil
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
@@ -129,4 +130,22 @@ func WithNodePullSecret(name, namespace, hash string) NodeOption {
 		}
 		node.Spec.PullSecretHash = hash
 	}
+}
+
+// K8sNodeOption configures a corev1.Node.
+type K8sNodeOption func(*corev1.Node)
+
+// NewK8sNode creates a corev1.Node with the given name and labels. This is
+// strictly used by envtests since there are no nodes there.
+func NewK8sNode(name string, labels map[string]string, opts ...K8sNodeOption) *corev1.Node {
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   name,
+			Labels: labels,
+		},
+	}
+	for _, o := range opts {
+		o(node)
+	}
+	return node
 }
