@@ -18,12 +18,12 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -39,19 +39,22 @@ const (
 	pollTimeout  = 10 * time.Second
 )
 
-// waitFor polls until condFn returns true or the timeout expires.
-func waitFor(t *testing.T, condFn func() bool, msg string) {
+// waitFor wraps testutil.WaitFor with the package-level poll constants.
+func waitFor(t *testing.T, msg string, condFn func() (bool, error)) {
 	t.Helper()
-	deadline := time.Now().Add(pollTimeout)
-	for {
-		if condFn() {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for: %s", msg)
-		}
-		time.Sleep(pollInterval)
-	}
+	testutil.WaitFor(t, pollTimeout, pollInterval, msg, condFn)
+}
+
+// waitForCreated wraps testutil.WaitForCreated with the package-level poll constants.
+func waitForCreated(t *testing.T, name string, obj client.Object) {
+	t.Helper()
+	testutil.WaitForCreated(t, pollTimeout, pollInterval, k8sClient, client.ObjectKey{Name: name}, obj)
+}
+
+// waitForDeleted wraps testutil.WaitForDeleted with the package-level poll constants.
+func waitForDeleted(t *testing.T, name string, obj client.Object) {
+	t.Helper()
+	testutil.WaitForDeleted(t, pollTimeout, pollInterval, k8sClient, client.ObjectKey{Name: name}, obj)
 }
 
 // TestMembershipCreatesBootcNodes verifies that creating a pool and
@@ -87,9 +90,7 @@ func TestMembershipCreatesBootcNodes(t *testing.T) {
 	for _, nodeName := range []string{"mem-worker-1", "mem-worker-2"} {
 		name := nodeName
 		var bn bootcv1alpha1.BootcNode
-		waitFor(t, func() bool {
-			return k8sClient.Get(ctx, client.ObjectKey{Name: name}, &bn) == nil
-		}, "BootcNode "+name+" to be created")
+		waitForCreated(t, name, &bn)
 
 		// Check ownerReference.
 		owner := metav1.GetControllerOf(&bn)
@@ -113,14 +114,14 @@ func TestMembershipCreatesBootcNodes(t *testing.T) {
 	// Verify nodes are labeled bootc.dev/managed.
 	for _, nodeName := range []string{"mem-worker-1", "mem-worker-2"} {
 		name := nodeName
-		waitFor(t, func() bool {
+		waitFor(t, "node "+name+" to be labeled managed", func() (bool, error) {
 			var n corev1.Node
 			if err := k8sClient.Get(ctx, client.ObjectKey{Name: name}, &n); err != nil {
-				return false
+				return false, fmt.Errorf("getting node %s: %w", name, err)
 			}
 			_, ok := n.Labels[bootcv1alpha1.LabelManaged]
-			return ok
-		}, "node "+name+" to be labeled managed")
+			return ok, nil
+		})
 	}
 
 	// Remove the worker label from mem-worker-1 and verify cleanup.
@@ -135,21 +136,17 @@ func TestMembershipCreatesBootcNodes(t *testing.T) {
 	}
 
 	// Wait for BootcNode to be deleted.
-	waitFor(t, func() bool {
-		var bn bootcv1alpha1.BootcNode
-		err := k8sClient.Get(ctx, client.ObjectKey{Name: "mem-worker-1"}, &bn)
-		return apierrors.IsNotFound(err)
-	}, "BootcNode mem-worker-1 to be deleted")
+	waitForDeleted(t, "mem-worker-1", &bootcv1alpha1.BootcNode{})
 
 	// Verify managed label is removed.
-	waitFor(t, func() bool {
+	waitFor(t, "managed label to be removed from mem-worker-1", func() (bool, error) {
 		var n corev1.Node
 		if err := k8sClient.Get(ctx, client.ObjectKey{Name: "mem-worker-1"}, &n); err != nil {
-			return false
+			return false, fmt.Errorf("getting node mem-worker-1: %w", err)
 		}
 		_, hasLabel := n.Labels[bootcv1alpha1.LabelManaged]
-		return !hasLabel
-	}, "managed label to be removed from mem-worker-1")
+		return !hasLabel, nil
+	})
 }
 
 // TestMembershipSyncsDesiredImage verifies that changing the pool's
@@ -174,14 +171,12 @@ func TestMembershipSyncsDesiredImage(t *testing.T) {
 		_ = k8sClient.Delete(ctx, pool)
 	})
 
-	// Wait for BootcNode with image A.
-	waitFor(t, func() bool {
-		var bn bootcv1alpha1.BootcNode
-		if err := k8sClient.Get(ctx, client.ObjectKey{Name: node.Name}, &bn); err != nil {
-			return false
-		}
-		return bn.Spec.DesiredImage == testImageDigestRefA
-	}, "BootcNode to have image A")
+	// Wait for BootcNode to be created and verify image A.
+	var bn bootcv1alpha1.BootcNode
+	waitForCreated(t, node.Name, &bn)
+	if bn.Spec.DesiredImage != testImageDigestRefA {
+		t.Errorf("BootcNode desiredImage = %s, want %s", bn.Spec.DesiredImage, testImageDigestRefA)
+	}
 
 	// Update pool image to B.
 	var freshPool bootcv1alpha1.BootcNodePool
@@ -194,14 +189,14 @@ func TestMembershipSyncsDesiredImage(t *testing.T) {
 	}
 
 	// Wait for BootcNode to be updated with image B.
-	waitFor(t, func() bool {
+	waitFor(t, "BootcNode to have image B with state Staged", func() (bool, error) {
 		var bn bootcv1alpha1.BootcNode
 		if err := k8sClient.Get(ctx, client.ObjectKey{Name: node.Name}, &bn); err != nil {
-			return false
+			return false, fmt.Errorf("getting BootcNode %s: %w", node.Name, err)
 		}
 		return bn.Spec.DesiredImage == testImageDigestRefB &&
-			bn.Spec.DesiredImageState == bootcv1alpha1.DesiredImageStateStaged
-	}, "BootcNode to have image B with state Staged")
+			bn.Spec.DesiredImageState == bootcv1alpha1.DesiredImageStateStaged, nil
+	})
 }
 
 // TestMembershipConflictDetection verifies that when a node matches two
@@ -236,11 +231,7 @@ func TestMembershipConflictDetection(t *testing.T) {
 
 	// Wait for pool1 to claim node1 and node3.
 	for _, name := range []string{node1.Name, node3.Name} {
-		n := name
-		waitFor(t, func() bool {
-			var bn bootcv1alpha1.BootcNode
-			return k8sClient.Get(ctx, client.ObjectKey{Name: n}, &bn) == nil
-		}, "BootcNode "+n+" to be created by pool1")
+		waitForCreated(t, name, &bootcv1alpha1.BootcNode{})
 	}
 
 	// Create second pool selecting pool2=true — matches node2 and node3,
@@ -255,17 +246,17 @@ func TestMembershipConflictDetection(t *testing.T) {
 	})
 
 	// Wait for pool2 to be marked Degraded/NodeConflict.
-	waitFor(t, func() bool {
+	waitFor(t, "pool2 to be Degraded/NodeConflict", func() (bool, error) {
 		var p bootcv1alpha1.BootcNodePool
 		if err := k8sClient.Get(ctx, client.ObjectKey{Name: pool2.Name}, &p); err != nil {
-			return false
+			return false, fmt.Errorf("getting pool %s: %w", pool2.Name, err)
 		}
 		cond := apimeta.FindStatusCondition(p.Status.Conditions, bootcv1alpha1.PoolDegraded)
 		return cond != nil &&
 			cond.Status == metav1.ConditionTrue &&
 			cond.Reason == bootcv1alpha1.PoolNodeConflict &&
-			strings.Contains(cond.Message, pool1.Name)
-	}, "pool2 to be Degraded/NodeConflict")
+			strings.Contains(cond.Message, pool1.Name), nil
+	})
 
 	// Verify pool1 is not degraded.
 	var p1 bootcv1alpha1.BootcNodePool
@@ -287,13 +278,11 @@ func TestMembershipConflictDetection(t *testing.T) {
 		{node2.Name, pool2.Name},
 	} {
 		tc := tc
-		waitFor(t, func() bool {
-			var bn bootcv1alpha1.BootcNode
-			if err := k8sClient.Get(ctx, client.ObjectKey{Name: tc.nodeName}, &bn); err != nil {
-				return false
-			}
-			o := metav1.GetControllerOf(&bn)
-			return o != nil && o.Name == tc.poolName
-		}, "BootcNode "+tc.nodeName+" to be owned by "+tc.poolName)
+		var bn bootcv1alpha1.BootcNode
+		waitForCreated(t, tc.nodeName, &bn)
+		o := metav1.GetControllerOf(&bn)
+		if o == nil || o.Name != tc.poolName {
+			t.Errorf("BootcNode %s owner = %v, want %s", tc.nodeName, o, tc.poolName)
+		}
 	}
 }
