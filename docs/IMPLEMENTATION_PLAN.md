@@ -111,7 +111,7 @@ status aggregation) can be fully exercised by simulating BootcNode
 status updates. E2e tests become more valuable in Milestone 4 when
 the full controller+daemon loop can be tested end-to-end.
 
-### 3a. Pool membership sync
+### 3a. Pool membership sync ✅
 
 - Watch BootcNodePool, Node (with predicates: label changes, Ready
   condition, `spec.unschedulable` only), BootcNode (via ownerReference)
@@ -124,7 +124,7 @@ the full controller+daemon loop can be tested end-to-end.
 - Conflict detection: node matches multiple pools →
   `Degraded/NodeConflict` on conflicting pools, skip rollout steps
 
-**Validation:**
+**Validation:** ✅
 
 - envtest: create Nodes and a BootcNodePool, verify BootcNodes are
   created with correct ownerReference and desiredImage. Verify nodes
