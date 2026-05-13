@@ -33,11 +33,13 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	bootcv1alpha1 "github.com/jlebon/bootc-operator/api/v1alpha1"
+	testutil "github.com/jlebon/bootc-operator/test/util"
 )
 
 // config holds resolved settings for the test cluster.
@@ -346,33 +348,26 @@ func waitForControllerReady(t *testing.T, c client.Client) {
 	t.Helper()
 	t.Log("Waiting for controller to be ready...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
-
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			t.Fatal("timed out waiting for controller to be ready")
-		case <-ticker.C:
-			var dep appsv1.Deployment
-			key := client.ObjectKey{
-				Namespace: "bootc-operator",
-				Name:      "bootc-operator-controller-manager",
-			}
-			if err := c.Get(ctx, key, &dep); err != nil {
-				t.Logf("  controller deployment not found yet: %v", err)
-				continue
-			}
-			if dep.Status.ReadyReplicas > 0 {
-				t.Log("  controller is ready")
-				return
-			}
-			t.Logf("  controller not ready yet (ready=%d)", dep.Status.ReadyReplicas)
+	ctx := context.Background()
+	testutil.WaitFor(t, 3*time.Minute, 5*time.Second, "controller to be ready", func() (bool, error) {
+		var dep appsv1.Deployment
+		key := client.ObjectKey{
+			Namespace: "bootc-operator",
+			Name:      "bootc-operator-controller-manager",
 		}
-	}
+		if err := c.Get(ctx, key, &dep); apierrors.IsNotFound(err) {
+			t.Logf("  controller deployment not found yet")
+			return false, nil
+		} else if err != nil {
+			return false, err
+		}
+		if dep.Status.ReadyReplicas > 0 {
+			t.Log("  controller is ready")
+			return true, nil
+		}
+		t.Logf("  controller not ready yet (ready=%d)", dep.Status.ReadyReplicas)
+		return false, nil
+	})
 }
 
 // buildClient creates a controller-runtime client from the kubeconfig
@@ -402,30 +397,23 @@ func waitForNodeReady(t *testing.T, c client.Client, nodeName string) {
 	t.Helper()
 	t.Logf("Waiting for node %q to be Ready...", nodeName)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			t.Fatalf("timed out waiting for node %q to become Ready", nodeName)
-		case <-ticker.C:
-			node := &corev1.Node{}
-			if err := c.Get(ctx, client.ObjectKey{Name: nodeName}, node); err != nil {
-				t.Logf("  node %q not found yet: %v", nodeName, err)
-				continue
-			}
-			for _, cond := range node.Status.Conditions {
-				if cond.Type == corev1.NodeReady && cond.Status == corev1.ConditionTrue {
-					t.Logf("  node %q is Ready", nodeName)
-					return
-				}
+	ctx := context.Background()
+	testutil.WaitFor(t, 5*time.Minute, 5*time.Second, "node "+nodeName+" to be Ready", func() (bool, error) {
+		node := &corev1.Node{}
+		if err := c.Get(ctx, client.ObjectKey{Name: nodeName}, node); apierrors.IsNotFound(err) {
+			t.Logf("  node %q not found yet", nodeName)
+			return false, nil
+		} else if err != nil {
+			return false, err
+		}
+		for _, cond := range node.Status.Conditions {
+			if cond.Type == corev1.NodeReady && cond.Status == corev1.ConditionTrue {
+				t.Logf("  node %q is Ready", nodeName)
+				return true, nil
 			}
 		}
-	}
+		return false, nil
+	})
 }
 
 // runBink executes a bink command and returns any error.
