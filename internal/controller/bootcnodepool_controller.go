@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -73,9 +74,27 @@ func (r *BootcNodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	// Sync pool membership.
 	if err := r.syncMembership(ctx, &pool); err != nil {
+		if isInvalidSpecError(err) {
+			return r.setInvalidSpecCondition(ctx, &pool, err)
+		}
 		return ctrl.Result{}, fmt.Errorf("syncing membership: %w", err)
 	}
 
+	return ctrl.Result{}, nil
+}
+
+// setInvalidSpecCondition sets Degraded/InvalidSpec on the pool and
+// returns (Result, nil) so Reconcile stops without requeueing.
+func (r *BootcNodePoolReconciler) setInvalidSpecCondition(ctx context.Context, pool *bootcv1alpha1.BootcNodePool, specErr error) (ctrl.Result, error) {
+	apimeta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
+		Type:    bootcv1alpha1.PoolDegraded,
+		Status:  metav1.ConditionTrue,
+		Reason:  bootcv1alpha1.PoolInvalidSpec,
+		Message: specErr.Error(),
+	})
+	if err := r.Status().Update(ctx, pool); err != nil {
+		return ctrl.Result{}, fmt.Errorf("updating pool status: %w", err)
+	}
 	return ctrl.Result{}, nil
 }
 
@@ -236,6 +255,10 @@ func (r *BootcNodePoolReconciler) setConflictCondition(ctx context.Context, pool
 				strings.Join(slices.Sorted(slices.Values(conflictingPools)), ", ")),
 		}
 	} else {
+		// XXX: this shouldn't live here; we'll probably want to centralize
+		// Condition setting so it only happens once per type per Reconcile()
+		// so we don't flipflop between different status states within the same
+		// iteration.
 		desired = metav1.Condition{
 			Type:   bootcv1alpha1.PoolDegraded,
 			Status: metav1.ConditionFalse,
@@ -387,7 +410,7 @@ func nodePredicates() predicate.Predicate {
 func (r *BootcNodePoolReconciler) listMatchingNodes(ctx context.Context, pool *bootcv1alpha1.BootcNodePool) ([]corev1.Node, error) {
 	selector, err := metav1.LabelSelectorAsSelector(pool.Spec.NodeSelector)
 	if err != nil {
-		return nil, fmt.Errorf("parsing nodeSelector: %w", err)
+		return nil, &invalidSpecError{msg: fmt.Sprintf("invalid nodeSelector: %v", err)}
 	}
 
 	var nodeList corev1.NodeList
@@ -491,4 +514,18 @@ func nodeReadyStatus(node *corev1.Node) corev1.ConditionStatus {
 
 func nodeUnschedulableChanged(oldNode, newNode *corev1.Node) bool {
 	return oldNode.Spec.Unschedulable != newNode.Spec.Unschedulable
+}
+
+// invalidSpecError indicates a user-provided spec value that the
+// controller cannot process. Reconcile surfaces these as
+// Degraded/InvalidSpec conditions rather than requeueing with backoff.
+type invalidSpecError struct {
+	msg string
+}
+
+func (e *invalidSpecError) Error() string { return e.msg }
+
+func isInvalidSpecError(err error) bool {
+	var e *invalidSpecError
+	return errors.As(err, &e)
 }

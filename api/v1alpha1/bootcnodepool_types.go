@@ -58,6 +58,10 @@ const (
 	// PoolDaemonStuck means the daemon is not responding on one or more nodes.
 	PoolDaemonStuck string = "DaemonStuck"
 
+	// PoolInvalidSpec means the pool's spec contains invalid values that
+	// the controller cannot process (e.g. a malformed nodeSelector).
+	PoolInvalidSpec string = "InvalidSpec"
+
 	// PoolOK means no issues.
 	PoolOK string = "OK"
 )
