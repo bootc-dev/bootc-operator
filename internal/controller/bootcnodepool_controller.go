@@ -24,6 +24,8 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/distribution/reference"
 	corev1 "k8s.io/api/core/v1"
@@ -33,6 +35,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -42,14 +45,35 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	bootcv1alpha1 "github.com/jlebon/bootc-operator/api/v1alpha1"
 )
 
+// drainStatus tracks an in-progress drain goroutine for a single node.
+type drainStatus struct {
+	result    chan error         //nolint:unused // receives nil on success, error on failure; closed after send
+	cancel    context.CancelFunc //nolint:unused // to abort on targetDigest change or node removal
+	startTime time.Time          //nolint:unused // for stall detection
+	isStalled bool               //nolint:unused // set once after stall threshold; triggers event emission
+}
+
 // BootcNodePoolReconciler reconciles a BootcNodePool object
 type BootcNodePoolReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Recorder events.EventRecorder
+
+	// drainCh receives events from drain goroutines to re-enqueue the
+	// owning pool after a drain completes.
+	drainCh chan event.GenericEvent
+
+	// drains tracks in-progress drain goroutines keyed by node name.
+	// Protected by drainsMu. The mutex is not necessary today since
+	// MaxConcurrentReconciles defaults to 1, but would be needed if
+	// concurrent reconciles are enabled in the future.
+	drains   map[string]*drainStatus //nolint:unused
+	drainsMu sync.Mutex              //nolint:unused
 }
 
 // +kubebuilder:rbac:groups=node.bootc.dev,resources=bootcnodepools,verbs=get;list;watch;create;update;patch;delete
@@ -58,6 +82,7 @@ type BootcNodePoolReconciler struct {
 // +kubebuilder:rbac:groups=node.bootc.dev,resources=bootcnodes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=node.bootc.dev,resources=bootcnodes/status,verbs=get
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -332,10 +357,15 @@ func (r *BootcNodePoolReconciler) syncBootcNodeSpec(ctx context.Context, pool *b
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *BootcNodePoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.Recorder = mgr.GetEventRecorder("bootc-operator")
+	r.drainCh = make(chan event.GenericEvent, 100)
+	r.drains = make(map[string]*drainStatus)
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&bootcv1alpha1.BootcNodePool{}).
 		Owns(&bootcv1alpha1.BootcNode{}).
 		Watches(&corev1.Node{}, handler.EnqueueRequestsFromMapFunc(r.mapNodeToPoolRequests), builder.WithPredicates(nodePredicates())).
+		WatchesRawSource(source.Channel(r.drainCh, &handler.EnqueueRequestForObject{})).
 		Named("bootcnodepool").
 		Complete(r)
 }

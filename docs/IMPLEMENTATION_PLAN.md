@@ -145,8 +145,8 @@ the full controller+daemon loop can be tested end-to-end.
 - Reboot slot accounting based on `maxUnavailable`
 - Drive transitions per the state table: detect Staged → cordon (record
   prior state in `bootc.dev/was-cordoned`) → drain (using
-  `k8s.io/kubectl/pkg/drain`, 90s per-attempt timeout, requeue on
-  failure) → set `desiredImageState: Booted`
+  `k8s.io/kubectl/pkg/drain`, async goroutine, no timeout by default)
+  → set `desiredImageState: Booted`
 - Post-reboot: detect `desiredImage == booted` + node Ready → uncordon
   (respecting `was-cordoned`) → free slot
 - `spec.rollout.paused`: block new reboot slot assignments; let

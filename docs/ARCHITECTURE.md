@@ -463,11 +463,11 @@ Transition details:
 
 - **Staged → Rebooting**: The controller assigns the node a reboot
   slot if one is available. It cordons the node and records prior
-  cordon state in the `bootc.dev/was-cordoned` annotation. It drains
-  the node using `k8s.io/kubectl/pkg/drain` with a bounded per-attempt
-  timeout (~90s). If drain doesn't complete (e.g. a PDB blocks
-  eviction), return early and requeue -- the next reconcile will retry.
-  On successful drain, the controller sets
+  cordon state in the `bootc.dev/was-cordoned` annotation. It starts
+  an async drain goroutine using `k8s.io/kubectl/pkg/drain`. The
+  goroutine blocks until drain completes (or is cancelled), then
+  signals completion via a channel that re-enqueues the pool. On
+  successful drain, the controller sets
   `BootcNode.spec.desiredImageState = Booted`. The daemon detects this
   and verifies `staged.imageDigest == desiredImage` before proceeding.
   If they match, it sets `Idle=False reason=Rebooting` and runs
