@@ -84,6 +84,16 @@ func WithMaxUnavailable(v intstr.IntOrString) PoolOption {
 	}
 }
 
+// WithDrainTimeoutSeconds sets the rollout drain timeout in seconds.
+func WithDrainTimeoutSeconds(seconds int32) PoolOption {
+	return func(pool *bootcv1alpha1.BootcNodePool) {
+		if pool.Spec.Rollout == nil {
+			pool.Spec.Rollout = &bootcv1alpha1.RolloutSpec{}
+		}
+		pool.Spec.Rollout.DrainTimeoutSeconds = &seconds
+	}
+}
+
 // WithNodeSelector sets the nodeSelector on a pool.
 func WithNodeSelector(labels map[string]string) PoolOption {
 	return func(pool *bootcv1alpha1.BootcNodePool) {

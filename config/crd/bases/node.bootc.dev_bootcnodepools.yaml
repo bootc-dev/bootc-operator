@@ -141,6 +141,14 @@ spec:
                 description: rollout controls how updates are rolled out across pool
                   nodes.
                 properties:
+                  drainTimeoutSeconds:
+                    description: |-
+                      drainTimeoutSeconds is the maximum time in seconds to wait for a
+                      node drain to complete before marking the node degraded and freeing
+                      the reboot slot. If not set, drains block indefinitely.
+                    format: int32
+                    minimum: 0
+                    type: integer
                   maxUnavailable:
                     anyOf:
                     - type: integer
