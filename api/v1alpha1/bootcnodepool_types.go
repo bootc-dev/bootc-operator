@@ -98,6 +98,13 @@ type RolloutSpec struct {
 	// continues and status.targetDigest is kept current.
 	// +optional
 	Paused bool `json:"paused,omitempty"`
+
+	// drainTimeoutSeconds is the maximum time in seconds to wait for a
+	// node drain to complete before marking the node degraded and freeing
+	// the reboot slot. If not set, drains block indefinitely.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	DrainTimeoutSeconds *int32 `json:"drainTimeoutSeconds,omitempty"`
 }
 
 // DisruptionSpec controls the disruption behavior during updates.
