@@ -84,6 +84,138 @@ type BootcNodePoolReconciler struct {
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
+// SetupWithManager sets up the controller with the Manager.
+func (r *BootcNodePoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.Recorder = mgr.GetEventRecorder("bootc-operator")
+	r.drainCh = make(chan event.GenericEvent, 100)
+	r.drains = make(map[string]*drainStatus)
+
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&bootcv1alpha1.BootcNodePool{}).
+		Owns(&bootcv1alpha1.BootcNode{}).
+		Watches(&corev1.Node{}, handler.EnqueueRequestsFromMapFunc(r.mapNodeToPoolRequests), builder.WithPredicates(nodePredicates())).
+		WatchesRawSource(source.Channel(r.drainCh, &handler.EnqueueRequestForObject{})).
+		Named("bootcnodepool").
+		Complete(r)
+}
+
+// mapNodeToPoolRequests maps a Node event to the BootcNodePool(s) that should
+// be reconciled. It enqueues two sets: (1) pools whose nodeSelector matches
+// the node's current labels, and (2) if a BootcNode exists for this node, the
+// pool that owns it. The second set is needed so the owning pool can clean up
+// when a node's labels change such that it no longer matches, or when the node
+// is deleted entirely.
+func (r *BootcNodePoolReconciler) mapNodeToPoolRequests(ctx context.Context, obj client.Object) []reconcile.Request {
+	node, ok := obj.(*corev1.Node)
+	if !ok {
+		return nil
+	}
+	log := logf.FromContext(ctx).WithValues("node", node.Name)
+
+	var requests []reconcile.Request
+	seen := map[types.NamespacedName]bool{}
+
+	// (1) Pools whose selector matches this node's labels.
+	var pools bootcv1alpha1.BootcNodePoolList
+	if err := r.List(ctx, &pools); err != nil {
+		log.Error(err, "Failed to list BootcNodePools in node mapper")
+		return nil
+	}
+	for i := range pools.Items {
+		pool := &pools.Items[i]
+		matches, err := nodeSelectorMatchesNode(pool.Spec.NodeSelector, node)
+		if err != nil {
+			log.Error(err, "Failed to evaluate nodeSelector", "pool", pool.Name)
+			continue
+		}
+		if matches {
+			key := types.NamespacedName{Name: pool.Name}
+			if !seen[key] {
+				log.V(1).Info("Node matches pool selector", "pool", pool.Name)
+				requests = append(requests, reconcile.Request{NamespacedName: key})
+				seen[key] = true
+			}
+		}
+	}
+
+	// (2) Pool that owns the BootcNode for this node (if any).
+	var bootcNode bootcv1alpha1.BootcNode
+	if err := r.Get(ctx, types.NamespacedName{Name: node.Name}, &bootcNode); err != nil {
+		// No BootcNode for this node — nothing else to enqueue.
+		return requests
+	}
+	for _, ref := range bootcNode.OwnerReferences {
+		if ref.Kind == "BootcNodePool" {
+			key := types.NamespacedName{Name: ref.Name}
+			if !seen[key] {
+				log.V(1).Info("Node has BootcNode owned by pool", "pool", ref.Name)
+				requests = append(requests, reconcile.Request{NamespacedName: key})
+				seen[key] = true
+			}
+		}
+	}
+
+	return requests
+}
+
+// nodeSelectorMatchesNode evaluates whether a node's labels match a
+// LabelSelector.
+func nodeSelectorMatchesNode(sel *metav1.LabelSelector, node *corev1.Node) (bool, error) {
+	selector, err := metav1.LabelSelectorAsSelector(sel)
+	if err != nil {
+		return false, err
+	}
+	return selector.Matches(labels.Set(node.Labels)), nil
+}
+
+// nodePredicates returns predicates that filter Node events to only those
+// relevant to pool membership: label changes, Ready condition changes, and
+// spec.unschedulable changes.
+func nodePredicates() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc: func(e event.CreateEvent) bool {
+			return true
+		},
+		DeleteFunc: func(e event.DeleteEvent) bool {
+			return true
+		},
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldNode, ok1 := e.ObjectOld.(*corev1.Node)
+			newNode, ok2 := e.ObjectNew.(*corev1.Node)
+			if !ok1 || !ok2 {
+				return true
+			}
+			return nodeLabelsChanged(oldNode, newNode) ||
+				nodeReadyConditionChanged(oldNode, newNode) ||
+				nodeUnschedulableChanged(oldNode, newNode)
+		},
+		GenericFunc: func(e event.GenericEvent) bool {
+			return true
+		},
+	}
+}
+
+func nodeLabelsChanged(oldNode, newNode *corev1.Node) bool {
+	return !reflect.DeepEqual(oldNode.Labels, newNode.Labels)
+}
+
+func nodeReadyConditionChanged(oldNode, newNode *corev1.Node) bool {
+	return nodeReadyStatus(oldNode) != nodeReadyStatus(newNode)
+}
+
+func nodeReadyStatus(node *corev1.Node) corev1.ConditionStatus {
+	for _, c := range node.Status.Conditions {
+		if c.Type == corev1.NodeReady {
+			return c.Status
+		}
+	}
+	return corev1.ConditionUnknown
+}
+
+func nodeUnschedulableChanged(oldNode, newNode *corev1.Node) bool {
+	return oldNode.Spec.Unschedulable != newNode.Spec.Unschedulable
+}
+
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 func (r *BootcNodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -136,21 +268,6 @@ func (r *BootcNodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	return ctrl.Result{}, nil
 }
 
-// setInvalidSpecCondition sets Degraded/InvalidSpec on the pool and
-// returns (Result, nil) so Reconcile stops without requeueing.
-func (r *BootcNodePoolReconciler) setInvalidSpecCondition(ctx context.Context, pool *bootcv1alpha1.BootcNodePool, specErr error) (ctrl.Result, error) {
-	apimeta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
-		Type:    bootcv1alpha1.PoolDegraded,
-		Status:  metav1.ConditionTrue,
-		Reason:  bootcv1alpha1.PoolInvalidSpec,
-		Message: specErr.Error(),
-	})
-	if err := r.Status().Update(ctx, pool); err != nil {
-		return ctrl.Result{}, fmt.Errorf("updating pool status: %w", err)
-	}
-	return ctrl.Result{}, nil
-}
-
 // resolveTargetDigest parses the digest from the pool's image ref and
 // sets pool.Status.TargetDigest. For digest refs (the only kind
 // supported now), the digest is extracted directly. Tag resolution is
@@ -166,6 +283,43 @@ func (r *BootcNodePoolReconciler) resolveTargetDigest(pool *bootcv1alpha1.BootcN
 	}
 	pool.Status.TargetDigest = digested.Digest().String()
 	return nil
+}
+
+// parseImageRef parses an image reference string into a named
+// reference, validating the format per OCI conventions. It requires
+// fully qualified names (e.g. "quay.io/example/myos:latest"); short
+// names like "myos:latest" are rejected.
+func parseImageRef(ref string) (reference.Named, error) {
+	return reference.ParseNamed(ref)
+}
+
+// invalidSpecError indicates a user-provided spec value that the
+// controller cannot process. Reconcile surfaces these as
+// Degraded/InvalidSpec conditions rather than requeueing with backoff.
+type invalidSpecError struct {
+	msg string
+}
+
+func (e *invalidSpecError) Error() string { return e.msg }
+
+func isInvalidSpecError(err error) bool {
+	var e *invalidSpecError
+	return errors.As(err, &e)
+}
+
+// setInvalidSpecCondition sets Degraded/InvalidSpec on the pool and
+// returns (Result, nil) so Reconcile stops without requeueing.
+func (r *BootcNodePoolReconciler) setInvalidSpecCondition(ctx context.Context, pool *bootcv1alpha1.BootcNodePool, specErr error) (ctrl.Result, error) {
+	apimeta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
+		Type:    bootcv1alpha1.PoolDegraded,
+		Status:  metav1.ConditionTrue,
+		Reason:  bootcv1alpha1.PoolInvalidSpec,
+		Message: specErr.Error(),
+	})
+	if err := r.Status().Update(ctx, pool); err != nil {
+		return ctrl.Result{}, fmt.Errorf("updating pool status: %w", err)
+	}
+	return ctrl.Result{}, nil
 }
 
 // syncMembership reconciles the set of BootcNodes owned by this pool
@@ -246,6 +400,73 @@ func (r *BootcNodePoolReconciler) syncMembership(ctx context.Context, pool *boot
 	return nil
 }
 
+// listMatchingNodes returns all Nodes whose labels match the pool's
+// nodeSelector.
+func (r *BootcNodePoolReconciler) listMatchingNodes(ctx context.Context, pool *bootcv1alpha1.BootcNodePool) ([]corev1.Node, error) {
+	selector, err := metav1.LabelSelectorAsSelector(pool.Spec.NodeSelector)
+	if err != nil {
+		return nil, &invalidSpecError{msg: fmt.Sprintf("invalid nodeSelector: %v", err)}
+	}
+
+	var nodeList corev1.NodeList
+	if err := r.List(ctx, &nodeList, client.MatchingLabelsSelector{Selector: selector}); err != nil {
+		return nil, fmt.Errorf("listing nodes: %w", err)
+	}
+	return nodeList.Items, nil
+}
+
+// listAllBootcNodes returns all BootcNodes keyed by name.
+func (r *BootcNodePoolReconciler) listAllBootcNodes(ctx context.Context) (map[string]*bootcv1alpha1.BootcNode, error) {
+	var bnList bootcv1alpha1.BootcNodeList
+	if err := r.List(ctx, &bnList); err != nil {
+		return nil, fmt.Errorf("listing BootcNodes: %w", err)
+	}
+
+	all := make(map[string]*bootcv1alpha1.BootcNode, len(bnList.Items))
+	for i := range bnList.Items {
+		all[bnList.Items[i].Name] = &bnList.Items[i]
+	}
+	return all, nil
+}
+
+// syncBootcNodeSpec updates a BootcNode's spec fields to match the pool.
+func (r *BootcNodePoolReconciler) syncBootcNodeSpec(ctx context.Context, pool *bootcv1alpha1.BootcNodePool, bn *bootcv1alpha1.BootcNode) error {
+	modified := bn.DeepCopy()
+	desiredImage := desiredImageFromPool(pool)
+	needPatch := false
+
+	if modified.Spec.DesiredImage != desiredImage {
+		modified.Spec.DesiredImage = desiredImage
+		// desiredImage changed; reset desired state to Staged to revoke any
+		// pending reboot approval
+		modified.Spec.DesiredImageState = bootcv1alpha1.DesiredImageStateStaged
+		needPatch = true
+	}
+
+	newPullSecretRef := pool.Spec.PullSecretRef.DeepCopy()
+	if !reflect.DeepEqual(modified.Spec.PullSecretRef, newPullSecretRef) {
+		modified.Spec.PullSecretRef = newPullSecretRef
+		needPatch = true
+	}
+
+	if needPatch {
+		if err := r.Patch(ctx, modified, client.MergeFrom(bn)); err != nil {
+			return fmt.Errorf("patching BootcNode: %w", err)
+		}
+		*bn = *modified
+	}
+
+	return nil
+}
+
+// desiredImageFromPool constructs the desiredImage pullspec from the
+// pool's image name and resolved targetDigest (e.g.
+// "quay.io/example/myos@sha256:abc123").
+func desiredImageFromPool(pool *bootcv1alpha1.BootcNodePool) string {
+	ref, _ := parseImageRef(pool.Spec.Image.Ref)
+	return reference.TrimNamed(ref).String() + "@" + pool.Status.TargetDigest
+}
+
 // createBootcNode creates a BootcNode for a node joining the pool and
 // labels the node as managed.
 func (r *BootcNodePoolReconciler) createBootcNode(ctx context.Context, pool *bootcv1alpha1.BootcNodePool, node *corev1.Node) error {
@@ -282,6 +503,32 @@ func (r *BootcNodePoolReconciler) createBootcNode(ctx context.Context, pool *boo
 	return nil
 }
 
+// ensureManagedLabel adds or removes the bootc.dev/managed label on a Node.
+func (r *BootcNodePoolReconciler) ensureManagedLabel(ctx context.Context, node *corev1.Node, managed bool) error {
+	_, hasLabel := node.Labels[bootcv1alpha1.LabelManaged]
+	if managed && hasLabel {
+		return nil
+	}
+	if !managed && !hasLabel {
+		return nil
+	}
+
+	modified := node.DeepCopy()
+	if managed {
+		if modified.Labels == nil {
+			modified.Labels = map[string]string{}
+		}
+		modified.Labels[bootcv1alpha1.LabelManaged] = ""
+	} else {
+		delete(modified.Labels, bootcv1alpha1.LabelManaged)
+	}
+	if err := r.Patch(ctx, modified, client.StrategicMergeFrom(node)); err != nil {
+		return err
+	}
+	*node = *modified
+	return nil
+}
+
 // removeBootcNode deletes a BootcNode for a node leaving the pool,
 // removes the managed label, and restores prior cordon state.
 func (r *BootcNodePoolReconciler) removeBootcNode(ctx context.Context, bn *bootcv1alpha1.BootcNode) error {
@@ -306,208 +553,6 @@ func (r *BootcNodePoolReconciler) removeBootcNode(ctx context.Context, bn *bootc
 		return fmt.Errorf("deleting BootcNode: %w", err)
 	}
 
-	return nil
-}
-
-// syncConflictCondition sets or clears the Degraded condition with
-// reason NodeConflict on the pool. It only mutates the in-memory
-// object; the caller is responsible for writing status.
-func syncConflictCondition(pool *bootcv1alpha1.BootcNodePool, conflictingPools []string) {
-	if len(conflictingPools) > 0 {
-		apimeta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
-			Type:   bootcv1alpha1.PoolDegraded,
-			Status: metav1.ConditionTrue,
-			Reason: bootcv1alpha1.PoolNodeConflict,
-			// Sort so the message is stable across reconciles.
-			Message: fmt.Sprintf("Node selector overlaps with pool(s): %s",
-				strings.Join(slices.Sorted(slices.Values(conflictingPools)), ", ")),
-		})
-	}
-}
-
-// syncBootcNodeSpec updates a BootcNode's spec fields to match the pool.
-func (r *BootcNodePoolReconciler) syncBootcNodeSpec(ctx context.Context, pool *bootcv1alpha1.BootcNodePool, bn *bootcv1alpha1.BootcNode) error {
-	modified := bn.DeepCopy()
-	desiredImage := desiredImageFromPool(pool)
-	needPatch := false
-
-	if modified.Spec.DesiredImage != desiredImage {
-		modified.Spec.DesiredImage = desiredImage
-		// desiredImage changed; reset desired state to Staged to revoke any
-		// pending reboot approval
-		modified.Spec.DesiredImageState = bootcv1alpha1.DesiredImageStateStaged
-		needPatch = true
-	}
-
-	newPullSecretRef := pool.Spec.PullSecretRef.DeepCopy()
-	if !reflect.DeepEqual(modified.Spec.PullSecretRef, newPullSecretRef) {
-		modified.Spec.PullSecretRef = newPullSecretRef
-		needPatch = true
-	}
-
-	if needPatch {
-		if err := r.Patch(ctx, modified, client.MergeFrom(bn)); err != nil {
-			return fmt.Errorf("patching BootcNode: %w", err)
-		}
-		*bn = *modified
-	}
-
-	return nil
-}
-
-// SetupWithManager sets up the controller with the Manager.
-func (r *BootcNodePoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	r.Recorder = mgr.GetEventRecorder("bootc-operator")
-	r.drainCh = make(chan event.GenericEvent, 100)
-	r.drains = make(map[string]*drainStatus)
-
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&bootcv1alpha1.BootcNodePool{}).
-		Owns(&bootcv1alpha1.BootcNode{}).
-		Watches(&corev1.Node{}, handler.EnqueueRequestsFromMapFunc(r.mapNodeToPoolRequests), builder.WithPredicates(nodePredicates())).
-		WatchesRawSource(source.Channel(r.drainCh, &handler.EnqueueRequestForObject{})).
-		Named("bootcnodepool").
-		Complete(r)
-}
-
-// mapNodeToPoolRequests maps a Node event to the BootcNodePool(s) that should
-// be reconciled. It enqueues two sets: (1) pools whose nodeSelector matches
-// the node's current labels, and (2) if a BootcNode exists for this node, the
-// pool that owns it. The second set is needed so the owning pool can clean up
-// when a node's labels change such that it no longer matches, or when the node
-// is deleted entirely.
-func (r *BootcNodePoolReconciler) mapNodeToPoolRequests(ctx context.Context, obj client.Object) []reconcile.Request {
-	node, ok := obj.(*corev1.Node)
-	if !ok {
-		return nil
-	}
-	log := logf.FromContext(ctx).WithValues("node", node.Name)
-
-	var requests []reconcile.Request
-	seen := map[types.NamespacedName]bool{}
-
-	// (1) Pools whose selector matches this node's labels.
-	var pools bootcv1alpha1.BootcNodePoolList
-	if err := r.List(ctx, &pools); err != nil {
-		log.Error(err, "Failed to list BootcNodePools in node mapper")
-		return nil
-	}
-	for i := range pools.Items {
-		pool := &pools.Items[i]
-		matches, err := nodeSelectorMatchesNode(pool.Spec.NodeSelector, node)
-		if err != nil {
-			log.Error(err, "Failed to evaluate nodeSelector", "pool", pool.Name)
-			continue
-		}
-		if matches {
-			key := types.NamespacedName{Name: pool.Name}
-			if !seen[key] {
-				log.V(1).Info("Node matches pool selector", "pool", pool.Name)
-				requests = append(requests, reconcile.Request{NamespacedName: key})
-				seen[key] = true
-			}
-		}
-	}
-
-	// (2) Pool that owns the BootcNode for this node (if any).
-	var bootcNode bootcv1alpha1.BootcNode
-	if err := r.Get(ctx, types.NamespacedName{Name: node.Name}, &bootcNode); err != nil {
-		// No BootcNode for this node — nothing else to enqueue.
-		return requests
-	}
-	for _, ref := range bootcNode.OwnerReferences {
-		if ref.Kind == "BootcNodePool" {
-			key := types.NamespacedName{Name: ref.Name}
-			if !seen[key] {
-				log.V(1).Info("Node has BootcNode owned by pool", "pool", ref.Name)
-				requests = append(requests, reconcile.Request{NamespacedName: key})
-				seen[key] = true
-			}
-		}
-	}
-
-	return requests
-}
-
-// nodePredicates returns predicates that filter Node events to only those
-// relevant to pool membership: label changes, Ready condition changes, and
-// spec.unschedulable changes.
-func nodePredicates() predicate.Predicate {
-	return predicate.Funcs{
-		CreateFunc: func(e event.CreateEvent) bool {
-			return true
-		},
-		DeleteFunc: func(e event.DeleteEvent) bool {
-			return true
-		},
-		UpdateFunc: func(e event.UpdateEvent) bool {
-			oldNode, ok1 := e.ObjectOld.(*corev1.Node)
-			newNode, ok2 := e.ObjectNew.(*corev1.Node)
-			if !ok1 || !ok2 {
-				return true
-			}
-			return nodeLabelsChanged(oldNode, newNode) ||
-				nodeReadyConditionChanged(oldNode, newNode) ||
-				nodeUnschedulableChanged(oldNode, newNode)
-		},
-		GenericFunc: func(e event.GenericEvent) bool {
-			return true
-		},
-	}
-}
-
-// listMatchingNodes returns all Nodes whose labels match the pool's
-// nodeSelector.
-func (r *BootcNodePoolReconciler) listMatchingNodes(ctx context.Context, pool *bootcv1alpha1.BootcNodePool) ([]corev1.Node, error) {
-	selector, err := metav1.LabelSelectorAsSelector(pool.Spec.NodeSelector)
-	if err != nil {
-		return nil, &invalidSpecError{msg: fmt.Sprintf("invalid nodeSelector: %v", err)}
-	}
-
-	var nodeList corev1.NodeList
-	if err := r.List(ctx, &nodeList, client.MatchingLabelsSelector{Selector: selector}); err != nil {
-		return nil, fmt.Errorf("listing nodes: %w", err)
-	}
-	return nodeList.Items, nil
-}
-
-// listAllBootcNodes returns all BootcNodes keyed by name.
-func (r *BootcNodePoolReconciler) listAllBootcNodes(ctx context.Context) (map[string]*bootcv1alpha1.BootcNode, error) {
-	var bnList bootcv1alpha1.BootcNodeList
-	if err := r.List(ctx, &bnList); err != nil {
-		return nil, fmt.Errorf("listing BootcNodes: %w", err)
-	}
-
-	all := make(map[string]*bootcv1alpha1.BootcNode, len(bnList.Items))
-	for i := range bnList.Items {
-		all[bnList.Items[i].Name] = &bnList.Items[i]
-	}
-	return all, nil
-}
-
-// ensureManagedLabel adds or removes the bootc.dev/managed label on a Node.
-func (r *BootcNodePoolReconciler) ensureManagedLabel(ctx context.Context, node *corev1.Node, managed bool) error {
-	_, hasLabel := node.Labels[bootcv1alpha1.LabelManaged]
-	if managed && hasLabel {
-		return nil
-	}
-	if !managed && !hasLabel {
-		return nil
-	}
-
-	modified := node.DeepCopy()
-	if managed {
-		if modified.Labels == nil {
-			modified.Labels = map[string]string{}
-		}
-		modified.Labels[bootcv1alpha1.LabelManaged] = ""
-	} else {
-		delete(modified.Labels, bootcv1alpha1.LabelManaged)
-	}
-	if err := r.Patch(ctx, modified, client.StrategicMergeFrom(node)); err != nil {
-		return err
-	}
-	*node = *modified
 	return nil
 }
 
@@ -536,63 +581,18 @@ func (r *BootcNodePoolReconciler) restoreCordonState(ctx context.Context, node *
 	return nil
 }
 
-// nodeSelectorMatchesNode evaluates whether a node's labels match a
-// LabelSelector.
-func nodeSelectorMatchesNode(sel *metav1.LabelSelector, node *corev1.Node) (bool, error) {
-	selector, err := metav1.LabelSelectorAsSelector(sel)
-	if err != nil {
-		return false, err
+// syncConflictCondition sets or clears the Degraded condition with
+// reason NodeConflict on the pool. It only mutates the in-memory
+// object; the caller is responsible for writing status.
+func syncConflictCondition(pool *bootcv1alpha1.BootcNodePool, conflictingPools []string) {
+	if len(conflictingPools) > 0 {
+		apimeta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
+			Type:   bootcv1alpha1.PoolDegraded,
+			Status: metav1.ConditionTrue,
+			Reason: bootcv1alpha1.PoolNodeConflict,
+			// Sort so the message is stable across reconciles.
+			Message: fmt.Sprintf("Node selector overlaps with pool(s): %s",
+				strings.Join(slices.Sorted(slices.Values(conflictingPools)), ", ")),
+		})
 	}
-	return selector.Matches(labels.Set(node.Labels)), nil
-}
-
-func nodeLabelsChanged(oldNode, newNode *corev1.Node) bool {
-	return !reflect.DeepEqual(oldNode.Labels, newNode.Labels)
-}
-
-func nodeReadyConditionChanged(oldNode, newNode *corev1.Node) bool {
-	return nodeReadyStatus(oldNode) != nodeReadyStatus(newNode)
-}
-
-func nodeReadyStatus(node *corev1.Node) corev1.ConditionStatus {
-	for _, c := range node.Status.Conditions {
-		if c.Type == corev1.NodeReady {
-			return c.Status
-		}
-	}
-	return corev1.ConditionUnknown
-}
-
-func nodeUnschedulableChanged(oldNode, newNode *corev1.Node) bool {
-	return oldNode.Spec.Unschedulable != newNode.Spec.Unschedulable
-}
-
-// invalidSpecError indicates a user-provided spec value that the
-// controller cannot process. Reconcile surfaces these as
-// Degraded/InvalidSpec conditions rather than requeueing with backoff.
-type invalidSpecError struct {
-	msg string
-}
-
-func (e *invalidSpecError) Error() string { return e.msg }
-
-func isInvalidSpecError(err error) bool {
-	var e *invalidSpecError
-	return errors.As(err, &e)
-}
-
-// desiredImageFromPool constructs the desiredImage pullspec from the
-// pool's image name and resolved targetDigest (e.g.
-// "quay.io/example/myos@sha256:abc123").
-func desiredImageFromPool(pool *bootcv1alpha1.BootcNodePool) string {
-	ref, _ := parseImageRef(pool.Spec.Image.Ref)
-	return reference.TrimNamed(ref).String() + "@" + pool.Status.TargetDigest
-}
-
-// parseImageRef parses an image reference string into a named
-// reference, validating the format per OCI conventions. It requires
-// fully qualified names (e.g. "quay.io/example/myos:latest"); short
-// names like "myos:latest" are rejected.
-func parseImageRef(ref string) (reference.Named, error) {
-	return reference.ParseNamed(ref)
 }
