@@ -242,6 +242,11 @@ func (r *BootcNodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		Reason: bootcv1alpha1.PoolOK,
 	})
 
+	// From this point on, let's not re-Get() the pool again and just reuse
+	// `pool` so that we have a consistent view for this reconciliation run.
+	// Status writes to `pool` are also permitted; we Update() back once at
+	// the end.
+
 	// Resolve the target digest from the image ref.
 	if err := r.resolveTargetDigest(&pool); err != nil {
 		if isInvalidSpecError(err) {
@@ -250,13 +255,18 @@ func (r *BootcNodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, fmt.Errorf("resolving target digest: %w", err)
 	}
 
-	// Sync pool membership.
-	if err := r.syncMembership(ctx, &pool); err != nil {
+	// Sync pool membership and retrieve BootcNodes we own.
+	ownedBootcNodes, err := r.syncMembership(ctx, &pool)
+	if err != nil {
 		if isInvalidSpecError(err) {
 			return r.setInvalidSpecCondition(ctx, &pool, err)
 		}
 		return ctrl.Result{}, fmt.Errorf("syncing membership: %w", err)
 	}
+
+	// From this point on, let's not re-Get/List() BootcNodes anymore and
+	// just use `ownedBootcNodes` so that we have a consistent view for this
+	// reconciliation run.
 
 	// Write pool status once if anything changed.
 	if !reflect.DeepEqual(pool.Status, *statusOrig) {
@@ -323,14 +333,15 @@ func (r *BootcNodePoolReconciler) setInvalidSpecCondition(ctx context.Context, p
 }
 
 // syncMembership reconciles the set of BootcNodes owned by this pool
-// against the set of Nodes matching the pool's nodeSelector.
-func (r *BootcNodePoolReconciler) syncMembership(ctx context.Context, pool *bootcv1alpha1.BootcNodePool) error {
+// against the set of Nodes matching the pool's nodeSelector. It returns
+// the owned BootcNodes after mutations (creates and deletes) are applied.
+func (r *BootcNodePoolReconciler) syncMembership(ctx context.Context, pool *bootcv1alpha1.BootcNodePool) (map[string]*bootcv1alpha1.BootcNode, error) {
 	log := logf.FromContext(ctx).WithValues("pool", pool.Name)
 
 	// List all nodes matching the pool's selector.
 	matchingNodes, err := r.listMatchingNodes(ctx, pool)
 	if err != nil {
-		return fmt.Errorf("listing matching nodes: %w", err)
+		return nil, fmt.Errorf("listing matching nodes: %w", err)
 	}
 	matchingSet := map[string]*corev1.Node{}
 	for i := range matchingNodes {
@@ -340,7 +351,7 @@ func (r *BootcNodePoolReconciler) syncMembership(ctx context.Context, pool *boot
 	// List all BootcNodes and partition into owned by this pool vs others.
 	allBootcNodes, err := r.listAllBootcNodes(ctx)
 	if err != nil {
-		return fmt.Errorf("listing BootcNodes: %w", err)
+		return nil, fmt.Errorf("listing BootcNodes: %w", err)
 	}
 	ownedSet := map[string]*bootcv1alpha1.BootcNode{}
 	for name, bn := range allBootcNodes {
@@ -361,14 +372,14 @@ func (r *BootcNodePoolReconciler) syncMembership(ctx context.Context, pool *boot
 		if bn, exists := ownedSet[nodeName]; exists {
 			// Sync spec fields if needed.
 			if err := r.syncBootcNodeSpec(ctx, pool, bn); err != nil {
-				return fmt.Errorf("syncing BootcNode spec for %s: %w", nodeName, err)
+				return nil, fmt.Errorf("syncing BootcNode spec for %s: %w", nodeName, err)
 			}
 		} else {
 			// New match: create BootcNode and label the node.
 			log.Info("Creating BootcNode for new match", "node", nodeName)
 			if err := r.createBootcNode(ctx, pool, node); err != nil {
 				if !apierrors.IsAlreadyExists(err) {
-					return fmt.Errorf("creating BootcNode for %s: %w", nodeName, err)
+					return nil, fmt.Errorf("creating BootcNode for %s: %w", nodeName, err)
 				}
 				// BootcNode exists but isn't ours — find the owning pool.
 				if existing, ok := allBootcNodes[nodeName]; ok {
@@ -385,8 +396,9 @@ func (r *BootcNodePoolReconciler) syncMembership(ctx context.Context, pool *boot
 		if _, stillMatches := matchingSet[nodeName]; !stillMatches {
 			log.Info("Removing BootcNode for departed node", "node", nodeName)
 			if err := r.removeBootcNode(ctx, bn); err != nil {
-				return fmt.Errorf("removing BootcNode for %s: %w", nodeName, err)
+				return nil, fmt.Errorf("removing BootcNode for %s: %w", nodeName, err)
 			}
+			delete(ownedSet, nodeName)
 		}
 	}
 
@@ -397,7 +409,7 @@ func (r *BootcNodePoolReconciler) syncMembership(ctx context.Context, pool *boot
 	}
 	syncConflictCondition(pool, conflictingPools)
 
-	return nil
+	return ownedSet, nil
 }
 
 // listMatchingNodes returns all Nodes whose labels match the pool's
