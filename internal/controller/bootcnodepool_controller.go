@@ -72,12 +72,22 @@ func (r *BootcNodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, fmt.Errorf("fetching pool: %w", err)
 	}
 
+	// Snapshot status so we can detect changes and write once at the end.
+	statusOrig := pool.Status.DeepCopy()
+
 	// Sync pool membership.
 	if err := r.syncMembership(ctx, &pool); err != nil {
 		if isInvalidSpecError(err) {
 			return r.setInvalidSpecCondition(ctx, &pool, err)
 		}
 		return ctrl.Result{}, fmt.Errorf("syncing membership: %w", err)
+	}
+
+	// Write pool status once if anything changed.
+	if !reflect.DeepEqual(pool.Status, *statusOrig) {
+		if err := r.Status().Update(ctx, &pool); err != nil {
+			return ctrl.Result{}, fmt.Errorf("updating pool status: %w", err)
+		}
 	}
 
 	return ctrl.Result{}, nil
@@ -171,9 +181,7 @@ func (r *BootcNodePoolReconciler) syncMembership(ctx context.Context, pool *boot
 	for name := range conflicting {
 		conflictingPools = append(conflictingPools, name)
 	}
-	if err := r.setConflictCondition(ctx, pool, conflictingPools); err != nil {
-		return fmt.Errorf("setting conflict condition: %w", err)
-	}
+	syncConflictCondition(pool, conflictingPools)
 
 	return nil
 }
@@ -241,9 +249,10 @@ func (r *BootcNodePoolReconciler) removeBootcNode(ctx context.Context, bn *bootc
 	return nil
 }
 
-// setConflictCondition sets or clears the Degraded condition with reason
-// NodeConflict on the pool.
-func (r *BootcNodePoolReconciler) setConflictCondition(ctx context.Context, pool *bootcv1alpha1.BootcNodePool, conflictingPools []string) error {
+// syncConflictCondition sets or clears the Degraded condition with
+// reason NodeConflict on the pool. It only mutates the in-memory
+// object; the caller is responsible for writing status.
+func syncConflictCondition(pool *bootcv1alpha1.BootcNodePool, conflictingPools []string) {
 	var desired metav1.Condition
 	if len(conflictingPools) > 0 {
 		desired = metav1.Condition{
@@ -265,18 +274,7 @@ func (r *BootcNodePoolReconciler) setConflictCondition(ctx context.Context, pool
 			Reason: bootcv1alpha1.PoolOK,
 		}
 	}
-
-	existing := apimeta.FindStatusCondition(pool.Status.Conditions, bootcv1alpha1.PoolDegraded)
-	if existing != nil && existing.Status == desired.Status && existing.Reason == desired.Reason && existing.Message == desired.Message {
-		// conflict condition status already matches desired
-		return nil
-	}
-
 	apimeta.SetStatusCondition(&pool.Status.Conditions, desired)
-	if err := r.Status().Update(ctx, pool); err != nil {
-		return fmt.Errorf("updating pool status: %w", err)
-	}
-	return nil
 }
 
 // syncBootcNodeSpec updates a BootcNode's spec fields to match the pool.
