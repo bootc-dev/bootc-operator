@@ -59,7 +59,8 @@ const (
 	PoolDaemonStuck string = "DaemonStuck"
 
 	// PoolInvalidSpec means the pool's spec contains invalid values that
-	// the controller cannot process (e.g. a malformed nodeSelector).
+	// the controller cannot process (e.g. an image ref that is not a
+	// digest ref, or a malformed nodeSelector).
 	PoolInvalidSpec string = "InvalidSpec"
 
 	// PoolOK means no issues.

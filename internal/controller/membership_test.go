@@ -39,6 +39,52 @@ const (
 	pollTimeout  = 10 * time.Second
 )
 
+// TestInvalidImageRefDegradedCondition verifies that a pool with an
+// invalid image ref is marked Degraded/InvalidSpec and recovers when
+// the ref is corrected.
+func TestInvalidImageRefDegradedCondition(t *testing.T) {
+	g := NewWithT(t)
+	g.SetDefaultEventuallyTimeout(pollTimeout)
+	g.SetDefaultEventuallyPollingInterval(pollInterval)
+	ctx := context.Background()
+
+	// Create a pool with an invalid image ref (short name, rejected by
+	// parseImageRef which requires fully qualified names).
+	pool := testutil.NewPool("invalid-ref-pool", "myos@sha256:bad", testutil.WithWorkerSelector())
+	g.Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, pool)
+	})
+
+	// Wait for pool to be marked Degraded/InvalidSpec.
+	g.Eventually(func() ([]metav1.Condition, error) {
+		var p bootcv1alpha1.BootcNodePool
+		err := k8sClient.Get(ctx, client.ObjectKeyFromObject(pool), &p)
+		return p.Status.Conditions, err
+	}).Should(ContainElement(And(
+		HaveField("Type", bootcv1alpha1.PoolDegraded),
+		HaveField("Status", metav1.ConditionTrue),
+		HaveField("Reason", bootcv1alpha1.PoolInvalidSpec),
+	)))
+
+	// Fix the image ref to a valid digest ref.
+	var freshPool bootcv1alpha1.BootcNodePool
+	g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: pool.Name}, &freshPool)).To(Succeed())
+	freshPool.Spec.Image.Ref = testImageDigestRefA
+	g.Expect(k8sClient.Update(ctx, &freshPool)).To(Succeed())
+
+	// Wait for pool to recover: Degraded=False/Healthy.
+	g.Eventually(func() ([]metav1.Condition, error) {
+		var p bootcv1alpha1.BootcNodePool
+		err := k8sClient.Get(ctx, client.ObjectKeyFromObject(pool), &p)
+		return p.Status.Conditions, err
+	}).Should(ContainElement(And(
+		HaveField("Type", bootcv1alpha1.PoolDegraded),
+		HaveField("Status", metav1.ConditionFalse),
+		HaveField("Reason", bootcv1alpha1.PoolOK),
+	)))
+}
+
 // TestMembershipCreatesBootcNodes verifies that creating a pool and
 // matching nodes causes BootcNodes to be created with the correct
 // ownerReference, desiredImage, and that nodes are labeled

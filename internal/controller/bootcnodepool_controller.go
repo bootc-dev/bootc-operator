@@ -18,12 +18,14 @@ package controller
 
 import (
 	"context"
+	_ "crypto/sha256" // register SHA-256 for digest validation
 	"errors"
 	"fmt"
 	"reflect"
 	"slices"
 	"strings"
 
+	"github.com/distribution/reference"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -83,6 +85,14 @@ func (r *BootcNodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		Reason: bootcv1alpha1.PoolOK,
 	})
 
+	// Resolve the target digest from the image ref.
+	if err := r.resolveTargetDigest(&pool); err != nil {
+		if isInvalidSpecError(err) {
+			return r.setInvalidSpecCondition(ctx, &pool, err)
+		}
+		return ctrl.Result{}, fmt.Errorf("resolving target digest: %w", err)
+	}
+
 	// Sync pool membership.
 	if err := r.syncMembership(ctx, &pool); err != nil {
 		if isInvalidSpecError(err) {
@@ -114,6 +124,23 @@ func (r *BootcNodePoolReconciler) setInvalidSpecCondition(ctx context.Context, p
 		return ctrl.Result{}, fmt.Errorf("updating pool status: %w", err)
 	}
 	return ctrl.Result{}, nil
+}
+
+// resolveTargetDigest parses the digest from the pool's image ref and
+// sets pool.Status.TargetDigest. For digest refs (the only kind
+// supported now), the digest is extracted directly. Tag resolution is
+// deferred to Milestone 5.
+func (r *BootcNodePoolReconciler) resolveTargetDigest(pool *bootcv1alpha1.BootcNodePool) error {
+	ref, err := parseImageRef(pool.Spec.Image.Ref)
+	if err != nil {
+		return &invalidSpecError{fmt.Sprintf("invalid image ref %q: %v", pool.Spec.Image.Ref, err)}
+	}
+	digested, ok := ref.(reference.Digested)
+	if !ok {
+		return &invalidSpecError{fmt.Sprintf("image ref %q has no digest (tag resolution not yet supported)", pool.Spec.Image.Ref)}
+	}
+	pool.Status.TargetDigest = digested.Digest().String()
+	return nil
 }
 
 // syncMembership reconciles the set of BootcNodes owned by this pool
@@ -202,7 +229,7 @@ func (r *BootcNodePoolReconciler) createBootcNode(ctx context.Context, pool *boo
 			Name: node.Name,
 		},
 		Spec: bootcv1alpha1.BootcNodeSpec{
-			DesiredImage:      pool.Spec.Image.Ref,
+			DesiredImage:      desiredImageFromPool(pool),
 			DesiredImageState: bootcv1alpha1.DesiredImageStateStaged,
 		},
 	}
@@ -276,7 +303,7 @@ func syncConflictCondition(pool *bootcv1alpha1.BootcNodePool, conflictingPools [
 // syncBootcNodeSpec updates a BootcNode's spec fields to match the pool.
 func (r *BootcNodePoolReconciler) syncBootcNodeSpec(ctx context.Context, pool *bootcv1alpha1.BootcNodePool, bn *bootcv1alpha1.BootcNode) error {
 	modified := bn.DeepCopy()
-	desiredImage := pool.Spec.Image.Ref
+	desiredImage := desiredImageFromPool(pool)
 	needPatch := false
 
 	if modified.Spec.DesiredImage != desiredImage {
@@ -522,4 +549,20 @@ func (e *invalidSpecError) Error() string { return e.msg }
 func isInvalidSpecError(err error) bool {
 	var e *invalidSpecError
 	return errors.As(err, &e)
+}
+
+// desiredImageFromPool constructs the desiredImage pullspec from the
+// pool's image name and resolved targetDigest (e.g.
+// "quay.io/example/myos@sha256:abc123").
+func desiredImageFromPool(pool *bootcv1alpha1.BootcNodePool) string {
+	ref, _ := parseImageRef(pool.Spec.Image.Ref)
+	return reference.TrimNamed(ref).String() + "@" + pool.Status.TargetDigest
+}
+
+// parseImageRef parses an image reference string into a named
+// reference, validating the format per OCI conventions. It requires
+// fully qualified names (e.g. "quay.io/example/myos:latest"); short
+// names like "myos:latest" are rejected.
+func parseImageRef(ref string) (reference.Named, error) {
+	return reference.ParseNamed(ref)
 }
