@@ -59,8 +59,8 @@ const (
 	// digest ref, or a malformed nodeSelector).
 	PoolInvalidSpec string = "InvalidSpec"
 
-	// PoolOK means no issues.
-	PoolOK string = "OK"
+	// PoolHealthy means no issues.
+	PoolHealthy string = "Healthy"
 )
 
 // RebootPolicy defines how a node should be rebooted during updates.

@@ -138,7 +138,7 @@ Pool conditions and their reasons:
 | Degraded  | True   | NodeConflict      | Node selector overlaps with another pool          |
 | Degraded  | True   | NodeDegraded      | At least one node has errors or isn't converging  |
 | Degraded  | True   | InvalidSpec       | Pool spec contains invalid values                 |
-| Degraded  | False  | OK                | No issues                                         |
+| Degraded  | False  | Healthy           | No issues                                         |
 
 The `UpToDate` condition is determined by the controller by comparing
 `spec.desiredImage` vs `status.booted.imageDigest` across all nodes in the pool.
@@ -218,7 +218,7 @@ is having trouble staging the update.
 | Status | Reason | Meaning                                           |
 |--------|--------|---------------------------------------------------|
 | True   | Error  | Daemon encountered an error (message has details) |
-| False  | OK     | No errors                                         |
+| False  | Healthy    | No errors                                      |
 
 ## Daemon Logic
 

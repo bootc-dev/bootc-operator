@@ -239,7 +239,7 @@ func (r *BootcNodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	apimeta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
 		Type:   bootcv1alpha1.PoolDegraded,
 		Status: metav1.ConditionFalse,
-		Reason: bootcv1alpha1.PoolOK,
+		Reason: bootcv1alpha1.PoolHealthy,
 	})
 
 	// From this point on, let's not re-Get() the pool again and just reuse

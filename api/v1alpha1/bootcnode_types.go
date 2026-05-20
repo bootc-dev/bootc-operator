@@ -55,8 +55,8 @@ const (
 	// condition message provides details about the specific error.
 	NodeReasonError string = "Error"
 
-	// NodeReasonOK means no errors.
-	NodeReasonOK string = "OK"
+	// NodeReasonHealthy means no errors.
+	NodeReasonHealthy string = "Healthy"
 )
 
 // DesiredImageState describes the target state the daemon should drive

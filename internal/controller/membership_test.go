@@ -81,7 +81,7 @@ func TestInvalidImageRefDegradedCondition(t *testing.T) {
 	}).Should(ContainElement(And(
 		HaveField("Type", bootcv1alpha1.PoolDegraded),
 		HaveField("Status", metav1.ConditionFalse),
-		HaveField("Reason", bootcv1alpha1.PoolOK),
+		HaveField("Reason", bootcv1alpha1.PoolHealthy),
 	)))
 }
 
@@ -314,7 +314,7 @@ func TestMembershipConflictDetection(t *testing.T) {
 	}).Should(ContainElement(And(
 		HaveField("Type", bootcv1alpha1.PoolDegraded),
 		HaveField("Status", metav1.ConditionFalse),
-		HaveField("Reason", bootcv1alpha1.PoolOK),
+		HaveField("Reason", bootcv1alpha1.PoolHealthy),
 	)))
 
 	// Verify node3 is now owned by pool2.

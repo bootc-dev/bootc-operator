@@ -99,7 +99,7 @@ func TestClassifyNode(t *testing.T) {
 			bootedDigest: otherDigest,
 			conditions: []metav1.Condition{
 				idleCond(metav1.ConditionFalse, bootcv1alpha1.NodeReasonStaging),
-				degradedCond(metav1.ConditionFalse, bootcv1alpha1.NodeReasonOK),
+				degradedCond(metav1.ConditionFalse, bootcv1alpha1.NodeReasonHealthy),
 			},
 			want: nodeStateStaging,
 		},
