@@ -115,6 +115,13 @@ func TestMembershipCreatesBootcNodes(t *testing.T) {
 		g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "mem-worker-1"}, &n)).To(Succeed())
 		g.Expect(n.Labels).NotTo(HaveKey(bootcv1alpha1.LabelManaged))
 	}).Should(Succeed())
+
+	// Delete mem-worker-2 and verify its BootcNode is also deleted.
+	g.Expect(k8sClient.Delete(ctx, node2)).To(Succeed())
+
+	g.Eventually(func() error {
+		return k8sClient.Get(ctx, client.ObjectKey{Name: "mem-worker-2"}, &bootcv1alpha1.BootcNode{})
+	}).Should(MatchError(apierrors.IsNotFound, "IsNotFound"))
 }
 
 // TestMembershipSyncsDesiredImage verifies that changing the pool's
