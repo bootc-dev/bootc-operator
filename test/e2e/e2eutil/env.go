@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package e2eutil provides helpers for running end-to-end tests against
-// bink-managed Kubernetes clusters. Each test gets its own cluster for
-// full isolation.
+// a bink-managed Kubernetes cluster. The cluster and operator are
+// expected to be already running (via `make deploy-bink`). Each test
+// provisions its own worker nodes for isolation.
 package e2eutil
 
 import (
@@ -12,345 +13,209 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"sync"
+	"strings"
 	"testing"
 	"time"
 
 	. "github.com/onsi/gomega" //nolint:staticcheck
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	bootcv1alpha1 "github.com/jlebon/bootc-operator/api/v1alpha1"
+	testutil "github.com/jlebon/bootc-operator/test/util"
 )
 
-// config holds resolved settings for the test cluster.
-type config struct {
-	memory int
-}
-
-// Option configures how the test cluster is created.
-type Option func(*config)
-
-// binkPath is resolved once on first use via resolveBinkPath.
-var (
-	binkPath     string
-	binkPathOnce sync.Once
+const (
+	// LabelE2ETest is applied to test-scoped resources (nodes, pools).
+	// Its value is the sanitized test name, used for both node
+	// selection and label-based cleanup.
+	LabelE2ETest = "bootc.dev/e2e-test"
 )
 
-// Env holds a live cluster context for a single e2e test.
+// Env holds a cluster context for a single e2e test. Each test creates
+// its own Env via New(t), so test-scoped state (like the test ID used
+// for node labeling and pool selectors) lives here.
 type Env struct {
 	// Client is a controller-runtime client with the bootc CRD scheme
-	// registered. Ready to create/get/list CRD objects.
+	// registered.
 	Client client.Client
 
-	// Kubeconfig is the path to the kubeconfig file for this cluster.
-	Kubeconfig string
+	// clusterName is the bink cluster name.
+	clusterName string
 
-	// Cluster is the bink cluster name.
-	Cluster string
+	// testID is the sanitized test name, used as the value for
+	// LabelE2ETest on nodes and in pool selectors.
+	testID string
+
+	// nodes tracks node names added via AddNode for cleanup.
+	nodes []string
 }
 
-// New creates a bink cluster, deploys the operator manifests, and
-// returns an Env ready for testing. The cluster is torn down
-// automatically when the test ends (including on failure).
-func New(t *testing.T, opts ...Option) *Env {
+// New connects to an existing bink cluster and returns an Env ready
+// for testing. The cluster must be running with the operator deployed
+// (via `make deploy-bink`).
+func New(t *testing.T) *Env {
 	t.Helper()
 
-	cfg := config{}
-	for _, o := range opts {
-		o(&cfg)
+	kubeconfigPath := os.Getenv("KUBECONFIG")
+	if kubeconfigPath == "" {
+		t.Fatal("KUBECONFIG must be set")
 	}
 
-	resolveBinkPath(t)
-	clusterName := generateClusterName(t)
-
-	// Find the project root (where config/default/ lives).
-	projectRoot, err := findProjectRoot()
-	if err != nil {
-		t.Fatalf("finding project root: %v", err)
+	clusterName := os.Getenv("BINK_CLUSTER_NAME")
+	if clusterName == "" {
+		t.Fatal("BINK_CLUSTER_NAME must be set")
 	}
-
-	startCluster(t, clusterName, cfg.memory)
-
-	// Register cleanup early so the cluster is torn down even if
-	// subsequent steps fail.
-	t.Cleanup(func() {
-		stopCluster(t, clusterName)
-	})
-
-	kubeconfigPath := exposeAPI(t, clusterName)
 
 	k8sClient := buildClient(t, kubeconfigPath)
-	waitForNodeReady(t, k8sClient, "node1")
 
-	pushControllerImage(t)
-	applyManifests(t, kubeconfigPath, projectRoot)
-	waitForControllerReady(t, k8sClient)
-
-	return &Env{
-		Client:     k8sClient,
-		Kubeconfig: kubeconfigPath,
-		Cluster:    clusterName,
+	env := &Env{
+		Client:      k8sClient,
+		clusterName: clusterName,
+		testID:      sanitizeTestName(t.Name()),
 	}
+
+	t.Cleanup(func() {
+		env.cleanup(t)
+	})
+
+	return env
 }
 
-// WithMemory sets the VM memory in MB. If not set, bink's default is used.
-func WithMemory(mb int) Option {
-	return func(c *config) {
+// NodeOption configures a node provisioned by AddNode.
+type NodeOption func(*nodeConfig)
+
+type nodeConfig struct {
+	memory int
+	labels map[string]string
+}
+
+// WithMemory sets the VM memory in MB for the node.
+func WithMemory(mb int) NodeOption {
+	return func(c *nodeConfig) {
 		c.memory = mb
 	}
 }
 
-// resolveBinkPath locates the bink binary on first call (via BINK_PATH
-// env var or PATH lookup) and caches the result.
-func resolveBinkPath(t *testing.T) {
-	t.Helper()
-
-	var resolveErr error
-	binkPathOnce.Do(func() {
-		if p := os.Getenv("BINK_PATH"); p != "" {
-			if _, err := os.Stat(p); err != nil {
-				resolveErr = fmt.Errorf("BINK_PATH=%q not found: %w", p, err)
-				return
-			}
-			binkPath = p
-			return
+// WithLabel adds a label to the provisioned node. This is in addition
+// to the LabelE2ETest label which is always applied.
+func WithLabel(key, value string) NodeOption {
+	return func(c *nodeConfig) {
+		if c.labels == nil {
+			c.labels = make(map[string]string)
 		}
-		if p, err := exec.LookPath("bink"); err != nil {
-			resolveErr = fmt.Errorf("PATH lookup failed: %w", err)
-		} else {
-			binkPath = p
-		}
-	})
-
-	if binkPath == "" {
-		// Since this is only set when Once is triggered, we implicitly only
-		// log the actual failure once here. Other calls would get the generic
-		// error. I don't think that's a problem.
-		if resolveErr != nil {
-			t.Log(resolveErr)
-		}
-		t.Fatal("bink binary not found (set BINK_PATH or add to PATH)")
+		c.labels[key] = value
 	}
 }
 
-// generateClusterName creates a unique cluster name for test isolation.
-func generateClusterName(t *testing.T) string {
+// AddNode provisions a worker node via bink, waits for it to be Ready,
+// labels it with LabelE2ETest, and registers cleanup to remove it.
+// Returns the node name.
+func (e *Env) AddNode(t *testing.T, opts ...NodeOption) string {
 	t.Helper()
 
-	b := make([]byte, 4)
-	if _, err := rand.Read(b); err != nil {
-		t.Fatalf("generating random cluster name: %v", err)
+	cfg := &nodeConfig{}
+	for _, o := range opts {
+		o(cfg)
 	}
-	return "e2e-" + hex.EncodeToString(b)
-}
 
-// findProjectRoot walks up from the working directory looking for go.mod.
-func findProjectRoot() (string, error) {
-	dir, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir, nil
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "", fmt.Errorf("could not find go.mod in any parent directory")
-		}
-		dir = parent
-	}
-}
+	nodeName := e.generateNodeName(t)
 
-// startCluster runs `bink cluster start`.
-func startCluster(t *testing.T, clusterName string, memory int) {
-	t.Helper()
-
-	args := []string{"cluster", "start",
-		"--cluster-name", clusterName,
-		"--api-port", "0",
-	}
-	if memory > 0 {
-		args = append(args, "--memory", fmt.Sprintf("%d", memory))
+	// Provision the node.
+	args := []string{"node", "add", nodeName, "--cluster-name", e.clusterName, "--control-plane", "controller"}
+	if cfg.memory > 0 {
+		args = append(args, "--memory", fmt.Sprintf("%d", cfg.memory))
 	}
 	if img := os.Getenv("BINK_NODE_IMAGE"); img != "" {
 		args = append(args, "--node-image", img)
 	}
-
-	t.Logf("Starting bink cluster %q...", clusterName)
+	t.Logf("Adding node %q...", nodeName)
 	if err := runBink(t, args...); err != nil {
-		t.Fatalf("starting cluster: %v", err)
+		t.Fatalf("adding node %q: %v", nodeName, err)
 	}
+
+	e.nodes = append(e.nodes, nodeName)
+
+	// Wait for Ready.
+	waitForNodeReady(t, e.Client, nodeName)
+
+	// Label with test ID (replace with --label` once available:
+	// https://github.com/alicefr/bink/issues/23).
+	var node corev1.Node
+	if err := e.Client.Get(context.Background(), client.ObjectKey{Name: nodeName}, &node); err != nil {
+		t.Fatalf("getting node %q for labeling: %v", nodeName, err)
+	}
+	patch := client.StrategicMergeFrom(node.DeepCopy())
+	if node.Labels == nil {
+		node.Labels = map[string]string{}
+	}
+	node.Labels[LabelE2ETest] = e.testID
+	for k, v := range cfg.labels {
+		node.Labels[k] = v
+	}
+	if err := e.Client.Patch(context.Background(), &node, patch); err != nil {
+		t.Fatalf("labeling node %q: %v", nodeName, err)
+	}
+
+	return nodeName
 }
 
-// stopCluster runs `bink cluster stop --remove-data`.
-func stopCluster(t *testing.T, clusterName string) {
-	t.Logf("Tearing down bink cluster %q...", clusterName)
-	if err := runBink(t, "cluster", "stop", "--remove-data", "--cluster-name", clusterName); err != nil {
-		// Log but don't fail — we're in cleanup.
-		t.Logf("WARNING: failed to stop cluster %q: %v", clusterName, err)
+// NewPool creates a BootcNodePool with a test-scoped name and labels.
+// The pool is labeled with LabelE2ETest for cleanup. If no
+// WithNodeSelector option is provided, it defaults to selecting nodes
+// with LabelE2ETest (i.e. all nodes belonging to this test).
+func (e *Env) NewPool(suffix, imageRef string, opts ...testutil.PoolOption) *bootcv1alpha1.BootcNodePool {
+	defaults := []testutil.PoolOption{
+		testutil.WithLabel(LabelE2ETest, e.testID),
+		testutil.WithNodeSelector(e.TestLabels()),
 	}
+	allOpts := append(defaults, opts...)
+	return testutil.NewPool(e.testID+"-"+suffix, imageRef, allOpts...)
 }
 
-// exposeAPI runs `bink api expose` and returns the kubeconfig path.
-func exposeAPI(t *testing.T, clusterName string) string {
-	t.Helper()
-	t.Logf("Exposing API for cluster %q...", clusterName)
-
-	kubeconfigPath := filepath.Join(t.TempDir(), "kubeconfig")
-	if err := runBink(t, "api", "expose",
-		"--cluster-name", clusterName,
-		"--kubeconfig", kubeconfigPath,
-	); err != nil {
-		t.Fatalf("exposing API: %v", err)
-	}
-	return kubeconfigPath
+// TestLabels returns the label map identifying resources belonging to
+// this test. Use with testutil.WithNodeSelector() when overriding the
+// default node selector in NewPool.
+func (e *Env) TestLabels() map[string]string {
+	return map[string]string{LabelE2ETest: e.testID}
 }
 
-const (
-	// registryImage is the pullspec used to push to the bink registry
-	// from the host.
-	registryImage = "localhost:5000/bootc-operator:e2e"
-	// inClusterControllerRepo is the in-cluster registry repo for the
-	// controller image (without tag).
-	inClusterControllerRepo = "registry.cluster.local:5000/bootc-operator"
-	// inClusterControllerTag is the tag used for the controller image.
-	inClusterControllerTag = "e2e"
-)
-
-// controllerImagePushed tracks whether the image has already been pushed
-// for this test run. Multiple tests share the same image.
-var (
-	controllerImagePushed     bool
-	controllerImagePushedOnce sync.Once
-)
-
-// pushControllerImage pushes the pre-built controller image (from IMG
-// env var, set by the Makefile) to the bink registry. This is done once
-// per test run.
-func pushControllerImage(t *testing.T) {
-	t.Helper()
-
-	controllerImagePushedOnce.Do(func() {
-		srcImage := os.Getenv("IMG")
-		if srcImage == "" {
-			t.Fatal("IMG env var not set (run via 'make e2e')")
-		}
-
-		t.Logf("Pushing %s to %s...", srcImage, registryImage)
-		cmd := exec.Command("podman", "push", "--tls-verify=false", srcImage, registryImage)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			t.Fatalf("pushing controller image: %v", err)
-		}
-
-		controllerImagePushed = true
-	})
-
-	if !controllerImagePushed {
-		t.Fatal("controller image push failed in another test")
-	}
-}
-
-// applyManifests applies the operator manifests with the image set to
-// the in-cluster registry pullspec. It creates a temporary kustomize
-// overlay that references the project's config/default via a symlink
-// and adds an image override. Both the controller and daemon use the
-// same image; the manifests select the right binary via command.
-func applyManifests(t *testing.T, kubeconfigPath, projectRoot string) {
-	t.Helper()
-	t.Logf("Applying operator manifests with image %s...", inClusterControllerRepo+":"+inClusterControllerTag)
-
-	kubectl, err := exec.LookPath("kubectl")
-	if err != nil {
-		t.Fatal("kubectl not found on PATH")
-	}
-
-	// Build a temp dir with an overlay kustomization that references
-	// the project's config/default via a relative path. The layout is:
-	//   <tmpdir>/config -> <projectRoot>/config  (symlink)
-	//   <tmpdir>/overlay/kustomization.yaml      (overlay)
-	// So the overlay can use "../config/default" as a resource (because
-	// kustomize doesn't allow absolute paths for resources).
-	tmpdir := t.TempDir()
-
-	absConfig, _ := filepath.Abs(filepath.Join(projectRoot, "config"))
-	if err := os.Symlink(absConfig, filepath.Join(tmpdir, "config")); err != nil {
-		t.Fatalf("creating config symlink: %v", err)
-	}
-
-	overlay := filepath.Join(tmpdir, "overlay")
-	if err := os.Mkdir(overlay, 0755); err != nil {
-		t.Fatalf("creating overlay dir: %v", err)
-	}
-
-	kustomization := fmt.Sprintf(`
-resources:
-- ../config/default
-images:
-- name: controller
-  newName: %s
-  newTag: %s
-patches:
-- patch: |
-    apiVersion: apps/v1
-    kind: Deployment
-    metadata:
-      name: bootc-operator-controller-manager
-      namespace: bootc-operator
-    spec:
-      template:
-        spec:
-          tolerations:
-          - key: node-role.kubernetes.io/control-plane
-            operator: Exists
-            effect: NoSchedule
-`, inClusterControllerRepo, inClusterControllerTag)
-	if err := os.WriteFile(filepath.Join(overlay, "kustomization.yaml"), []byte(kustomization), 0644); err != nil {
-		t.Fatalf("writing overlay kustomization: %v", err)
-	}
-
-	cmd := exec.Command(kubectl, "apply",
-		"--kubeconfig", kubeconfigPath,
-		"-k", overlay,
-		"--server-side",
-	)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("kubectl apply failed: %v", err)
-	}
-}
-
-// waitForControllerReady waits for the controller manager Deployment to
-// have at least one ready replica.
-func waitForControllerReady(t *testing.T, c client.Client) {
-	t.Helper()
-	t.Log("Waiting for controller to be ready...")
-
-	g := NewWithT(t)
+// cleanup deletes test-scoped resources and bink nodes.
+func (e *Env) cleanup(t *testing.T) {
 	ctx := context.Background()
-	g.Eventually(func(g Gomega) {
-		var dep appsv1.Deployment
-		key := client.ObjectKey{
-			Namespace: "bootc-operator",
-			Name:      "bootc-operator-controller-manager",
+	t.Logf("Removing pools with label %s=%s...", LabelE2ETest, e.testID)
+	if err := e.Client.DeleteAllOf(ctx, &bootcv1alpha1.BootcNodePool{}, client.MatchingLabels(e.TestLabels())); err != nil {
+		t.Logf("WARNING: pool cleanup: %v", err)
+	}
+	for _, name := range e.nodes {
+		t.Logf("Removing node %q...", name)
+		if err := runBink(t, "node", "remove", name, "--force", "--cluster-name", e.clusterName); err != nil {
+			t.Logf("WARNING: failed to remove node %q: %v", name, err)
 		}
-		err := c.Get(ctx, key, &dep)
-		if apierrors.IsNotFound(err) {
-			t.Logf("  controller deployment not found yet")
-		}
-		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(dep.Status.ReadyReplicas).To(BeNumerically(">", 0))
-		t.Log("  controller is ready")
-	}).WithTimeout(3 * time.Minute).WithPolling(5 * time.Second).Should(Succeed())
+	}
+}
+
+// sanitizeTestName lowercases a test name for use in k8s object names.
+// Panics if the result exceeds 63 characters (k8s label value limit).
+func sanitizeTestName(name string) string {
+	name = strings.ToLower(name)
+	if len(name) > 63 {
+		panic(fmt.Sprintf("test name %q is %d characters (max 63)", name, len(name)))
+	}
+	return name
+}
+
+// generateNodeName creates a unique node name derived from the test name.
+func (e *Env) generateNodeName(t *testing.T) string {
+	t.Helper()
+
+	b := make([]byte, 3)
+	if _, err := rand.Read(b); err != nil {
+		t.Fatalf("generating random suffix: %v", err)
+	}
+	return e.testID + "-" + hex.EncodeToString(b)
 }
 
 // buildClient creates a controller-runtime client from the kubeconfig
@@ -384,11 +249,7 @@ func waitForNodeReady(t *testing.T, c client.Client, nodeName string) {
 	ctx := context.Background()
 	g.Eventually(func(g Gomega) {
 		node := &corev1.Node{}
-		err := c.Get(ctx, client.ObjectKey{Name: nodeName}, node)
-		if apierrors.IsNotFound(err) {
-			t.Logf("  node %q not found yet", nodeName)
-		}
-		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(c.Get(ctx, client.ObjectKey{Name: nodeName}, node)).To(Succeed())
 		g.Expect(node.Status.Conditions).To(ContainElement(And(
 			HaveField("Type", corev1.NodeReady),
 			HaveField("Status", corev1.ConditionTrue),
@@ -401,10 +262,7 @@ func waitForNodeReady(t *testing.T, c client.Client, nodeName string) {
 func runBink(t *testing.T, args ...string) error {
 	t.Helper()
 
-	if binkPath == "" {
-		panic("runBink called before resolveBinkPath")
-	}
-	cmd := exec.Command(binkPath, args...)
+	cmd := exec.Command("bink", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
