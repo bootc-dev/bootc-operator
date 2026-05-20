@@ -80,6 +80,16 @@ func WithDrainTimeoutSeconds(seconds int32) PoolOption {
 	}
 }
 
+// WithLabel sets a metadata label on the pool.
+func WithLabel(key, value string) PoolOption {
+	return func(pool *bootcv1alpha1.BootcNodePool) {
+		if pool.Labels == nil {
+			pool.Labels = make(map[string]string)
+		}
+		pool.Labels[key] = value
+	}
+}
+
 // WithNodeSelector sets the nodeSelector on a pool.
 func WithNodeSelector(labels map[string]string) PoolOption {
 	return func(pool *bootcv1alpha1.BootcNodePool) {
