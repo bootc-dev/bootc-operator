@@ -4,7 +4,6 @@ package e2e
 
 import (
 	"context"
-	"maps"
 	"testing"
 	"time"
 
@@ -15,7 +14,6 @@ import (
 
 	bootcv1alpha1 "github.com/jlebon/bootc-operator/api/v1alpha1"
 	"github.com/jlebon/bootc-operator/test/e2e/e2eutil"
-	testutil "github.com/jlebon/bootc-operator/test/util"
 )
 
 const (
@@ -23,51 +21,42 @@ const (
 	pollInterval = 2 * time.Second
 )
 
-// TestControllerMembership deploys the controller in a bink cluster,
-// creates a BootcNodePool selecting the worker node, and verifies that
-// a BootcNode is created and the node is labeled bootc.dev/managed.
+// TestControllerMembership provisions a worker node, creates a
+// BootcNodePool selecting it, and verifies that a BootcNode is created
+// and the node is labeled bootc.dev/managed.
 func TestControllerMembership(t *testing.T) {
 	g := NewWithT(t)
 	g.SetDefaultEventuallyTimeout(pollTimeout)
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
 
 	env := e2eutil.New(t)
+	nodeName := env.AddNode(t)
 
 	ctx := context.Background()
 
-	// The bink cluster has a node called "node1". Label it as a worker so it
-	// matches our pool's default nodeSelector. XXX: lower this down to bink?
-	var node corev1.Node
-	g.Expect(env.Client.Get(ctx, client.ObjectKey{Name: "node1"}, &node)).To(Succeed())
-	patch := client.StrategicMergeFrom(node.DeepCopy())
-	if node.Labels == nil {
-		node.Labels = map[string]string{}
-	}
-	maps.Copy(node.Labels, testutil.WorkerLabels())
-	g.Expect(env.Client.Patch(ctx, &node, patch)).To(Succeed())
-
-	// Create a pool with a digest ref.
+	// Create a pool selecting this test's nodes.
 	imageRef := "quay.io/example/myos@sha256:06f961b802bc46ee168555f066d28f4f0e9afdf3f88174c1ee6f9de004fc30a0"
-	pool := testutil.NewPool("e2e-workers", imageRef, testutil.WithWorkerSelector())
+	pool := env.NewPool("workers", imageRef)
 	g.Expect(env.Client.Create(ctx, pool)).To(Succeed())
 
-	// Wait for BootcNode to appear for node1.
+	// Wait for BootcNode to appear for the worker.
 	var bn bootcv1alpha1.BootcNode
 	g.Eventually(func() error {
-		return env.Client.Get(ctx, client.ObjectKey{Name: "node1"}, &bn)
+		return env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
 	}).Should(Succeed())
 
 	// Verify ownerReference.
 	owner := metav1.GetControllerOf(&bn)
 	g.Expect(owner).NotTo(BeNil())
-	g.Expect(owner.Name).To(Equal("e2e-workers"))
+	g.Expect(owner.Name).To(Equal(pool.Name))
 
 	// Verify desiredImage.
 	g.Expect(bn.Spec.DesiredImage).To(Equal(imageRef))
 
-	// Verify node1 has the managed label.
+	// Verify the worker has the managed label.
+	var node corev1.Node
 	g.Eventually(func() (map[string]string, error) {
-		err := env.Client.Get(ctx, client.ObjectKey{Name: "node1"}, &node)
+		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &node)
 		return node.Labels, err
 	}).Should(HaveKey(bootcv1alpha1.LabelManaged))
 
@@ -83,7 +72,7 @@ func TestControllerMembership(t *testing.T) {
 		)
 		return pods.Items, err
 	}).Should(ConsistOf(And(
-		HaveField("Spec.NodeName", "node1"),
+		HaveField("Spec.NodeName", nodeName),
 		HaveField("Status.Phase", corev1.PodRunning),
-	)), "expected exactly one running daemon pod on node1")
+	)), "expected exactly one running daemon pod on %s", nodeName)
 }
