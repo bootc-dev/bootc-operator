@@ -195,7 +195,7 @@ the full controller+daemon loop can be tested end-to-end.
 
 ## Milestone 4: Daemon
 
-### 4a. DaemonSet manifest + skeleton binary
+### 4a. DaemonSet manifest + skeleton binary ✅
 
 - DaemonSet manifest: `privileged: true`, `hostPID: true`,
   `nodeSelector: bootc.dev/managed: ""`, ServiceAccount + RBAC for
