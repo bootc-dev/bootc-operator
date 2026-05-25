@@ -1,6 +1,10 @@
 # Image URL to use all building/pushing image targets
 IMG ?= bootc-operator:dev
 CONTAINER_TOOL ?= podman
+# Bink cluster settings. deploy-bink and e2e share the same cluster by default.
+# To use a separate dev cluster: make deploy-bink BINK_CLUSTER_NAME=dev
+BINK_CLUSTER_NAME ?= e2e
+KUBECONFIG_BINK ?= ./kubeconfig-$(BINK_CLUSTER_NAME)
 # YEAR defines the year value used for substituting the YEAR placeholder in the boilerplate header.
 YEAR ?= $(shell date +%Y)
 
@@ -41,12 +45,14 @@ unit: manifests generate setup-envtest ## Run unit tests (envtest). V=1 for verb
 	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test $(if $(V),-v) $(if $(RUN),-run $(RUN)) $$(go list ./... | grep -v /test/e2e)
 
 .PHONY: e2e
-e2e: manifests generate buildimg ## Run e2e tests (requires bink). V=1 for verbose. RUN=<regex> to filter.
+e2e: ## Run e2e tests (requires: make deploy-bink). V=1 for verbose. RUN=<regex> to filter.
 # NB: we `cd` here instead of passing a package path to `go test` so that `-v`
 # actually gives us streaming output (otherwise, it spawns a subprocess for
 # each package, even though we just have one here--but I really like streaming
 # output...).
-	cd test/e2e && IMG=$(IMG) go test -timeout 10m -count=1 $(if $(V),-v) $(if $(RUN),-run $(RUN)) .
+	cd test/e2e && KUBECONFIG=$(abspath $(KUBECONFIG_BINK)) BINK_CLUSTER_NAME=$(BINK_CLUSTER_NAME) \
+		$(if $(BINK_NODE_IMAGE),BINK_NODE_IMAGE=$(BINK_NODE_IMAGE)) \
+		go test -timeout 10m -count=1 $(if $(V),-v) $(if $(RUN),-run $(RUN)) .
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter.
@@ -97,6 +103,26 @@ deploy: manifests kustomize yq ## Deploy controller to the K8s cluster specified
 .PHONY: undeploy
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config.
 	"$(KUSTOMIZE)" build config/default | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -
+
+# In-cluster image used by deploy-bink after pushing to the bink registry.
+IMG_BINK ?= registry.cluster.local:5000/bootc-operator:e2e
+
+.PHONY: deploy-bink
+deploy-bink: kustomize ## Deploy to a bink cluster (idempotent).
+	bink registry start
+	podman push --tls-verify=false $(IMG) localhost:5000/bootc-operator:e2e
+	bink cluster list 2>&1 | grep -qw $(BINK_CLUSTER_NAME) || \
+		bink cluster start --cluster-name $(BINK_CLUSTER_NAME) --node-name controller --api-port 0 --expose $(KUBECONFIG_BINK) \
+		$(if $(BINK_NODE_IMAGE),--node-image $(BINK_NODE_IMAGE))
+	kubectl --kubeconfig $(KUBECONFIG_BINK) wait --for=condition=Ready node/controller --timeout=5m
+	$(MAKE) deploy KUBECONFIG=$(abspath $(KUBECONFIG_BINK)) IMG=$(IMG_BINK)
+	kubectl --kubeconfig $(KUBECONFIG_BINK) -n bootc-operator rollout restart deployment/bootc-operator-controller-manager
+	kubectl --kubeconfig $(KUBECONFIG_BINK) -n bootc-operator rollout status deployment/bootc-operator-controller-manager --timeout=3m
+
+.PHONY: teardown-bink
+teardown-bink: ## Tear down the bink cluster.
+	bink cluster stop --remove-data --cluster-name $(BINK_CLUSTER_NAME)
+	rm -f $(KUBECONFIG_BINK)
 
 ##@ Dependencies
 
