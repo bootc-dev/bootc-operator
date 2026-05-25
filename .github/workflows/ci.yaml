@@ -78,6 +78,10 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: bink
+          path: /usr/local/bin
+
+      - name: Make bink executable
+        run: chmod +x /usr/local/bin/bink
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -111,8 +115,4 @@ jobs:
         run: systemctl --user start podman.socket
 
       - name: Run e2e tests
-        run: |
-          chmod +x bink
-          make e2e V=1
-        env:
-          BINK_PATH: ${{ github.workspace }}/bink
+        run: make buildimg deploy-bink e2e V=1
