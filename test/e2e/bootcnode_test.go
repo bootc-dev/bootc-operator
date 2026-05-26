@@ -61,7 +61,6 @@ func TestControllerMembership(t *testing.T) {
 		return node.Labels, err
 	}).Should(HaveKey(bootcv1alpha1.LabelManaged))
 
-	// Verify daemon pod schedules on the managed node and reaches Running.
 	g.Eventually(func() ([]corev1.Pod, error) {
 		var pods corev1.PodList
 		err := env.Client.List(ctx, &pods,
@@ -72,8 +71,20 @@ func TestControllerMembership(t *testing.T) {
 			},
 		)
 		return pods.Items, err
-	}).Should(ConsistOf(And(
+	}).WithTimeout(3*time.Minute).Should(ConsistOf(And(
 		HaveField("Spec.NodeName", nodeName),
 		HaveField("Status.Phase", corev1.PodRunning),
 	)), "expected exactly one running daemon pod on %s", nodeName)
+
+	g.Eventually(func(g Gomega) {
+		g.Expect(env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)).To(Succeed())
+		g.Expect(bn.Status.Booted).NotTo(BeNil(), "expected booted status to be populated")
+		g.Expect(bn.Status.Booted.Image).NotTo(BeEmpty(), "expected booted image to be non-empty")
+		g.Expect(bn.Status.Booted.ImageDigest).NotTo(BeEmpty(), "expected booted imageDigest to be non-empty")
+		g.Expect(bn.Status.Conditions).To(ContainElement(And(
+			HaveField("Type", bootcv1alpha1.NodeIdle),
+			HaveField("Status", metav1.ConditionTrue),
+			HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
+		)))
+	}).WithTimeout(3 * time.Minute).Should(Succeed())
 }
