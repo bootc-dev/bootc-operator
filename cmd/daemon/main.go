@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	bootcv1alpha1 "github.com/jlebon/bootc-operator/api/v1alpha1"
+	"github.com/jlebon/bootc-operator/internal/bootc"
 	"github.com/jlebon/bootc-operator/internal/daemon"
 )
 
@@ -65,6 +66,7 @@ func main() {
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		NodeName: nodeName,
+		Executor: bootc.NewHostExecutor(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "bootcnode")
 		os.Exit(1)
