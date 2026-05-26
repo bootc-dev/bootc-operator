@@ -11,7 +11,7 @@ RUN --mount=type=cache,id=gomod,target=/root/go/pkg/mod \
 COPY . .
 RUN --mount=type=cache,id=gomod,target=/root/go/pkg/mod \
     --mount=type=cache,id=gobuild,target=/root/.cache/go-build \
-    go build -o manager ./cmd/
+    go build -o manager ./cmd/controller/
 
 FROM quay.io/fedora/fedora-minimal:44
 WORKDIR /

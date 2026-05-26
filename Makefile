@@ -63,7 +63,7 @@ build: build-manager ## Build all binaries.
 
 .PHONY: build-manager
 build-manager: ## Build manager binary.
-	go build -o bin/manager ./cmd/
+	go build -o bin/manager ./cmd/controller/
 
 .PHONY: buildimg
 buildimg: ## Build container image.
