@@ -259,13 +259,14 @@ func pushControllerImage(t *testing.T) {
 	}
 }
 
-// applyManifests applies the operator manifests with the controller
-// image set to the in-cluster registry pullspec. It creates a temporary
-// kustomize overlay that references the project's config/default via a
-// symlink and adds an image override.
+// applyManifests applies the operator manifests with the image set to
+// the in-cluster registry pullspec. It creates a temporary kustomize
+// overlay that references the project's config/default via a symlink
+// and adds an image override. Both the controller and daemon use the
+// same image; the manifests select the right binary via command.
 func applyManifests(t *testing.T, kubeconfigPath, projectRoot string) {
 	t.Helper()
-	t.Logf("Applying operator manifests with controller image %s...", inClusterControllerRepo+":"+inClusterControllerTag)
+	t.Logf("Applying operator manifests with image %s...", inClusterControllerRepo+":"+inClusterControllerTag)
 
 	kubectl, err := exec.LookPath("kubectl")
 	if err != nil {
