@@ -33,6 +33,8 @@ spec:
               fieldPath: spec.nodeName
         securityContext:
           privileged: true
+          runAsUser: 0
+          runAsGroup: 0
         resources:
           limits:
             cpu: 500m
