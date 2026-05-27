@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
     branches: [main]
 
@@ -38,6 +39,11 @@ jobs:
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -81,3 +87,18 @@ jobs:
 
       - name: Run e2e tests
         run: make buildimg deploy-bink e2e V=1
+
+      - name: Push to GHCR
+        if: github.event_name == 'push'
+        run: |
+          podman login -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }} ghcr.io
+          podman push bootc-operator:dev ${{ env.IMAGE }}:dev
+          podman push bootc-operator:dev ${{ env.IMAGE }}:${{ github.sha }}
+
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            podman push bootc-operator:dev ${{ env.IMAGE }}:${{ github.ref_name }}
+          fi
+
+          if [[ "${{ github.ref }}" == refs/heads/main ]]; then
+            podman push bootc-operator:dev ${{ env.IMAGE }}:latest
+          fi
