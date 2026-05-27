@@ -24,7 +24,7 @@ spec:
       containers:
       - name: daemon
         command:
-        - /daemon
+        - daemon
         image: controller:latest
         env:
         - name: NODE_NAME

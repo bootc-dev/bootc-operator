@@ -15,7 +15,6 @@ RUN --mount=type=cache,id=gomod,target=/root/go/pkg/mod \
     go build -o daemon ./cmd/daemon/
 
 FROM quay.io/fedora/fedora-minimal:44
-WORKDIR /
-COPY --from=builder /workspace/manager /workspace/daemon .
+COPY --from=builder /workspace/manager /workspace/daemon /usr/local/bin/
 USER 65532:65532
-ENTRYPOINT ["/manager"]
+ENTRYPOINT ["manager"]
