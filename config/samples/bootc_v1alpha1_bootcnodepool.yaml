@@ -1,9 +1,21 @@
+# This sample pool targets all worker nodes. All optional fields are shown
+# commented out with default or example values.
 apiVersion: node.bootc.dev/v1alpha1
 kind: BootcNodePool
 metadata:
-  labels:
-    app.kubernetes.io/name: bootc-operator
-    app.kubernetes.io/managed-by: kustomize
-  name: bootcnodepool-sample
+  name: workers
 spec:
-  # TODO(user): Add fields here
+  nodeSelector:
+    matchLabels:
+      node-role.kubernetes.io/worker: ""
+  image:
+    ref: ghcr.io/alicefr/bink/node:latest
+  # rollout:
+  #   maxUnavailable: 1                    # default
+  #   paused: false                        # default
+  #   drainTimeoutSeconds: 300             # example; default: no timeout
+  # disruption:
+  #   rebootPolicy: AllowSoftReboot        # example; default: RebootOnly
+  # pullSecretRef:                         # example; default: none
+  #   name: my-pull-secret
+  #   namespace: bootc-operator
