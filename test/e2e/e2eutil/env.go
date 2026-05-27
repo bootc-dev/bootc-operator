@@ -111,8 +111,8 @@ func WithLabel(key, value string) NodeOption {
 }
 
 // AddNode provisions a worker node via bink, waits for it to be Ready,
-// labels it with LabelE2ETest, and registers cleanup to remove it.
-// Returns the node name.
+// and returns the node name. The node is labeled with LabelE2ETest
+// (and any extra labels from WithLabel).
 func (e *Env) AddNode(t *testing.T, opts ...NodeOption) string {
 	t.Helper()
 
@@ -123,8 +123,12 @@ func (e *Env) AddNode(t *testing.T, opts ...NodeOption) string {
 
 	nodeName := e.generateNodeName(t)
 
-	// Provision the node.
+	// Provision the node with labels applied at join time.
 	args := []string{"node", "add", nodeName, "--cluster-name", e.clusterName, "--control-plane", "controller"}
+	args = append(args, "--label", LabelE2ETest+"="+e.testID)
+	for k, v := range cfg.labels {
+		args = append(args, "--label", k+"="+v)
+	}
 	if cfg.memory > 0 {
 		args = append(args, "--memory", fmt.Sprintf("%d", cfg.memory))
 	}
@@ -140,24 +144,6 @@ func (e *Env) AddNode(t *testing.T, opts ...NodeOption) string {
 
 	// Wait for Ready.
 	waitForNodeReady(t, e.Client, nodeName)
-
-	// Label with test ID (replace with --label` once available:
-	// https://github.com/alicefr/bink/issues/23).
-	var node corev1.Node
-	if err := e.Client.Get(context.Background(), client.ObjectKey{Name: nodeName}, &node); err != nil {
-		t.Fatalf("getting node %q for labeling: %v", nodeName, err)
-	}
-	patch := client.StrategicMergeFrom(node.DeepCopy())
-	if node.Labels == nil {
-		node.Labels = map[string]string{}
-	}
-	node.Labels[LabelE2ETest] = e.testID
-	for k, v := range cfg.labels {
-		node.Labels[k] = v
-	}
-	if err := e.Client.Patch(context.Background(), &node, patch); err != nil {
-		t.Fatalf("labeling node %q: %v", nodeName, err)
-	}
 
 	return nodeName
 }
