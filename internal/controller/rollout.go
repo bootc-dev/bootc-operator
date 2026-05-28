@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/distribution/reference"
 	"github.com/go-logr/logr"
@@ -15,7 +16,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/kubectl/pkg/drain"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	bootcv1alpha1 "github.com/jlebon/bootc-operator/api/v1alpha1"
@@ -81,6 +84,14 @@ func (r *BootcNodePoolReconciler) driveRollout(ctx context.Context, pool *bootcv
 		}
 	}
 
+	// Start drains for all slotted Staged nodes.
+	for _, bn := range rs.staged {
+		if !metav1.HasAnnotation(bn.ObjectMeta, bootcv1alpha1.AnnotationInRebootSlot) {
+			continue
+		}
+		r.ensureDrain(ctx, pool, bn)
+	}
+
 	return nil
 }
 
@@ -142,6 +153,62 @@ func (r *BootcNodePoolReconciler) freeRebootSlot(ctx context.Context, bn *bootcv
 	}
 	*bn = *modified
 	return nil
+}
+
+// ensureDrain checks whether a drain goroutine is already running for
+// the given node and starts one if not. It is a no-op if a drain is
+// already in progress.
+func (r *BootcNodePoolReconciler) ensureDrain(ctx context.Context, pool *bootcv1alpha1.BootcNodePool, bn *bootcv1alpha1.BootcNode) {
+	log := logf.FromContext(ctx)
+
+	r.drainsMu.Lock()
+	defer r.drainsMu.Unlock()
+
+	if _, exists := r.drains[bn.Name]; exists {
+		// Drain already in progress (or completed and pending collection).
+		return
+	}
+
+	log.Info("Starting drain", "node", bn.Name)
+
+	drainCtx, cancel := context.WithCancel(ctx)
+	status := &drainStatus{
+		result:    make(chan error, 1),
+		cancel:    cancel,
+		startTime: time.Now(),
+	}
+	r.drains[bn.Name] = status
+
+	var drainTimeout time.Duration // 0 means no timeout
+	if pool.Spec.Rollout != nil && pool.Spec.Rollout.DrainTimeoutSeconds != nil {
+		drainTimeout = time.Duration(*pool.Spec.Rollout.DrainTimeoutSeconds) * time.Second
+	}
+
+	drainLog := log.WithValues("node", bn.Name)
+
+	go func() {
+		drainer := &drain.Helper{
+			Client:               r.KubeClient,
+			Ctx:                  drainCtx,
+			Timeout:              drainTimeout,
+			EvictErrorRetryDelay: 5 * time.Second,
+			Force:                true,
+			IgnoreAllDaemonSets:  true,
+			DeleteEmptyDirData:   true,
+			GracePeriodSeconds:   -1,
+			Out:                  newDrainOutWriter(drainLog, bn.Name),
+			ErrOut:               newDrainErrWriter(drainLog, bn.Name),
+		}
+		status.result <- drain.RunNodeDrain(drainer, bn.Name)
+
+		// Re-enqueue the owning pool so the reconciler picks up the
+		// drain result.
+		r.drainCh <- event.GenericEvent{
+			Object: &bootcv1alpha1.BootcNodePool{
+				ObjectMeta: metav1.ObjectMeta{Name: pool.Name},
+			},
+		}
+	}()
 }
 
 // buildRolloutState classifies all owned BootcNodes and counts occupied
