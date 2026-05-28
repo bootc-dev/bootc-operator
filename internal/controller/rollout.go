@@ -10,9 +10,12 @@ import (
 
 	"github.com/distribution/reference"
 	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	bootcv1alpha1 "github.com/jlebon/bootc-operator/api/v1alpha1"
@@ -67,6 +70,77 @@ func (r *BootcNodePoolReconciler) driveRollout(ctx context.Context, pool *bootcv
 		"candidates", nodeNames(candidates),
 	)
 
+	// Assign reboot slots to candidates.
+	for _, bn := range candidates {
+		var node corev1.Node
+		if err := r.Get(ctx, types.NamespacedName{Name: bn.Name}, &node); err != nil {
+			return fmt.Errorf("fetching node %s: %w", bn.Name, err)
+		}
+		if err := r.assignRebootSlot(ctx, bn, &node); err != nil {
+			return fmt.Errorf("assigning reboot slot to %s: %w", bn.Name, err)
+		}
+	}
+
+	return nil
+}
+
+// assignRebootSlot marks a BootcNode as occupying a reboot slot and
+// cordons the corresponding K8s Node. It sets the in-reboot-slot
+// annotation on the BootcNode, records prior cordon state in the
+// was-cordoned annotation, and cordons the node. All operations are
+// idempotent.
+func (r *BootcNodePoolReconciler) assignRebootSlot(ctx context.Context, bn *bootcv1alpha1.BootcNode, node *corev1.Node) error {
+	log := logf.FromContext(ctx)
+
+	// Set annotations on the BootcNode if not already present.
+	if !metav1.HasAnnotation(bn.ObjectMeta, bootcv1alpha1.AnnotationInRebootSlot) {
+		log.Info("Assigning reboot slot", "node", bn.Name)
+		modifiedBN := bn.DeepCopy()
+		if modifiedBN.Annotations == nil {
+			modifiedBN.Annotations = map[string]string{}
+		}
+		modifiedBN.Annotations[bootcv1alpha1.AnnotationInRebootSlot] = ""
+		// Record whether the node was already cordoned before us.
+		if node.Spec.Unschedulable {
+			modifiedBN.Annotations[bootcv1alpha1.AnnotationWasCordoned] = "true"
+		} else {
+			modifiedBN.Annotations[bootcv1alpha1.AnnotationWasCordoned] = "false"
+		}
+		if err := r.Patch(ctx, modifiedBN, client.MergeFrom(bn)); err != nil {
+			return fmt.Errorf("annotating BootcNode: %w", err)
+		}
+		*bn = *modifiedBN
+	}
+
+	// Cordon the K8s Node if not already cordoned.
+	if !node.Spec.Unschedulable {
+		log.Info("Cordoning node", "node", node.Name)
+		modifiedNode := node.DeepCopy()
+		modifiedNode.Spec.Unschedulable = true
+		if err := r.Patch(ctx, modifiedNode, client.StrategicMergeFrom(node)); err != nil {
+			return fmt.Errorf("cordoning node: %w", err)
+		}
+		*node = *modifiedNode
+	}
+
+	return nil
+}
+
+// freeRebootSlot releases a node's reboot slot by restoring its prior cordon
+// state and removing annotations from the BootcNode.
+func (r *BootcNodePoolReconciler) freeRebootSlot(ctx context.Context, bn *bootcv1alpha1.BootcNode, node *corev1.Node) error { //nolint:unused // used by post-reboot handling
+	if err := r.restoreCordonState(ctx, bn, node); err != nil {
+		return err
+	}
+
+	// Remove both reboot slot annotations from the BootcNode.
+	modified := bn.DeepCopy()
+	delete(modified.Annotations, bootcv1alpha1.AnnotationWasCordoned)
+	delete(modified.Annotations, bootcv1alpha1.AnnotationInRebootSlot)
+	if err := r.Patch(ctx, modified, client.MergeFrom(bn)); err != nil {
+		return fmt.Errorf("removing reboot slot annotations: %w", err)
+	}
+	*bn = *modified
 	return nil
 }
 
