@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -47,8 +48,9 @@ type drainStatus struct {
 // BootcNodePoolReconciler reconciles a BootcNodePool object
 type BootcNodePoolReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Recorder events.EventRecorder
+	Scheme     *runtime.Scheme
+	KubeClient kubernetes.Interface
+	Recorder   events.EventRecorder
 
 	// drainCh receives events from drain goroutines to re-enqueue the
 	// owning pool after a drain completes.
