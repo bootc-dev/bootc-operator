@@ -25,6 +25,10 @@ var (
 	k8sClient client.Client
 )
 
+// TODO: TestMain starts envtest and the manager unconditionally, which means
+// pure unit tests (e.g. TestClassifyNode) pay the startup cost even though
+// they don't need it. Consider lazy initialization (e.g. sync.Once) so the
+// environment is only started when a test actually uses k8sClient.
 func TestMain(m *testing.M) {
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
 
