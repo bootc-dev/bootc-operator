@@ -50,6 +50,12 @@ func (rs *rolloutState) nodeCount() int {
 func (r *BootcNodePoolReconciler) driveRollout(ctx context.Context, pool *bootcv1alpha1.BootcNodePool, ownedBootcNodes map[string]*bootcv1alpha1.BootcNode) error {
 	log := logf.FromContext(ctx)
 
+	// Process drain results first. This isn't really ordering dependent,
+	// but it feels natural to do this upfront before classifying.
+	if err := r.collectDrainResults(ctx, ownedBootcNodes); err != nil {
+		return fmt.Errorf("collecting drain results: %w", err)
+	}
+
 	rs := buildRolloutState(log, ownedBootcNodes)
 
 	maxUnavail, err := resolveMaxUnavailable(pool, rs.nodeCount())
@@ -84,9 +90,13 @@ func (r *BootcNodePoolReconciler) driveRollout(ctx context.Context, pool *bootcv
 		}
 	}
 
-	// Start drains for all slotted Staged nodes.
+	// Start drains for all slotted Staged nodes that haven't already been
+	// approved for reboot (which implies they've already been drained).
 	for _, bn := range rs.staged {
 		if !metav1.HasAnnotation(bn.ObjectMeta, bootcv1alpha1.AnnotationInRebootSlot) {
+			continue
+		}
+		if bn.Spec.DesiredImageState == bootcv1alpha1.DesiredImageStateBooted {
 			continue
 		}
 		r.ensureDrain(ctx, pool, bn)
@@ -209,6 +219,63 @@ func (r *BootcNodePoolReconciler) ensureDrain(ctx context.Context, pool *bootcv1
 			},
 		}
 	}()
+}
+
+// collectDrainResults checks all in-progress drains for completed
+// results. On success, it sets desiredImageState to Booted on the
+// BootcNode.
+func (r *BootcNodePoolReconciler) collectDrainResults(ctx context.Context, ownedBootcNodes map[string]*bootcv1alpha1.BootcNode) error {
+	log := logf.FromContext(ctx)
+
+	r.drainsMu.Lock()
+	defer r.drainsMu.Unlock()
+
+	for nodeName, ds := range r.drains {
+		// Non-blocking check for drain result.
+		var drainErr error
+		select {
+		case drainErr = <-ds.result:
+		default:
+			// Drain still in progress.
+			continue
+		}
+
+		// Drain finished; remove from the map.
+		delete(r.drains, nodeName)
+
+		if drainErr != nil {
+			// TODO: handle drain errors and cancellations.
+			log.Info("Drain failed", "node", nodeName, "error", drainErr)
+			continue
+		}
+
+		// Drain succeeded. Set desiredImageState to Booted.
+		bn, ok := ownedBootcNodes[nodeName]
+		if !ok {
+			// Node left the pool while draining. Once
+			// removeBootcNode cancels the drain (see related TODO
+			// there), this would normally be caught by the
+			// drainErr cancellation check above. But if somehow we
+			// raced and did actually successfully drain, just
+			// ignore it; we should've already uncordoned the node.
+			log.Info("Drain completed but node no longer in pool", "node", nodeName)
+			continue
+		}
+
+		log.Info("Drain completed, setting desiredImageState to Booted", "node", nodeName)
+		modified := bn.DeepCopy()
+		modified.Spec.DesiredImageState = bootcv1alpha1.DesiredImageStateBooted
+		if err := r.Patch(ctx, modified, client.MergeFrom(bn)); err != nil {
+			// The drain result was already consumed, so on retry a
+			// redundant drain will run (completing instantly).
+			// Could optimize this but meh... not worth the
+			// complexity.
+			return fmt.Errorf("setting desiredImageState on %s: %w", nodeName, err)
+		}
+		*bn = *modified
+	}
+
+	return nil
 }
 
 // buildRolloutState classifies all owned BootcNodes and counts occupied
