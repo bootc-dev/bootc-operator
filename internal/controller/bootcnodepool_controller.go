@@ -39,10 +39,10 @@ import (
 
 // drainStatus tracks an in-progress drain goroutine for a single node.
 type drainStatus struct {
-	result    chan error         //nolint:unused // receives nil on success, error on failure; closed after send
-	cancel    context.CancelFunc //nolint:unused // to abort on targetDigest change or node removal
-	startTime time.Time          //nolint:unused // for stall detection
-	isStalled bool               //nolint:unused // set once after stall threshold; triggers event emission
+	result    chan error         // receives nil on success, error on failure; closed after send
+	cancel    context.CancelFunc // to abort on targetDigest change or node removal
+	startTime time.Time          // for stall detection
+	isStalled bool               //nolint:unused // used by drain stall detection
 }
 
 // BootcNodePoolReconciler reconciles a BootcNodePool object
@@ -60,8 +60,8 @@ type BootcNodePoolReconciler struct {
 	// Protected by drainsMu. The mutex is not necessary today since
 	// MaxConcurrentReconciles defaults to 1, but would be needed if
 	// concurrent reconciles are enabled in the future.
-	drains   map[string]*drainStatus //nolint:unused
-	drainsMu sync.Mutex              //nolint:unused
+	drains   map[string]*drainStatus
+	drainsMu sync.Mutex
 }
 
 // +kubebuilder:rbac:groups=node.bootc.dev,resources=bootcnodepools,verbs=get;list;watch;create;update;patch;delete
