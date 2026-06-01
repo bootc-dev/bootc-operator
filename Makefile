@@ -44,6 +44,14 @@ vet: ## Run go vet against code.
 unit: manifests generate setup-envtest ## Run unit tests (envtest). V=1 for verbose. RUN=<regex> to filter.
 	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test $(if $(V),-v) $(if $(RUN),-run $(RUN)) $$(go list ./... | grep -v /test/e2e)
 
+.PHONY: lint
+lint: golangci-lint ## Run golangci-lint linter.
+	"$(GOLANGCI_LINT)" run
+
+.PHONY: lint-fix
+lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes.
+	"$(GOLANGCI_LINT)" run --fix
+
 .PHONY: e2e
 e2e: ## Run e2e tests (requires: make deploy-bink). V=1 for verbose. RUN=<regex> to filter.
 # NB: we `cd` here instead of passing a package path to `go test` so that `-v`
@@ -53,14 +61,6 @@ e2e: ## Run e2e tests (requires: make deploy-bink). V=1 for verbose. RUN=<regex>
 	cd test/e2e && KUBECONFIG=$(abspath $(KUBECONFIG_BINK)) BINK_CLUSTER_NAME=$(BINK_CLUSTER_NAME) \
 		$(if $(BINK_NODE_IMAGE),BINK_NODE_IMAGE=$(BINK_NODE_IMAGE)) \
 		go test -timeout 10m -count=1 $(if $(V),-v) $(if $(RUN),-run $(RUN)) .
-
-.PHONY: lint
-lint: golangci-lint ## Run golangci-lint linter.
-	"$(GOLANGCI_LINT)" run
-
-.PHONY: lint-fix
-lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes.
-	"$(GOLANGCI_LINT)" run --fix
 
 ##@ Build
 
