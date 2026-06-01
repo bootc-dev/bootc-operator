@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
+// TODO: move this to e.g. github.com/bootc-dev/bootc-go. We should be able to
+// dedupe with at least flightctl.
+
 package bootc
 
 import (
