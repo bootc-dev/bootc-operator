@@ -27,26 +27,26 @@ type StatusSpec struct {
 
 // StatusBody is the status section of bootc status output.
 type StatusBody struct {
-	Staged           *BootEntry       `json:"staged"`
-	Booted           *BootEntry       `json:"booted"`
-	Rollback         *BootEntry       `json:"rollback"`
-	OtherDeployments []BootEntry      `json:"otherDeployments,omitempty"`
-	RollbackQueued   bool             `json:"rollbackQueued"`
-	Type             *string          `json:"type"`
+	Staged           *BootEntry         `json:"staged"`
+	Booted           *BootEntry         `json:"booted"`
+	Rollback         *BootEntry         `json:"rollback"`
+	OtherDeployments []BootEntry        `json:"otherDeployments,omitempty"`
+	RollbackQueued   bool               `json:"rollbackQueued"`
+	Type             *string            `json:"type"`
 	UsrOverlay       *FilesystemOverlay `json:"usrOverlay"`
 }
 
 // BootEntry represents a single boot entry (booted, staged, or rollback).
 type BootEntry struct {
-	Image             *ImageStatus       `json:"image"`
-	CachedUpdate      *ImageStatus       `json:"cachedUpdate"`
-	Incompatible      bool               `json:"incompatible"`
-	Pinned            bool               `json:"pinned"`
-	SoftRebootCapable bool               `json:"softRebootCapable"`
-	DownloadOnly      bool               `json:"downloadOnly"`
-	Store             *string            `json:"store"`
-	Ostree            *OstreeInfo        `json:"ostree"`
-	Composefs         *ComposefsInfo     `json:"composefs"`
+	Image             *ImageStatus   `json:"image"`
+	CachedUpdate      *ImageStatus   `json:"cachedUpdate"`
+	Incompatible      bool           `json:"incompatible"`
+	Pinned            bool           `json:"pinned"`
+	SoftRebootCapable bool           `json:"softRebootCapable"`
+	DownloadOnly      bool           `json:"downloadOnly"`
+	Store             *string        `json:"store"`
+	Ostree            *OstreeInfo    `json:"ostree"`
+	Composefs         *ComposefsInfo `json:"composefs"`
 }
 
 // ImageStatus describes the image in a boot entry.
@@ -84,8 +84,8 @@ type ComposefsInfo struct {
 // ImageSignature describes the signature verification policy.
 type ImageSignature struct {
 	OstreeRemote    *string `json:"ostreeRemote,omitempty"`
-	ContainerPolicy *bool  `json:"containerPolicy,omitempty"`
-	Insecure        *bool  `json:"insecure,omitempty"`
+	ContainerPolicy *bool   `json:"containerPolicy,omitempty"`
+	Insecure        *bool   `json:"insecure,omitempty"`
 }
 
 // FilesystemOverlay describes a /usr overlay state.
