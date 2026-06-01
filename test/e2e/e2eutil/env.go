@@ -124,7 +124,7 @@ func (e *Env) AddNode(t *testing.T, opts ...NodeOption) string {
 	nodeName := e.generateNodeName(t)
 
 	// Provision the node with labels applied at join time.
-	args := []string{"node", "add", nodeName, "--cluster-name", e.clusterName, "--control-plane", "controller"}
+	args := []string{"node", "add", nodeName, "--cluster-name", e.clusterName}
 	args = append(args, "--label", LabelE2ETest+"="+e.testID)
 	for k, v := range cfg.labels {
 		args = append(args, "--label", k+"="+v)
