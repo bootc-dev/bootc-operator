@@ -8,7 +8,7 @@ on:
     branches: [main]
 
 env:
-  BINK_VERSION: v0.1.1
+  BINK_COMMIT: 2b1bbdca74fc36d319fb1ea6d0523d9a732fcb1f
 
 permissions: {}
 
@@ -47,8 +47,45 @@ jobs:
       - name: Lint
         run: make lint
 
+  build-bink:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout bink
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: alicefr/bink
+          ref: ${{ env.BINK_COMMIT }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true # zizmor: ignore[cache-poisoning]
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgpgme-dev \
+            libbtrfs-dev \
+            libdevmapper-dev \
+            pkg-config
+
+      - name: Build bink
+        run: make build-bink
+
+      - name: Upload bink binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bink
+          path: bink
+
   e2e:
     runs-on: ubuntu-latest
+    needs: build-bink
     timeout-minutes: 30
     permissions:
       contents: read
@@ -61,11 +98,14 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Download bink release
-        run: |
-          sudo curl -fsSL -o /usr/local/bin/bink \
-            https://github.com/alicefr/bink/releases/download/${{ env.BINK_VERSION }}/bink
-          sudo chmod +x /usr/local/bin/bink
+      - name: Download bink binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: bink
+          path: /usr/local/bin
+
+      - name: Make bink executable
+        run: chmod +x /usr/local/bin/bink
 
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
