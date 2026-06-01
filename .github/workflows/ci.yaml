@@ -33,6 +33,11 @@ jobs:
           go-version-file: go.mod
           cache: true # zizmor: ignore[cache-poisoning]
 
+      - name: Check generated files
+        run: |
+          make fmt manifests generate
+          git diff --exit-code || { echo "Run 'make fmt manifests generate' and commit the results"; exit 1; }
+
       - name: Unit tests
         run: make unit
 
