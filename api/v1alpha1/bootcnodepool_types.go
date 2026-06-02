@@ -224,7 +224,3 @@ type BootcNodePoolList struct {
 	metav1.ListMeta `json:"metadata,omitzero"`
 	Items           []BootcNodePool `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&BootcNodePool{}, &BootcNodePoolList{})
-}
