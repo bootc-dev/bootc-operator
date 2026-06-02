@@ -188,7 +188,3 @@ type BootcNodeList struct {
 	metav1.ListMeta `json:"metadata,omitzero"`
 	Items           []BootcNode `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&BootcNode{}, &BootcNodeList{})
-}
