@@ -676,4 +676,5 @@ the operator namespace.
    rely on a higher-level operator to coordinate. This is intentionally
    deferred -- two independent pools cover the common case, and
    cross-pool ordering adds coordination complexity (handling degraded
-   dependencies, cycles, multi-phase chains).
+   dependencies, cycles, multi-phase chains). See also related discussions in
+   https://github.com/openshift/machine-config-operator/issues/1897.
