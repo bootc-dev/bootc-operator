@@ -674,7 +674,17 @@ the operator namespace.
    and `desiredImageState == Booted` with `Idle=False reason=Staged` (daemon
    should be rebooting).
 
-8. **Cross-pool rollout ordering**: Allow a pool to declare a dependency
+8. **Custom drain implementation**: The controller currently uses
+   `k8s.io/kubectl/pkg/drain` for node draining, which pulls in heavy
+   dependencies for a fairly thin orchestration layer on top of the [Eviction
+   API](https://kubernetes.io/docs/concepts/scheduling-eviction/api-eviction/)
+   (list pods, filter DaemonSet/mirror pods, evict with PDB retry, poll until
+   deleted). A custom implementation would drop `k8s.io/kubectl` and
+   `k8s.io/cli-runtime` and use the Eviction API directly. This should allow
+   dropping the logwriter adapter we have, and possibly not require drain
+   goroutines.
+
+9. **Cross-pool rollout ordering**: Allow a pool to declare a dependency
    on another pool (e.g. `dependsOn: workers`). The reconciler would
    gate rollout on the dependency pool reaching `UpToDate=True` first.
    The primary use case is updating worker nodes before control plane
