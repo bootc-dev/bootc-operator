@@ -539,13 +539,16 @@ func (r *BootcNodePoolReconciler) ensureManagedLabel(ctx context.Context, node *
 // removeBootcNode deletes a BootcNode for a node leaving the pool,
 // removes the managed label, and restores prior cordon state.
 func (r *BootcNodePoolReconciler) removeBootcNode(ctx context.Context, bn *bootcv1alpha1.BootcNode) error {
+	// TODO: if the node has an active drain goroutine, cancel it and
+	// remove it from the drains map.
+
 	// Try to clean up the node (label + cordon state) before deleting
 	// the BootcNode. The node may have been deleted from the cluster.
 	var node corev1.Node
 	if err := r.Get(ctx, types.NamespacedName{Name: bn.Name}, &node); err == nil {
 		// No point in cleaning up the Node object if it's going away anyway...
 		if node.DeletionTimestamp == nil {
-			if err := r.restoreCordonState(ctx, &node); err != nil {
+			if err := r.restoreCordonState(ctx, bn, &node); err != nil {
 				return fmt.Errorf("restoring cordon state: %w", err)
 			}
 			if err := r.ensureManagedLabel(ctx, &node, false); err != nil {
@@ -563,26 +566,17 @@ func (r *BootcNodePoolReconciler) removeBootcNode(ctx context.Context, bn *bootc
 	return nil
 }
 
-// restoreCordonState restores a node's cordon state based on the
-// bootc.dev/was-cordoned annotation. If the annotation is "true", the
-// node was already cordoned before the operator touched it, so we leave
-// it as is. Otherwise we uncordon it. The annotation is removed.
-func (r *BootcNodePoolReconciler) restoreCordonState(ctx context.Context, node *corev1.Node) error {
-	_, hasAnnotation := node.Annotations[bootcv1alpha1.AnnotationWasCordoned]
-	if !hasAnnotation {
+// restoreCordonState uncordons the Node if the BootcNode's was-cordoned
+// annotation indicates the operator cordoned it. If the annotation is absent
+// or "true" (node was already cordoned before us), this is a no-op.
+func (r *BootcNodePoolReconciler) restoreCordonState(ctx context.Context, bn *bootcv1alpha1.BootcNode, node *corev1.Node) error {
+	if bn.Annotations[bootcv1alpha1.AnnotationWasCordoned] != "false" {
 		return nil
 	}
-
 	modified := node.DeepCopy()
-	wasCordoned := modified.Annotations[bootcv1alpha1.AnnotationWasCordoned] == "true"
-	if !wasCordoned {
-		// Node was not cordoned before we touched it; uncordon it.
-		modified.Spec.Unschedulable = false
-	}
-
-	delete(modified.Annotations, bootcv1alpha1.AnnotationWasCordoned)
+	modified.Spec.Unschedulable = false
 	if err := r.Patch(ctx, modified, client.StrategicMergeFrom(node)); err != nil {
-		return err
+		return fmt.Errorf("uncordoning node: %w", err)
 	}
 	*node = *modified
 	return nil
