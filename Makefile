@@ -105,12 +105,13 @@ undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.
 	"$(KUSTOMIZE)" build config/default | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -
 
 # In-cluster image used by deploy-bink after pushing to the bink registry.
-IMG_BINK ?= registry.cluster.local:5000/bootc-operator:e2e
+# Note the :latest tag here: this makes the pull policy be Always.
+IMG_BINK ?= registry.cluster.local:5000/bootc-operator-e2e:latest
 
 .PHONY: deploy-bink
-deploy-bink: kustomize ## Deploy to a bink cluster (idempotent).
+deploy-bink: kustomize ## Deploy to a bink cluster (idempotent, requires: buildimg).
 	bink registry start
-	podman push --tls-verify=false $(IMG) localhost:5000/bootc-operator:e2e
+	podman push --tls-verify=false $(IMG) localhost:5000/bootc-operator-e2e:latest
 	bink cluster list 2>&1 | grep -qw $(BINK_CLUSTER_NAME) || \
 		bink cluster start --cluster-name $(BINK_CLUSTER_NAME) --node-name controller --api-port 0 --expose $(KUBECONFIG_BINK) \
 		$(if $(BINK_NODE_IMAGE),--node-image $(BINK_NODE_IMAGE))
