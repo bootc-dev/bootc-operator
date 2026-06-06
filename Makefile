@@ -5,6 +5,7 @@ CONTAINER_TOOL ?= podman
 # To use a separate dev cluster: make deploy-bink BINK_CLUSTER_NAME=dev
 BINK_CLUSTER_NAME ?= e2e
 KUBECONFIG_BINK ?= ./kubeconfig-$(BINK_CLUSTER_NAME)
+ARTIFACTS ?= $(abspath _output/logs)
 # YEAR defines the year value used for substituting the YEAR placeholder in the boilerplate header.
 YEAR ?= $(shell date +%Y)
 
@@ -127,6 +128,11 @@ deploy-bink: start-bink kustomize ## Deploy to a bink cluster (requires: buildim
 		kubectl --kubeconfig $(KUBECONFIG_BINK) -n bootc-operator rollout restart deployment/bootc-operator-controller-manager; \
 	fi
 	kubectl --kubeconfig $(KUBECONFIG_BINK) -n bootc-operator rollout status deployment/bootc-operator-controller-manager --timeout=3m
+
+.PHONY: gather-bink
+gather-bink: ## Gather diagnostic logs from the bink cluster.
+	KUBECONFIG=$(abspath $(KUBECONFIG_BINK)) BINK_CLUSTER_NAME=$(BINK_CLUSTER_NAME) \
+		hack/gather-logs.sh $(ARTIFACTS)/gather-bink controller
 
 .PHONY: teardown-bink
 teardown-bink: ## Tear down the bink cluster.
