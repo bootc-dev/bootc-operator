@@ -396,14 +396,16 @@ The controller determines whether a node is up to date by comparing
 `spec.desiredImage` against `status.booted.imageDigest`. It does not
 rely on the daemon's `Idle` condition for this.
 
-The controller classifies each node into one of five effective states.
+The controller classifies each node into one of six effective states.
 The `Degraded` condition is checked first (takes priority over activity
 state).
 
 | Effective state | Determination                                             | Reconciler action                                    |
 |-----------------|-----------------------------------------------------------|------------------------------------------------------|
 | Degraded        | BootcNode `Degraded=True`                                 | Mark pool degraded                                   |
-| Idle            | `desiredImage == booted` and `Idle=True`                  | If in reboot slot: free slot only once node is Ready |
+| UpToDate        | `desiredImage == booted`                                  | If in reboot slot: free slot only once node is Ready |
+| Pending         | No booted status, or `desiredImage != booted` with no     | Wait for daemon to report or react                   |
+|                 | actionable Idle reason (daemon hasn't reported/reacted)   |                                                      |
 | Staging         | `desiredImage != booted`, `Idle=False reason=Staging`     | Wait (non-disruptive)                                |
 | Staged          | `desiredImage != booted`, `Idle=False reason=Staged`      | If reboot slot available: assign slot; else wait     |
 | Rebooting       | `desiredImage != booted`, `Idle=False reason=Rebooting`   | Wait for node to come back                           |
@@ -414,9 +416,9 @@ governed by three rules:
 1. **A node can only take a reboot slot when healthy** -- only Staged
    nodes (not Degraded) are candidates for reboot slots.
 2. **A node can only release a reboot slot when healthy** -- after
-   reboot, the slot is held until the node is Idle (`Idle=True`, not
-   Degraded) and the K8s Node is Ready. A node that is Degraded or
-   not Ready post-reboot holds its slot indefinitely.
+   reboot, the slot is held until the node is Idle (`desiredImage ==
+   booted`, not Degraded) and the K8s Node is Ready. A node that is
+   Degraded or not Ready post-reboot holds its slot indefinitely.
 3. **2 unhealthy nodes in reboot slots stop the rollout** -- when 2 or
    more nodes occupying reboot slots are unhealthy (Degraded or not
    Ready), the controller stops assigning new slots. A single

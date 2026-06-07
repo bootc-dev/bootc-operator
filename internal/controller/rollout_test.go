@@ -26,8 +26,11 @@ func TestBuildRolloutState(t *testing.T) {
 	// test focuses more on aggregation: bucketing, slot counting, and
 	// nodeCount.
 	nodes := map[string]*bootcv1alpha1.BootcNode{
-		"idle": testutil.NewNode("idle", desiredImage,
+		"uptodate": testutil.NewNode("uptodate", desiredImage,
 			testutil.WithBootedDigest(testDigestA),
+			testutil.WithNodeCondition(bootcv1alpha1.NodeIdle, metav1.ConditionTrue, bootcv1alpha1.NodeReasonIdle)),
+		"pending": testutil.NewNode("pending", desiredImage,
+			testutil.WithBootedDigest(otherDigest),
 			testutil.WithNodeCondition(bootcv1alpha1.NodeIdle, metav1.ConditionTrue, bootcv1alpha1.NodeReasonIdle)),
 		"staged": testutil.NewNode("staged", desiredImage,
 			testutil.WithBootedDigest(otherDigest),
@@ -44,12 +47,13 @@ func TestBuildRolloutState(t *testing.T) {
 
 	rs := buildRolloutState(logr.Discard(), nodes)
 
-	g.Expect(rs.idle).To(HaveLen(1))
+	g.Expect(rs.upToDate).To(HaveLen(1))
+	g.Expect(rs.pending).To(HaveLen(1))
 	g.Expect(rs.staged).To(HaveLen(1))
 	g.Expect(rs.rebooting).To(HaveLen(2))
 	g.Expect(rs.occupiedSlots).To(Equal(2))
 	g.Expect(rs.unclassified).To(BeEmpty())
-	g.Expect(rs.nodeCount()).To(Equal(4))
+	g.Expect(rs.nodeCount()).To(Equal(5))
 }
 
 func TestResolveMaxUnavailable(t *testing.T) {
@@ -180,24 +184,28 @@ func TestClassifyNode(t *testing.T) {
 		want         nodeState
 	}{
 		{
-			name:         "Idle: image matches, Idle=True",
+			name:         "UpToDate: image matches, Idle=True",
 			bootedDigest: desiredDigest,
 			conditions:   []metav1.Condition{idleCond(metav1.ConditionTrue, bootcv1alpha1.NodeReasonIdle)},
-			want:         nodeStateIdle,
+			want:         nodeStateUpToDate,
 		},
-		// Daemon is idle but there's a diff; for now mark as Idle. See related
-		// comment in classifyNode().
 		{
-			name:         "Idle: image differs, Idle=True",
+			name:         "Pending: image differs, Idle=True (daemon hasn't reacted)",
 			bootedDigest: otherDigest,
 			conditions:   []metav1.Condition{idleCond(metav1.ConditionTrue, bootcv1alpha1.NodeReasonIdle)},
-			want:         nodeStateIdle,
+			want:         nodeStatePending,
 		},
 		{
-			name:         "Idle: no booted status yet (daemon starting)",
+			name:         "Pending: no booted status yet (daemon starting)",
 			bootedDigest: "",
 			conditions:   nil,
-			want:         nodeStateIdle,
+			want:         nodeStatePending,
+		},
+		{
+			name:         "Pending: image differs, no conditions",
+			bootedDigest: otherDigest,
+			conditions:   nil,
+			want:         nodeStatePending,
 		},
 		{
 			name:         "Staging: image differs, Idle=False reason=Staging",

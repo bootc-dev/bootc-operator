@@ -28,7 +28,8 @@ import (
 // pass.
 type rolloutState struct {
 	// nodes are sorted into these buckets
-	idle         []*bootcv1alpha1.BootcNode
+	upToDate     []*bootcv1alpha1.BootcNode
+	pending      []*bootcv1alpha1.BootcNode
 	staging      []*bootcv1alpha1.BootcNode
 	staged       []*bootcv1alpha1.BootcNode
 	rebooting    []*bootcv1alpha1.BootcNode
@@ -42,7 +43,7 @@ type rolloutState struct {
 // nodeCount returns the total number of nodes in the pool, including
 // unclassified ones. Used for resolving percentage-based maxUnavailable.
 func (rs *rolloutState) nodeCount() int {
-	return len(rs.idle) + len(rs.staging) + len(rs.staged) +
+	return len(rs.upToDate) + len(rs.pending) + len(rs.staging) + len(rs.staged) +
 		len(rs.rebooting) + len(rs.degraded) + len(rs.unclassified)
 }
 
@@ -67,7 +68,8 @@ func (r *BootcNodePoolReconciler) driveRollout(ctx context.Context, pool *bootcv
 	candidates := selectDrainCandidates(rs.staged, avail)
 
 	log.V(1).Info("Rollout state",
-		"idle", len(rs.idle),
+		"upToDate", len(rs.upToDate),
+		"pending", len(rs.pending),
 		"staging", len(rs.staging),
 		"staged", len(rs.staged),
 		"rebooting", len(rs.rebooting),
@@ -298,8 +300,10 @@ func buildRolloutState(log logr.Logger, ownedBootcNodes map[string]*bootcv1alpha
 		log.V(1).Info("Classified node", "node", bn.Name, "state", state.String())
 
 		switch state {
-		case nodeStateIdle:
-			rs.idle = append(rs.idle, bn)
+		case nodeStateUpToDate:
+			rs.upToDate = append(rs.upToDate, bn)
+		case nodeStatePending:
+			rs.pending = append(rs.pending, bn)
 		case nodeStateStaging:
 			rs.staging = append(rs.staging, bn)
 		case nodeStateStaged:
@@ -388,9 +392,13 @@ func nodeNames(nodes []*bootcv1alpha1.BootcNode) []string {
 type nodeState int
 
 const (
-	// nodeStateIdle means the node is running the desired image and the
-	// daemon has no active update cycle.
-	nodeStateIdle nodeState = iota
+	// nodeStateUpToDate means the node is running the desired image.
+	nodeStateUpToDate nodeState = iota
+
+	// nodeStatePending means the node's state is indeterminate: the
+	// daemon hasn't reported yet (no booted status), or hasn't reacted
+	// to a desiredImage change.
+	nodeStatePending
 
 	// nodeStateStaging means the daemon is pulling/staging the image.
 	nodeStateStaging
@@ -409,8 +417,10 @@ const (
 
 func (s nodeState) String() string {
 	switch s {
-	case nodeStateIdle:
-		return "Idle"
+	case nodeStateUpToDate:
+		return "UpToDate"
+	case nodeStatePending:
+		return "Pending"
 	case nodeStateStaging:
 		return "Staging"
 	case nodeStateStaged:
@@ -432,12 +442,12 @@ func classifyNode(bn *bootcv1alpha1.BootcNode) (nodeState, error) {
 	}
 
 	if bn.Status.Booted == nil {
-		// The only way this can happen really is on a brand new BootcNode and
-		// the daemon is still being provisioned. Let's just treat this as Idle
-		// for now and it should resolve in a future reconciliation (though
-		// ideally eventually we can handle 'stuck' states like this... see
+		// The only way this can happen really is on a brand new
+		// BootcNode and the daemon is still being provisioned. It
+		// should resolve in a future reconciliation (though ideally
+		// eventually we can handle 'stuck' states like this... see
 		// related comment below).
-		return nodeStateIdle, nil
+		return nodeStatePending, nil
 	}
 
 	// We could pass in the pool here and use targetDigest instead to avoid
@@ -456,7 +466,7 @@ func classifyNode(bn *bootcv1alpha1.BootcNode) (nodeState, error) {
 	if digested.Digest().String() == bn.Status.Booted.ImageDigest {
 		// Image matches; nothing for the controller to act on
 		// regardless of whether the daemon has settled yet.
-		return nodeStateIdle, nil
+		return nodeStateUpToDate, nil
 	}
 
 	// OK, the node isn't yet booting the desired digest. Let's dig into where
@@ -474,14 +484,12 @@ func classifyNode(bn *bootcv1alpha1.BootcNode) (nodeState, error) {
 		}
 	}
 
-	// Image doesn't match and daemon is either Idle, has no conditions,
-	// or has an unrecognized Idle reason. Classify as Idle since the
-	// daemon should eventually react to the spec change.
-
-	// Hmm, daemon is idle... weird. It could just be that we're racing with the
-	// daemon reconciliation. Or something more broken might be happening (e.g.
-	// daemon not running at all). For now we don't try to detect 'stuck' nodes,
-	// but may in the future. It'll still show up as holding up the pool's
+	// Image doesn't match and daemon is either Idle, has no conditions, or
+	// has an unrecognized Idle reason. This likely means we're racing with
+	// the daemon reconciliation (it hasn't reacted to the spec change
+	// yet), or something more broken is happening (e.g. daemon not running
+	// at all). For now we don't try to detect 'stuck' nodes, but may in
+	// the future. It'll still show up as holding up the pool's
 	// `deployedDigest` field and the updatingCount stat.
-	return nodeStateIdle, nil
+	return nodeStatePending, nil
 }
