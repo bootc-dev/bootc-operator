@@ -59,6 +59,13 @@ func (r *BootcNodePoolReconciler) driveRollout(ctx context.Context, pool *bootcv
 
 	rs := buildRolloutState(log, ownedBootcNodes)
 
+	// Free reboot slots for nodes that have successfully rebooted into
+	// the desired image. This runs before computing available slots so
+	// that freed capacity is immediately usable for new candidates.
+	if err := r.freeCompletedSlots(ctx, rs); err != nil {
+		return fmt.Errorf("freeing completed slots: %w", err)
+	}
+
 	maxUnavail, err := resolveMaxUnavailable(pool, rs.nodeCount())
 	if err != nil {
 		return err
@@ -149,9 +156,40 @@ func (r *BootcNodePoolReconciler) assignRebootSlot(ctx context.Context, bn *boot
 	return nil
 }
 
+// freeCompletedSlots releases reboot slots for upToDate nodes that are Ready.
+// It decrements rs.occupiedSlots for each freed slot so the caller's available
+// slot count is accurate.
+func (r *BootcNodePoolReconciler) freeCompletedSlots(ctx context.Context, rs *rolloutState) error {
+	log := logf.FromContext(ctx)
+
+	for _, bn := range rs.upToDate {
+		if !metav1.HasAnnotation(bn.ObjectMeta, bootcv1alpha1.AnnotationInRebootSlot) {
+			continue
+		}
+
+		var node corev1.Node
+		if err := r.Get(ctx, types.NamespacedName{Name: bn.Name}, &node); err != nil {
+			return fmt.Errorf("fetching node %s: %w", bn.Name, err)
+		}
+
+		if nodeReadyStatus(&node) != corev1.ConditionTrue {
+			log.V(1).Info("Node rebooted but not yet Ready, holding reboot slot", "node", bn.Name)
+			continue
+		}
+
+		log.Info("Freeing reboot slot: node healthy and Ready", "node", bn.Name)
+		if err := r.freeRebootSlot(ctx, bn, &node); err != nil {
+			return fmt.Errorf("freeing reboot slot for %s: %w", bn.Name, err)
+		}
+		rs.occupiedSlots--
+	}
+
+	return nil
+}
+
 // freeRebootSlot releases a node's reboot slot by restoring its prior cordon
 // state and removing annotations from the BootcNode.
-func (r *BootcNodePoolReconciler) freeRebootSlot(ctx context.Context, bn *bootcv1alpha1.BootcNode, node *corev1.Node) error { //nolint:unused // used by post-reboot handling
+func (r *BootcNodePoolReconciler) freeRebootSlot(ctx context.Context, bn *bootcv1alpha1.BootcNode, node *corev1.Node) error {
 	if err := r.restoreCordonState(ctx, bn, node); err != nil {
 		return err
 	}

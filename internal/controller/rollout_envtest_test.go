@@ -17,8 +17,10 @@ import (
 )
 
 // TestSimpleRollout simulates a 3-node rollout with maxUnavailable: 1. It
-// verifies that only one node is cordoned at a time and that desiredImageState
-// is set to Booted after drain completes.
+// verifies that only one node is cordoned at a time, that desiredImageState is
+// set to Booted after drain completes, and that after each node reboots into
+// the desired image and becomes Ready, its reboot slot is freed and the next
+// node gets its turn.
 func TestSimpleRollout(t *testing.T) {
 	g := NewWithT(t)
 	g.SetDefaultEventuallyTimeout(pollTimeout)
@@ -69,53 +71,62 @@ func TestSimpleRollout(t *testing.T) {
 		simulateDaemonStatus(g, ctx, name, testDigestA, bootcv1alpha1.NodeReasonStaged)
 	}
 
-	// Wait for exactly one node to be cordoned (reboot slot assigned).
-	var cordonedNode string
-	g.Eventually(func() string {
-		cordonedNode = ""
-		for _, name := range nodeNames {
+	// Verify the sequential rollout: with maxUnavailable: 1 and
+	// alphabetical candidate selection, nodes are processed in
+	// deterministic order w1 → w2 → w3.
+	for i, name := range nodeNames {
+		// Wait for this node to receive its reboot slot: cordoned,
+		// annotated, desiredImageState set to Booted (drain completes
+		// instantly in envtest since there are no pods).
+		g.Eventually(func(g Gomega) {
+			var bn bootcv1alpha1.BootcNode
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: name}, &bn)).To(Succeed())
+			g.Expect(bn.Annotations).To(HaveKey(bootcv1alpha1.AnnotationInRebootSlot),
+				"node %s should have in-reboot-slot annotation", name)
+			g.Expect(bn.Annotations).To(HaveKey(bootcv1alpha1.AnnotationWasCordoned),
+				"node %s should have was-cordoned annotation", name)
+			g.Expect(bn.Spec.DesiredImageState).To(Equal(bootcv1alpha1.DesiredImageStateBooted),
+				"node %s should have desiredImageState Booted", name)
+
 			var node corev1.Node
 			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: name}, &node)).To(Succeed())
-			if node.Spec.Unschedulable {
-				if cordonedNode != "" {
-					// More than one node cordoned — fail.
-					return "MULTIPLE"
-				}
-				cordonedNode = name
-			}
+			g.Expect(node.Spec.Unschedulable).To(BeTrue(),
+				"node %s should be cordoned", name)
+		}).Should(Succeed())
+
+		// Verify remaining nodes are not yet touched.
+		for _, other := range nodeNames[i+1:] {
+			var node corev1.Node
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: other}, &node)).To(Succeed())
+			g.Expect(node.Spec.Unschedulable).To(BeFalse(),
+				"node %s should not be cordoned", other)
+
+			var bn bootcv1alpha1.BootcNode
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: other}, &bn)).To(Succeed())
+			g.Expect(bn.Spec.DesiredImageState).To(Equal(bootcv1alpha1.DesiredImageStateStaged),
+				"node %s should still have desiredImageState Staged", other)
 		}
-		return cordonedNode
-	}).ShouldNot(BeEmpty())
-	g.Expect(cordonedNode).NotTo(Equal("MULTIPLE"), "only one node should be cordoned with maxUnavailable: 1")
 
-	// Verify the cordoned node has the in-reboot-slot annotation.
-	var bn bootcv1alpha1.BootcNode
-	g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: cordonedNode}, &bn)).To(Succeed())
-	g.Expect(bn.Annotations).To(HaveKey(bootcv1alpha1.AnnotationInRebootSlot))
-	g.Expect(bn.Annotations).To(HaveKey(bootcv1alpha1.AnnotationWasCordoned))
+		// Simulate the daemon reporting a successful reboot and the
+		// node becoming Ready.
+		simulateDaemonStatus(g, ctx, name, testDigestB, bootcv1alpha1.NodeReasonIdle)
+		setNodeReady(g, ctx, name)
 
-	// In envtest, drain completes instantly (no pods). Verify that
-	// desiredImageState is set to Booted on the cordoned node.
-	g.Eventually(func(g Gomega) {
-		var bn bootcv1alpha1.BootcNode
-		g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: cordonedNode}, &bn)).To(Succeed())
-		g.Expect(bn.Spec.DesiredImageState).To(Equal(bootcv1alpha1.DesiredImageStateBooted))
-	}).Should(Succeed())
+		// Verify the reboot slot is freed: annotations removed and
+		// node uncordoned.
+		g.Eventually(func(g Gomega) {
+			var bn bootcv1alpha1.BootcNode
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: name}, &bn)).To(Succeed())
+			g.Expect(bn.Annotations).NotTo(HaveKey(bootcv1alpha1.AnnotationInRebootSlot),
+				"node %s should have in-reboot-slot annotation removed", name)
+			g.Expect(bn.Annotations).NotTo(HaveKey(bootcv1alpha1.AnnotationWasCordoned),
+				"node %s should have was-cordoned annotation removed", name)
 
-	// Verify the other nodes are NOT cordoned and still have
-	// desiredImageState: Staged.
-	for _, name := range nodeNames {
-		if name == cordonedNode {
-			continue
-		}
-		var node corev1.Node
-		g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: name}, &node)).To(Succeed())
-		g.Expect(node.Spec.Unschedulable).To(BeFalse(), "node %s should not be cordoned", name)
-
-		var bn bootcv1alpha1.BootcNode
-		g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: name}, &bn)).To(Succeed())
-		g.Expect(bn.Spec.DesiredImageState).To(Equal(bootcv1alpha1.DesiredImageStateStaged),
-			"node %s should still have desiredImageState Staged", name)
+			var node corev1.Node
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: name}, &node)).To(Succeed())
+			g.Expect(node.Spec.Unschedulable).To(BeFalse(),
+				"node %s should be uncordoned after reboot", name)
+		}).Should(Succeed())
 	}
 }
 
@@ -144,4 +155,28 @@ func simulateDaemonStatus(g Gomega, ctx context.Context, nodeName, bootedDigest,
 	}
 
 	g.Expect(k8sClient.Status().Update(ctx, &bn)).To(Succeed())
+}
+
+// setNodeReady sets the Ready condition on a K8s Node to True. In
+// envtest there is no kubelet, so this simulates the node becoming
+// healthy after a reboot.
+func setNodeReady(g Gomega, ctx context.Context, nodeName string) {
+	var node corev1.Node
+	g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: nodeName}, &node)).To(Succeed())
+
+	// Replace any existing Ready condition, preserving other conditions.
+	var filtered []corev1.NodeCondition
+	for _, c := range node.Status.Conditions {
+		if c.Type != corev1.NodeReady {
+			filtered = append(filtered, c)
+		}
+	}
+	node.Status.Conditions = append(filtered, corev1.NodeCondition{
+		Type:               corev1.NodeReady,
+		Status:             corev1.ConditionTrue,
+		LastHeartbeatTime:  metav1.Now(),
+		LastTransitionTime: metav1.Now(),
+	})
+
+	g.Expect(k8sClient.Status().Update(ctx, &node)).To(Succeed())
 }
