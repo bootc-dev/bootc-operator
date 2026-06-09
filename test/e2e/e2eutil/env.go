@@ -146,10 +146,10 @@ func (e *Env) AddNode(t *testing.T, opts ...NodeOption) string {
 	}
 
 	if cfg.targetImgRef == "" {
-		if e.nodeImageRegistry == "" {
-			t.Fatal("BINK_LOCAL_REGISTRY_NODE_IMAGE must be set (or use WithTargetImgRef)")
+		if e.nodeImageRegistry == "" || e.nodeImageDigest == "" {
+			t.Fatal("BINK_LOCAL_REGISTRY_NODE_IMAGE and NODE_IMAGE_DIGEST must be set (or use WithTargetImgRef)")
 		}
-		cfg.targetImgRef = e.nodeImageRegistry + ":latest"
+		cfg.targetImgRef = e.nodeImageRegistry + "@" + e.nodeImageDigest
 	}
 
 	nodeName := e.generateNodeName(t)
@@ -207,6 +207,11 @@ func (e *Env) NodeImageDigestedPullSpec() string {
 		return ""
 	}
 	return e.nodeImageRegistry + "@" + e.nodeImageDigest
+}
+
+// NodeImageDigest returns the manifest digest of the seeded node image.
+func (e *Env) NodeImageDigest() string {
+	return e.nodeImageDigest
 }
 
 // cleanup gathers diagnostic logs, then deletes test-scoped resources
