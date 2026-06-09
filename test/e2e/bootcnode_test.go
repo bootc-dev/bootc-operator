@@ -14,7 +14,6 @@ import (
 
 	bootcv1alpha1 "github.com/jlebon/bootc-operator/api/v1alpha1"
 	"github.com/jlebon/bootc-operator/test/e2e/e2eutil"
-	testutil "github.com/jlebon/bootc-operator/test/util"
 )
 
 const (
@@ -35,13 +34,7 @@ func TestControllerMembership(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Use real registry image when seeded; fall back to fake ref for
-	// local dev runs without deploy-bink.
-	imageRef := testutil.ImageDigestRefA
-	if ref := env.NodeImageDigestedPullSpec(); ref != "" {
-		imageRef = ref
-	}
-	pool := env.NewPool("workers", imageRef)
+	pool := env.NewPool("workers", env.NodeImageDigestedPullSpec())
 	g.Expect(env.Client.Create(ctx, pool)).To(Succeed())
 
 	// Wait for BootcNode to appear for the worker.
@@ -56,7 +49,7 @@ func TestControllerMembership(t *testing.T) {
 	g.Expect(owner.Name).To(Equal(pool.Name))
 
 	// Verify desiredImage.
-	g.Expect(bn.Spec.DesiredImage).To(Equal(imageRef))
+	g.Expect(bn.Spec.DesiredImage).To(Equal(env.NodeImageDigestedPullSpec()))
 
 	// Verify the worker has the managed label.
 	var node corev1.Node
@@ -83,8 +76,10 @@ func TestControllerMembership(t *testing.T) {
 	g.Eventually(func(g Gomega) {
 		g.Expect(env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)).To(Succeed())
 		g.Expect(bn.Status.Booted).NotTo(BeNil(), "expected booted status to be populated")
-		g.Expect(bn.Status.Booted.Image).NotTo(BeEmpty(), "expected booted image to be non-empty")
-		g.Expect(bn.Status.Booted.ImageDigest).NotTo(BeEmpty(), "expected booted imageDigest to be non-empty")
+		g.Expect(bn.Status.Booted.Image).To(Equal(env.NodeImageDigestedPullSpec()),
+			"booted image should match seeded registry image")
+		g.Expect(bn.Status.Booted.ImageDigest).To(Equal(env.NodeImageDigest()),
+			"booted image digest should match seeded registry image")
 		g.Expect(bn.Status.Conditions).To(ContainElement(And(
 			HaveField("Type", bootcv1alpha1.NodeIdle),
 			HaveField("Status", metav1.ConditionTrue),
