@@ -35,8 +35,12 @@ func TestControllerMembership(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Create a pool selecting this test's nodes.
+	// Use real registry image when seeded; fall back to fake ref for
+	// local dev runs without deploy-bink.
 	imageRef := testutil.ImageDigestRefA
+	if ref := env.NodeImageDigestedPullSpec(); ref != "" {
+		imageRef = ref
+	}
 	pool := env.NewPool("workers", imageRef)
 	g.Expect(env.Client.Create(ctx, pool)).To(Succeed())
 

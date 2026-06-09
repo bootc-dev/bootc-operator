@@ -52,6 +52,14 @@ type Env struct {
 
 	// nodes tracks node names added via AddNode for cleanup.
 	nodes []string
+
+	// nodeImageDigest is the manifest digest of the bootc image seeded
+	// into the bink registry (e.g. "sha256:abc123..."). Empty when not seeded.
+	nodeImageDigest string
+
+	// nodeImageRegistry is the in-cluster registry path for the seeded node image
+	// (e.g. "registry.cluster.local:5000/node"). Empty when not seeded.
+	nodeImageRegistry string
 }
 
 // New connects to an existing bink cluster and returns an Env ready
@@ -70,12 +78,17 @@ func New(t *testing.T) *Env {
 		t.Fatal("BINK_CLUSTER_NAME must be set")
 	}
 
+	nodeImageDigest := os.Getenv("BINK_NODE_IMAGE_DIGEST")
+	nodeImageRegistry := os.Getenv("BINK_LOCAL_REGISTRY_NODE_IMAGE")
+
 	k8sClient := buildClient(t, kubeconfigPath)
 
 	env := &Env{
-		Client:      k8sClient,
-		clusterName: clusterName,
-		testID:      sanitizeTestName(t.Name()),
+		Client:            k8sClient,
+		clusterName:       clusterName,
+		testID:            sanitizeTestName(t.Name()),
+		nodeImageDigest:   nodeImageDigest,
+		nodeImageRegistry: nodeImageRegistry,
 	}
 
 	t.Cleanup(func() {
@@ -89,8 +102,9 @@ func New(t *testing.T) *Env {
 type NodeOption func(*nodeConfig)
 
 type nodeConfig struct {
-	memory int
-	labels map[string]string
+	memory       int
+	labels       map[string]string
+	targetImgRef string
 }
 
 // WithMemory sets the VM memory in MB for the node.
@@ -111,6 +125,15 @@ func WithLabel(key, value string) NodeOption {
 	}
 }
 
+// WithTargetImgRef sets the target image reference for the node,
+// passed as --target-imgref to bink node add. Overrides the automatic
+// default that AddNode applies when registry metadata is available.
+func WithTargetImgRef(ref string) NodeOption {
+	return func(c *nodeConfig) {
+		c.targetImgRef = ref
+	}
+}
+
 // AddNode provisions a worker node via bink, waits for it to be Ready,
 // and returns the node name. The node is labeled with LabelE2ETest
 // (and any extra labels from WithLabel).
@@ -120,6 +143,13 @@ func (e *Env) AddNode(t *testing.T, opts ...NodeOption) string {
 	cfg := &nodeConfig{}
 	for _, o := range opts {
 		o(cfg)
+	}
+
+	if cfg.targetImgRef == "" {
+		if e.nodeImageRegistry == "" {
+			t.Fatal("BINK_LOCAL_REGISTRY_NODE_IMAGE must be set (or use WithTargetImgRef)")
+		}
+		cfg.targetImgRef = e.nodeImageRegistry + ":latest"
 	}
 
 	nodeName := e.generateNodeName(t)
@@ -133,9 +163,10 @@ func (e *Env) AddNode(t *testing.T, opts ...NodeOption) string {
 	if cfg.memory > 0 {
 		args = append(args, "--memory", fmt.Sprintf("%d", cfg.memory))
 	}
-	if img := os.Getenv("BINK_NODE_IMAGE"); img != "" {
+	if img := os.Getenv("BINK_NODE_DISK_IMAGE"); img != "" {
 		args = append(args, "--node-image", img)
 	}
+	args = append(args, "--target-imgref", cfg.targetImgRef)
 	t.Logf("Adding node %q...", nodeName)
 	if err := runBink(t, args...); err != nil {
 		t.Fatalf("adding node %q: %v", nodeName, err)
@@ -167,6 +198,15 @@ func (e *Env) NewPool(suffix, imageRef string, opts ...testutil.PoolOption) *boo
 // default node selector in NewPool.
 func (e *Env) TestLabels() map[string]string {
 	return map[string]string{LabelE2ETest: e.testID}
+}
+
+// NodeImageDigestedPullSpec returns the digest-qualified reference for the
+// seeded node image (e.g. "registry.cluster.local:5000/node@sha256:abc123").
+func (e *Env) NodeImageDigestedPullSpec() string {
+	if e.nodeImageRegistry == "" || e.nodeImageDigest == "" {
+		return ""
+	}
+	return e.nodeImageRegistry + "@" + e.nodeImageDigest
 }
 
 // cleanup gathers diagnostic logs, then deletes test-scoped resources
