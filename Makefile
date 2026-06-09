@@ -87,6 +87,12 @@ build-daemon: ## Build daemon binary.
 buildimg: ## Build container image.
 	$(CONTAINER_TOOL) build -t $(IMG) .
 
+.PHONY: build-update-image
+build-update-image: ## Build a derived node image for update testing and push to bink registry.
+	@printf 'FROM localhost:5000/node:latest\nRUN touch /usr/share/update-marker\n' | \
+		podman build -t localhost:5000/node:update -f - .
+	podman push --tls-verify=false localhost:5000/node:update
+
 ##@ Deployment
 
 ifndef ignore-not-found
@@ -135,7 +141,7 @@ start-bink: seed-node-image ## Start a bink cluster (idempotent).
 	kubectl --kubeconfig $(KUBECONFIG_BINK) wait --for=condition=Ready node/controller --timeout=5m
 
 .PHONY: deploy-bink
-deploy-bink: start-bink kustomize ## Deploy to a bink cluster (requires: buildimg).
+deploy-bink: start-bink build-update-image kustomize ## Deploy to a bink cluster (requires: buildimg).
 	podman push --tls-verify=false $(IMG) localhost:5000/bootc-operator-e2e:latest
 	# On re-deploy, restart the rollout to force a re-pull of the :latest tag.
 	# On fresh deploy, skip the restart -- the pod is already pulling the correct image.
