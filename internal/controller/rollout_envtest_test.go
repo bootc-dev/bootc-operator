@@ -27,10 +27,10 @@ func TestSimpleRollout(t *testing.T) {
 
 	const (
 		poolName = "rollout-3node"
-		// All nodes are booting digest B; pool targets digest A.
-		targetRef   = testImageDigestRefA
-		targetImage = testImageDigestRefA
-		bootedImage = testImageDigestRefB
+		// All nodes are booted on digest A; pool targets digest B.
+		oldImage    = testImageDigestRefA
+		newImage    = testImageDigestRefB
+		newImageRef = testImageDigestRefB
 	)
 
 	// Create 3 worker nodes.
@@ -45,7 +45,7 @@ func TestSimpleRollout(t *testing.T) {
 	}
 
 	// Create pool targeting digest A with maxUnavailable: 1.
-	pool := testutil.NewPool(poolName, targetRef,
+	pool := testutil.NewPool(poolName, newImageRef,
 		testutil.WithWorkerSelector(),
 		testutil.WithMaxUnavailable(intstr.FromInt32(1)),
 	)
@@ -66,7 +66,7 @@ func TestSimpleRollout(t *testing.T) {
 	// for the new one. This is the state where nodes have staged the
 	// target image and are waiting for a reboot slot.
 	for _, name := range nodeNames {
-		simulateDaemonStatus(g, ctx, name, testDigestB, bootcv1alpha1.NodeReasonStaged)
+		simulateDaemonStatus(g, ctx, name, testDigestA, bootcv1alpha1.NodeReasonStaged)
 	}
 
 	// Wait for exactly one node to be cordoned (reboot slot assigned).
