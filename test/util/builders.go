@@ -184,6 +184,13 @@ func WithNodeAnnotation(key, value string) NodeOption {
 	}
 }
 
+// WithDesiredImageState overrides the default DesiredImageState on a node.
+func WithDesiredImageState(state bootcv1alpha1.DesiredImageState) NodeOption {
+	return func(node *bootcv1alpha1.BootcNode) {
+		node.Spec.DesiredImageState = state
+	}
+}
+
 // WithNodePullSecret sets the pull secret reference and hash on a node.
 func WithNodePullSecret(name, namespace, hash string) NodeOption {
 	return func(node *bootcv1alpha1.BootcNode) {

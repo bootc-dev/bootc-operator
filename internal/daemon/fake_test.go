@@ -22,8 +22,7 @@ type fakeExecutor struct {
 	stageImg  string
 	stageHook func()
 
-	rebootCalled bool
-	rebootErr    error
+	rebooted bool
 }
 
 func (f *fakeExecutor) Status(_ context.Context) ([]byte, error) {
@@ -61,8 +60,8 @@ func (f *fakeExecutor) Stage(_ context.Context, image string) error {
 func (f *fakeExecutor) Reboot(_ context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.rebootCalled = true
-	return f.rebootErr
+	f.rebooted = true
+	return nil
 }
 
 func (f *fakeExecutor) setStatusErr(err error) {
@@ -89,10 +88,10 @@ func (f *fakeExecutor) getStageImg() string {
 	return f.stageImg
 }
 
-func (f *fakeExecutor) getRebootCalled() bool {
+func (f *fakeExecutor) getRebooted() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.rebootCalled
+	return f.rebooted
 }
 
 func (f *fakeExecutor) reset() {
@@ -103,8 +102,7 @@ func (f *fakeExecutor) reset() {
 	f.stageErr = nil
 	f.stageImg = ""
 	f.stageHook = nil
-	f.rebootCalled = false
-	f.rebootErr = nil
+	f.rebooted = false
 }
 
 func newBootEntry(image, digest string) *bootc.BootEntry {
