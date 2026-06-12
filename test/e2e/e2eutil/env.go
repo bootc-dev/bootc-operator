@@ -60,6 +60,10 @@ type Env struct {
 	// nodeImageRegistry is the in-cluster registry path for the seeded node image
 	// (e.g. "registry.cluster.local:5000/node"). Empty when not seeded.
 	nodeImageRegistry string
+
+	// nodeImageUpdateDigest is the manifest digest of the update image
+	// (e.g. "sha256:def456..."). Empty when not built.
+	nodeImageUpdateDigest string
 }
 
 // New connects to an existing bink cluster and returns an Env ready
@@ -79,16 +83,27 @@ func New(t *testing.T) *Env {
 	}
 
 	nodeImageDigest := os.Getenv("BINK_NODE_IMAGE_DIGEST")
+	if nodeImageDigest == "" {
+		t.Fatal("BINK_NODE_IMAGE_DIGEST must be set")
+	}
 	nodeImageRegistry := os.Getenv("BINK_LOCAL_REGISTRY_NODE_IMAGE")
+	if nodeImageRegistry == "" {
+		t.Fatal("BINK_LOCAL_REGISTRY_NODE_IMAGE must be set")
+	}
+	nodeImageUpdateDigest := os.Getenv("BINK_NODE_IMAGE_UPDATE_DIGEST")
+	if nodeImageUpdateDigest == "" {
+		t.Fatal("BINK_NODE_IMAGE_UPDATE_DIGEST must be set")
+	}
 
 	k8sClient := buildClient(t, kubeconfigPath)
 
 	env := &Env{
-		Client:            k8sClient,
-		clusterName:       clusterName,
-		testID:            sanitizeTestName(t.Name()),
-		nodeImageDigest:   nodeImageDigest,
-		nodeImageRegistry: nodeImageRegistry,
+		Client:                k8sClient,
+		clusterName:           clusterName,
+		testID:                sanitizeTestName(t.Name()),
+		nodeImageDigest:       nodeImageDigest,
+		nodeImageRegistry:     nodeImageRegistry,
+		nodeImageUpdateDigest: nodeImageUpdateDigest,
 	}
 
 	t.Cleanup(func() {
@@ -212,6 +227,20 @@ func (e *Env) NodeImageDigestedPullSpec() string {
 // NodeImageDigest returns the manifest digest of the seeded node image.
 func (e *Env) NodeImageDigest() string {
 	return e.nodeImageDigest
+}
+
+// NodeImageUpdateDigestedPullSpec returns the digest-qualified reference for the
+// update image (e.g. "registry.cluster.local:5000/node@sha256:def456").
+func (e *Env) NodeImageUpdateDigestedPullSpec() string {
+	if e.nodeImageRegistry == "" || e.nodeImageUpdateDigest == "" {
+		return ""
+	}
+	return e.nodeImageRegistry + "@" + e.nodeImageUpdateDigest
+}
+
+// NodeImageUpdateDigest returns the manifest digest of the update image.
+func (e *Env) NodeImageUpdateDigest() string {
+	return e.nodeImageUpdateDigest
 }
 
 // cleanup gathers diagnostic logs, then deletes test-scoped resources
