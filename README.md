@@ -1,4 +1,6 @@
 # Bootc Operator
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fbootc-dev%2Fbootc-operator.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Fbootc-dev%2Fbootc-operator?ref=badge_shield)
+
 
 A Kubernetes operator for managing [bootc] nodes.
 
@@ -196,3 +198,7 @@ directly.
 [MCO]: https://github.com/openshift/machine-config-operator
 [OpenShift]: https://www.redhat.com/en/technologies/cloud-computing/openshift
 [Pod Security Admission]: https://kubernetes.io/docs/concepts/security/pod-security-admission/
+
+
+## License
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fbootc-dev%2Fbootc-operator.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Fbootc-dev%2Fbootc-operator?ref=badge_large)
