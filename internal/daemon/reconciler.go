@@ -275,11 +275,21 @@ func (s *stageOp) reset() {
 }
 
 // run executes bootc stage in a goroutine. The results are delivered via the done channel.
+//
+// Technically, multiple goroutines may pile up here waiting on runMu if
+// there's multiple rapid image changes (e.g. B→C→D spawns three goroutines).
+// This is harmless: each cancelled goroutine checks ctx.Err() after acquiring
+// the lock and exits immediately without starting a process.
 func (s *stageOp) run(ctx context.Context, nodeName, image string, executor bootc.Executor, done chan<- event.GenericEvent) {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 
 	log := logf.FromContext(context.Background()).WithValues("node", nodeName, "image", image)
+
+	if ctx.Err() != nil {
+		log.Info("Stage skipped, context already cancelled")
+		return
+	}
 
 	// TODO: exec bootc switch async and select on the cancel channel to send SIGINT for graceful shutdown.
 	err := executor.Stage(ctx, image)
