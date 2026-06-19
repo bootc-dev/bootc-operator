@@ -4,7 +4,7 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	bootcv1alpha1 "github.com/jlebon/bootc-operator/api/v1alpha1"
+	"github.com/jlebon/bootc-operator/internal/bootc"
 	testutil "github.com/jlebon/bootc-operator/test/util"
 )
 
@@ -21,55 +22,7 @@ const (
 	pollInterval = 200 * time.Millisecond
 	pollTimeout  = 10 * time.Second
 
-	testImageRef = testutil.ImageDigestRefA
-
-	bootcStatusFull = `{
-  "apiVersion": "org.containers.bootc/v1alpha1",
-  "kind": "BootcHost",
-  "spec": {
-    "image": {"image": "quay.io/example/myos:latest", "transport": "registry"},
-    "bootOrder": "default"
-  },
-  "status": {
-    "booted": {
-      "image": {
-        "image": {"image": "quay.io/example/myos:latest", "transport": "registry"},
-        "imageDigest": "` + testutil.DigestA + `",
-        "version": "1.0",
-        "architecture": "amd64"
-      },
-      "incompatible": false,
-      "pinned": false,
-      "softRebootCapable": false,
-      "downloadOnly": false
-    },
-    "staged": {
-      "image": {
-        "image": {"image": "quay.io/example/myos:latest", "transport": "registry"},
-        "imageDigest": "` + testutil.DigestB + `",
-        "version": "2.0",
-        "architecture": "amd64"
-      },
-      "incompatible": false,
-      "pinned": false,
-      "softRebootCapable": true,
-      "downloadOnly": false
-    },
-    "rollback": {
-      "image": {
-        "image": {"image": "quay.io/example/myos:latest", "transport": "registry"},
-        "imageDigest": "` + testutil.DigestC + `",
-        "version": "0.9",
-        "architecture": "amd64"
-      },
-      "incompatible": false,
-      "pinned": false,
-      "softRebootCapable": false,
-      "downloadOnly": false
-    },
-    "rollbackQueued": false
-  }
-}`
+	bootcStatusErrMsg = "bootc status failed"
 )
 
 func TestReconcilePopulatesStatus(t *testing.T) {
@@ -78,11 +31,30 @@ func TestReconcilePopulatesStatus(t *testing.T) {
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
 	ctx := context.Background()
 
-	if err := json.Unmarshal([]byte(bootcStatusFull), &fake.status); err != nil {
-		t.Fatal(err)
+	v1 := "v1"
+	v2 := "v2"
+	v3 := "v3"
+	fake.status = newBootcStatus(testutil.DigestA)
+	fake.status.Status.Booted.Image.Version = &v1
+	fake.status.Status.Staged = &bootc.BootEntry{
+		Image: &bootc.ImageStatus{
+			Image:        bootc.ImageReference{Image: testutil.ImageTaggedRef, Transport: "registry"},
+			ImageDigest:  testutil.DigestB,
+			Version:      &v2,
+			Architecture: "amd64",
+		},
+		SoftRebootCapable: true,
+	}
+	fake.status.Status.Rollback = &bootc.BootEntry{
+		Image: &bootc.ImageStatus{
+			Image:        bootc.ImageReference{Image: testutil.ImageTaggedRef, Transport: "registry"},
+			ImageDigest:  testutil.DigestC,
+			Version:      &v3,
+			Architecture: "amd64",
+		},
 	}
 
-	bn := testutil.NewNode(testNodeName, testImageRef)
+	bn := testutil.NewNode(testNodeName, testutil.ImageDigestRefA)
 	g.Expect(k8sClient.Create(ctx, bn)).To(Succeed())
 	t.Cleanup(func() {
 		_ = k8sClient.Delete(ctx, bn)
@@ -95,17 +67,17 @@ func TestReconcilePopulatesStatus(t *testing.T) {
 		g.Expect(got.Status.Booted).NotTo(BeNil())
 		g.Expect(got.Status.Booted.Image).To(Equal(testutil.ImageTaggedRef))
 		g.Expect(got.Status.Booted.ImageDigest).To(Equal(testutil.DigestA))
-		g.Expect(got.Status.Booted.Version).To(Equal("1.0"))
+		g.Expect(got.Status.Booted.Version).To(Equal(v1))
 		g.Expect(got.Status.Booted.Architecture).To(Equal("amd64"))
 
 		g.Expect(got.Status.Staged).NotTo(BeNil())
 		g.Expect(got.Status.Staged.ImageDigest).To(Equal(testutil.DigestB))
-		g.Expect(got.Status.Staged.Version).To(Equal("2.0"))
+		g.Expect(got.Status.Staged.Version).To(Equal(v2))
 		g.Expect(got.Status.Staged.SoftRebootCapable).To(BeTrue())
 
 		g.Expect(got.Status.Rollback).NotTo(BeNil())
 		g.Expect(got.Status.Rollback.ImageDigest).To(Equal(testutil.DigestC))
-		g.Expect(got.Status.Rollback.Version).To(Equal("0.9"))
+		g.Expect(got.Status.Rollback.Version).To(Equal(v3))
 
 		g.Expect(got.Status.Conditions).To(ContainElement(And(
 			HaveField("Type", bootcv1alpha1.NodeIdle),
@@ -126,9 +98,10 @@ func TestReconcileBootcStatusError(t *testing.T) {
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
 	ctx := context.Background()
 
-	fake.setStatusErr(fmt.Errorf("bootc status failed"))
+	fake.reset()
+	fake.setStatusErr(errors.New(bootcStatusErrMsg))
 
-	bn := testutil.NewNode(testNodeName, testImageRef)
+	bn := testutil.NewNode(testNodeName, testutil.ImageDigestRefA)
 	g.Expect(k8sClient.Create(ctx, bn)).To(Succeed())
 	t.Cleanup(func() {
 		_ = k8sClient.Delete(ctx, bn)
@@ -141,7 +114,7 @@ func TestReconcileBootcStatusError(t *testing.T) {
 			HaveField("Type", bootcv1alpha1.NodeDegraded),
 			HaveField("Status", metav1.ConditionTrue),
 			HaveField("Reason", bootcv1alpha1.NodeReasonError),
-			HaveField("Message", ContainSubstring("bootc status")),
+			HaveField("Message", Equal(fmt.Sprintf("failed to get bootc status: getting bootc status: %s", bootcStatusErrMsg))),
 		)))
 	}).Should(Succeed())
 }
