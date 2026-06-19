@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -77,7 +78,9 @@ func TestReconcilePopulatesStatus(t *testing.T) {
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
 	ctx := context.Background()
 
-	fake.set([]byte(bootcStatusFull), nil)
+	if err := json.Unmarshal([]byte(bootcStatusFull), &fake.status); err != nil {
+		t.Fatal(err)
+	}
 
 	bn := testutil.NewNode(testNodeName, testImageRef)
 	g.Expect(k8sClient.Create(ctx, bn)).To(Succeed())
@@ -123,7 +126,7 @@ func TestReconcileBootcStatusError(t *testing.T) {
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
 	ctx := context.Background()
 
-	fake.set(nil, fmt.Errorf("bootc status failed"))
+	fake.setStatusErr(fmt.Errorf("bootc status failed"))
 
 	bn := testutil.NewNode(testNodeName, testImageRef)
 	g.Expect(k8sClient.Create(ctx, bn)).To(Succeed())
@@ -139,32 +142,6 @@ func TestReconcileBootcStatusError(t *testing.T) {
 			HaveField("Status", metav1.ConditionTrue),
 			HaveField("Reason", bootcv1alpha1.NodeReasonError),
 			HaveField("Message", ContainSubstring("bootc status")),
-		)))
-	}).Should(Succeed())
-}
-
-func TestReconcileInvalidJSON(t *testing.T) {
-	g := NewWithT(t)
-	g.SetDefaultEventuallyTimeout(pollTimeout)
-	g.SetDefaultEventuallyPollingInterval(pollInterval)
-	ctx := context.Background()
-
-	fake.set([]byte(`{invalid json`), nil)
-
-	bn := testutil.NewNode(testNodeName, testImageRef)
-	g.Expect(k8sClient.Create(ctx, bn)).To(Succeed())
-	t.Cleanup(func() {
-		_ = k8sClient.Delete(ctx, bn)
-	})
-
-	g.Eventually(func(g Gomega) {
-		var got bootcv1alpha1.BootcNode
-		g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(bn), &got)).To(Succeed())
-		g.Expect(got.Status.Conditions).To(ContainElement(And(
-			HaveField("Type", bootcv1alpha1.NodeDegraded),
-			HaveField("Status", metav1.ConditionTrue),
-			HaveField("Reason", bootcv1alpha1.NodeReasonError),
-			HaveField("Message", ContainSubstring("parse")),
 		)))
 	}).Should(Succeed())
 }
