@@ -349,6 +349,9 @@ func buildRolloutState(log logr.Logger, ownedBootcNodes map[string]*bootcv1alpha
 		case nodeStateRebooting:
 			rs.rebooting = append(rs.rebooting, bn)
 		case nodeStateDegraded:
+			if cond := apimeta.FindStatusCondition(bn.Status.Conditions, bootcv1alpha1.NodeDegraded); cond != nil {
+				log.Info("Node is degraded", "node", bn.Name, "message", cond.Message)
+			}
 			rs.degraded = append(rs.degraded, bn)
 		}
 	}
