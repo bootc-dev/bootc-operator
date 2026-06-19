@@ -291,7 +291,8 @@ func (s *stageOp) run(ctx context.Context, nodeName, image string, executor boot
 		return
 	}
 
-	// TODO: exec bootc switch async and select on the cancel channel to send SIGINT for graceful shutdown.
+	// NB: this uses exec.CommandContext, which will SIGKILL bootc if the
+	// context is cancelled.
 	err := executor.Stage(ctx, image)
 
 	s.mu.Lock()
