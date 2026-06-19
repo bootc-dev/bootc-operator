@@ -178,9 +178,9 @@ func (r *BootcNodeReconciler) reconcileBootcNode(ctx context.Context, bn *bootcv
 	}
 
 	// Nothing to do the desired image matches the booted ones.
-	// Rest the reconciler to start from a clean state
+	// Reset the stage backoff to start from a clean state.
 	if digested.Digest().String() == bn.Status.Booted.ImageDigest {
-		r.reset()
+		r.inflight.reset()
 		return reconcileResult{}, nil
 	}
 
@@ -268,11 +268,10 @@ func (s *stageOp) acquire(log logr.Logger, image string, cancel context.CancelFu
 	s.err = nil
 }
 
-func (r *BootcNodeReconciler) reset() {
-	r.rebootIssued = false
-	r.inflight.mu.Lock()
-	defer r.inflight.mu.Unlock()
-	r.inflight.retries = 0
+func (s *stageOp) reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.retries = 0
 }
 
 // run executes bootc stage in a goroutine. The results are delivered via the done channel.

@@ -28,6 +28,14 @@ var (
 	reconciler *BootcNodeReconciler
 )
 
+// resetDaemon resets all volatile state on the shared reconciler and
+// fake executor so each test starts from a clean slate.
+func resetDaemon() {
+	fake.reset()
+	reconciler.rebootIssued = false
+	reconciler.inflight.reset()
+}
+
 func TestMain(m *testing.M) {
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
 
