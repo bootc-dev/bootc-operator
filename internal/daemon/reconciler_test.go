@@ -100,6 +100,7 @@ func TestReconcileBootcStatusError(t *testing.T) {
 	ctx := context.Background()
 
 	fake.reset()
+	reconciler.reset()
 	fake.setStatusErr(errors.New(bootcStatusErrMsg))
 
 	bn := testutil.NewNode(testNodeName, testutil.ImageDigestRefA)
@@ -127,6 +128,7 @@ func TestStagingTriggered(t *testing.T) {
 	ctx := context.Background()
 
 	fake.reset()
+	reconciler.reset()
 	fake.status = newBootcStatus(testutil.DigestA)
 
 	bn := testutil.NewNode(testNodeName, testutil.ImageDigestRefB)
@@ -164,6 +166,7 @@ func TestStagingError(t *testing.T) {
 	ctx := context.Background()
 
 	fake.reset()
+	reconciler.reset()
 	fake.status = newBootcStatus(testutil.DigestA)
 	fake.setStageErr(errors.New(stageErrMsg))
 
@@ -197,6 +200,7 @@ func TestAlreadyStaged(t *testing.T) {
 	ctx := context.Background()
 
 	fake.reset()
+	reconciler.reset()
 	fake.status = newBootcStatus(testutil.DigestA)
 	fake.status.Status.Staged = newBootEntry(testutil.ImageDigestRefB, testutil.DigestB)
 
@@ -226,6 +230,7 @@ func TestRebootingSet(t *testing.T) {
 	ctx := context.Background()
 
 	fake.reset()
+	reconciler.reset()
 	fake.status = newBootcStatus(testutil.DigestA)
 	fake.status.Status.Staged = newBootEntry(testutil.ImageDigestRefB, testutil.DigestB)
 
@@ -255,6 +260,7 @@ func TestRollback(t *testing.T) {
 	ctx := context.Background()
 
 	fake.reset()
+	reconciler.reset()
 	fake.status = newBootcStatus(testutil.DigestA)
 	fake.status.Status.Staged = newBootEntry(testutil.ImageDigestRefB, testutil.DigestB)
 
@@ -286,6 +292,7 @@ func TestCancelInflightStage(t *testing.T) {
 	ctx := context.Background()
 
 	fake.reset()
+	reconciler.reset()
 	fake.status = newBootcStatus(testutil.DigestA)
 
 	firstBlock := make(chan struct{})

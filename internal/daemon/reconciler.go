@@ -56,8 +56,8 @@ type BootcNodeReconciler struct {
 
 	inflight  stageOp
 	stageDone chan event.GenericEvent
-	// rebootIssued tracks whether a reboot has been issued so classifyAction
-	// can distinguish the Staged→Rebooting.
+	// rebootIssued tracks whether a reboot has been issued so Reconcile
+	// can skip reconciliation while the node is shutting down.
 	rebootIssued bool
 }
 
@@ -75,6 +75,11 @@ func (r *BootcNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	log := logf.FromContext(ctx).WithValues("node", r.NodeName)
 
 	if req.Name != r.NodeName {
+		return ctrl.Result{}, nil
+	}
+
+	if r.rebootIssued {
+		log.Info("Reboot already issued, skipping reconcile")
 		return ctrl.Result{}, nil
 	}
 
@@ -211,9 +216,6 @@ func (r *BootcNodeReconciler) reconcileBootcNode(ctx context.Context, bn *bootcv
 		reason = bootcv1alpha1.NodeReasonRebooting
 		res.needsReboot = true
 
-	case actionAwaitReboot:
-		reason = bootcv1alpha1.NodeReasonRebooting
-
 	case actionAwaitBooted:
 		reason = bootcv1alpha1.NodeReasonStaged
 		log.Info("Image staged", "image", desiredImage)
@@ -331,7 +333,6 @@ const (
 	actionAwaitStage                      // stage in-flight, waiting for completion
 	actionAwaitBooted                     // staged, waiting for reboot approval
 	actionReboot                          // staged + approved, issue reboot
-	actionAwaitReboot                     // reboot issued, waiting for completion
 )
 
 func (r *BootcNodeReconciler) classifyAction(bn *bootcv1alpha1.BootcNode, digested reference.Digested, desiredImage string) updateAction {
@@ -348,12 +349,6 @@ func (r *BootcNodeReconciler) classifyAction(bn *bootcv1alpha1.BootcNode, digest
 		return actionAwaitBooted
 	}
 
-	// rebootIssued is volatile: if the daemon restarts it resets to false.
-	// That is safe because either the reboot already landed (booted digest
-	// matches and we return idle earlier) or it hasn't and we re-issue it.
-	if r.rebootIssued {
-		return actionAwaitReboot
-	}
 	return actionReboot
 }
 
