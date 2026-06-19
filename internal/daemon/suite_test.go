@@ -22,9 +22,10 @@ import (
 const testNodeName = "test-node"
 
 var (
-	testEnv   *envtest.Environment
-	k8sClient client.Client
-	fake      *fakeExecutor
+	testEnv    *envtest.Environment
+	k8sClient  client.Client
+	fake       *fakeExecutor
+	reconciler *BootcNodeReconciler
 )
 
 func TestMain(m *testing.M) {
@@ -65,12 +66,13 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	if err := (&BootcNodeReconciler{
+	reconciler = &BootcNodeReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		NodeName: testNodeName,
 		Executor: fake,
-	}).SetupWithManager(mgr); err != nil {
+	}
+	if err := reconciler.SetupWithManager(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to setup reconciler: %v\n", err)
 		os.Exit(1)
 	}

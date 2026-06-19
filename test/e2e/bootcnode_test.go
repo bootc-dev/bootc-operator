@@ -131,10 +131,21 @@ func TestUpdateReboot(t *testing.T) {
 
 	t.Logf("Patched pool to update image %s", updateRef)
 
-	// Phase 3: Wait for Idle with the update digest — proves the full
+	// Phase 3: Wait for Rebooting — the daemon skips reconciliation after
+	// issuing a reboot, so this state is durable until the node goes down.
+	g.Eventually(func(g Gomega) {
+		g.Expect(env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)).To(Succeed())
+		g.Expect(bn.Status.Conditions).To(ContainElement(And(
+			HaveField("Type", bootcv1alpha1.NodeIdle),
+			HaveField("Status", metav1.ConditionFalse),
+			HaveField("Reason", bootcv1alpha1.NodeReasonRebooting),
+		)))
+	}).WithTimeout(5*time.Minute).Should(Succeed(), "expected node to reach Rebooting state")
+
+	t.Logf("Node %q is Rebooting", nodeName)
+
+	// Phase 4: Wait for Idle with the update digest — proves the full
 	// update lifecycle completed (staging, reboot, boot into new image).
-	// We don't assert on intermediate states (Staging, Rebooting) because
-	// they are too transient to catch reliably with polling.
 	g.Eventually(func(g Gomega) {
 		g.Expect(env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)).To(Succeed())
 		g.Expect(bn.Status.Booted).NotTo(BeNil())
