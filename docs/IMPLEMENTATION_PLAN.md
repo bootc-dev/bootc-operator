@@ -207,7 +207,7 @@ the full controller+daemon loop can be tested end-to-end.
 DaemonSet, label a node with `bootc.dev/managed`, and verify the daemon
 pod starts on that node.
 
-### 4b. Core loop
+### 4b. Core loop ✅
 
 - Binary identifies its node name (downward API env var)
 - Watches its single BootcNode via field selector on `metadata.name`
@@ -221,7 +221,7 @@ pod starts on that node.
 **Validation (e2e):** enhance the existing e2e test to verify the
 daemon populates BootcNode status from `bootc status`.
 
-### 4c. State machine
+### 4c. State machine ✅
 
 - Detect `spec.desiredImage != booted` → set `Idle=False reason=Staging`,
   run `bootc switch <desiredImage>` (no `--download-only` for now;
