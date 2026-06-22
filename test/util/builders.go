@@ -9,7 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
-	bootcv1alpha1 "github.com/jlebon/bootc-operator/api/v1alpha1"
+	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
 )
 
 // Test fixture values. These are not helpers per se that are any use for e2e

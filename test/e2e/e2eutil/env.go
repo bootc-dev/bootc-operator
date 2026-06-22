@@ -24,8 +24,8 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	bootcv1alpha1 "github.com/jlebon/bootc-operator/api/v1alpha1"
-	testutil "github.com/jlebon/bootc-operator/test/util"
+	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
+	testutil "github.com/bootc-dev/bootc-operator/test/util"
 )
 
 const (

@@ -8,9 +8,9 @@ import (
 	"strings"
 	"sync"
 
-	testutil "github.com/jlebon/bootc-operator/test/util"
+	testutil "github.com/bootc-dev/bootc-operator/test/util"
 
-	"github.com/jlebon/bootc-operator/internal/bootc"
+	"github.com/bootc-dev/bootc-operator/internal/bootc"
 )
 
 type fakeExecutor struct {

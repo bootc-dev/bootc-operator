@@ -16,9 +16,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	bootcv1alpha1 "github.com/jlebon/bootc-operator/api/v1alpha1"
-	"github.com/jlebon/bootc-operator/internal/bootc"
-	"github.com/jlebon/bootc-operator/internal/daemon"
+	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
+	"github.com/bootc-dev/bootc-operator/internal/bootc"
+	"github.com/bootc-dev/bootc-operator/internal/daemon"
 )
 
 var (

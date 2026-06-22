@@ -21,7 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	bootcv1alpha1 "github.com/jlebon/bootc-operator/api/v1alpha1"
+	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
 )
 
 // rolloutState holds the classified BootcNodes for a single reconcile
