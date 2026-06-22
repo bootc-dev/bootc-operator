@@ -14,8 +14,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	bootcv1alpha1 "github.com/jlebon/bootc-operator/api/v1alpha1"
-	testutil "github.com/jlebon/bootc-operator/test/util"
+	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
+	testutil "github.com/bootc-dev/bootc-operator/test/util"
 )
 
 // pollInterval and pollTimeout control how long tests wait for the

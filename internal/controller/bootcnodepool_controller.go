@@ -34,7 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
-	bootcv1alpha1 "github.com/jlebon/bootc-operator/api/v1alpha1"
+	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
 )
 
 // drainStatus tracks an in-progress drain goroutine for a single node.

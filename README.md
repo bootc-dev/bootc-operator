@@ -47,7 +47,7 @@ sysexts, etc. See the [PRD](docs/PRD.md) for more details.
 Deploy from the kustomize config:
 
 ```shell
-kubectl apply -k https://github.com/jlebon/bootc-operator//config/default
+kubectl apply -k https://github.com/bootc-dev/bootc-operator//config/default
 ```
 
 This creates the `bootc-operator` namespace and deploys the controller and

@@ -9,9 +9,9 @@ import (
 	. "github.com/onsi/gomega"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	bootcv1alpha1 "github.com/jlebon/bootc-operator/api/v1alpha1"
-	"github.com/jlebon/bootc-operator/test/e2e/e2eutil"
-	testutil "github.com/jlebon/bootc-operator/test/util"
+	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
+	"github.com/bootc-dev/bootc-operator/test/e2e/e2eutil"
+	testutil "github.com/bootc-dev/bootc-operator/test/util"
 )
 
 // TestCRDSmoke verifies CRD round-trips. We'll nuke it or enhance it with more

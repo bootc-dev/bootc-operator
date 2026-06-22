@@ -22,8 +22,8 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
-	bootcv1alpha1 "github.com/jlebon/bootc-operator/api/v1alpha1"
-	"github.com/jlebon/bootc-operator/internal/bootc"
+	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
+	"github.com/bootc-dev/bootc-operator/internal/bootc"
 )
 
 const (

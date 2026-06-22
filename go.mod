@@ -1,4 +1,4 @@
-module github.com/jlebon/bootc-operator
+module github.com/bootc-dev/bootc-operator
 
 go 1.26.0
 
