@@ -45,12 +45,20 @@ type drainStatus struct {
 	isStalled bool               //nolint:unused // used by drain stall detection
 }
 
+// TagResolver resolves a container image reference to a digest.
+type TagResolver interface {
+	Resolve(ctx context.Context, ref string) (string, error)
+}
+
 // BootcNodePoolReconciler reconciles a BootcNodePool object
 type BootcNodePoolReconciler struct {
 	client.Client
 	Scheme     *runtime.Scheme
 	KubeClient kubernetes.Interface
 	Recorder   events.EventRecorder
+
+	TagResolver           TagResolver
+	TagResolutionInterval time.Duration
 
 	// drainCh receives events from drain goroutines to re-enqueue the
 	// owning pool after a drain completes.
@@ -239,11 +247,29 @@ func (r *BootcNodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// the end.
 
 	// Resolve the target digest from the image ref.
-	if err := r.resolveTargetDigest(&pool); err != nil {
+	resolveResult, err := r.resolveTargetDigest(ctx, &pool)
+	if err != nil {
 		if isInvalidSpecError(err) {
 			return r.setInvalidSpecCondition(ctx, &pool, err)
 		}
 		return ctrl.Result{}, fmt.Errorf("resolving target digest: %w", err)
+	}
+
+	// complete handles the boilerplate exit logic for the happy path and writes
+	// the pool status if anything changed.
+	complete := func(result ctrl.Result) (ctrl.Result, error) {
+		if !reflect.DeepEqual(pool.Status, *statusOrig) {
+			if err := r.Status().Update(ctx, &pool); err != nil {
+				return ctrl.Result{}, fmt.Errorf("updating pool status: %w", err)
+			}
+		}
+
+		return resolveResult, nil
+	}
+
+	if pool.Status.TargetDigest == "" {
+		// First tag resolution failed — nothing to roll out yet.
+		return complete(resolveResult)
 	}
 
 	// Sync pool membership and retrieve BootcNodes we own.
@@ -267,31 +293,56 @@ func (r *BootcNodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, fmt.Errorf("driving rollout: %w", err)
 	}
 
-	// Write pool status once if anything changed.
-	if !reflect.DeepEqual(pool.Status, *statusOrig) {
-		if err := r.Status().Update(ctx, &pool); err != nil {
-			return ctrl.Result{}, fmt.Errorf("updating pool status: %w", err)
-		}
-	}
-
-	return ctrl.Result{}, nil
+	return complete(resolveResult)
 }
 
-// resolveTargetDigest parses the digest from the pool's image ref and
-// sets pool.Status.TargetDigest. For digest refs (the only kind
-// supported now), the digest is extracted directly. Tag resolution is
-// deferred to Milestone 5.
-func (r *BootcNodePoolReconciler) resolveTargetDigest(pool *bootcv1alpha1.BootcNodePool) error {
+// resolveTargetDigest resolves the target digest from the pool's image
+// ref. Digest refs are extracted directly. Tag refs are resolved via
+// the registry, respecting the re-resolution interval.
+func (r *BootcNodePoolReconciler) resolveTargetDigest(ctx context.Context, pool *bootcv1alpha1.BootcNodePool) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
 	ref, err := parseImageRef(pool.Spec.Image.Ref)
 	if err != nil {
-		return newInvalidSpecError(fmt.Sprintf("invalid image ref %q: %v", pool.Spec.Image.Ref, err))
+		return ctrl.Result{}, newInvalidSpecError(fmt.Sprintf("invalid image ref %q: %v", pool.Spec.Image.Ref, err))
 	}
+
 	digested, ok := ref.(reference.Digested)
-	if !ok {
-		return newInvalidSpecError(fmt.Sprintf("image ref %q has no digest (tag resolution not yet supported)", pool.Spec.Image.Ref))
+	if ok {
+		pool.Status.TargetDigest = digested.Digest().String()
+		// Reset the NextTagResolutionTime in case we pass from a tag referenced image to a digested one.
+		// Otherwise, it simply a nop
+		pool.Status.NextTagResolutionTime = nil
+		return ctrl.Result{}, nil
 	}
-	pool.Status.TargetDigest = digested.Digest().String()
-	return nil
+
+	// Tag ref — check if resolution is due.
+	now := time.Now()
+	if pool.Status.NextTagResolutionTime != nil && now.Before(pool.Status.NextTagResolutionTime.Time) {
+		remaining := pool.Status.NextTagResolutionTime.Sub(now)
+		log.V(1).Info("Tag resolution not yet due", "remaining", remaining)
+		return ctrl.Result{RequeueAfter: remaining}, nil
+	}
+
+	digest, err := r.TagResolver.Resolve(ctx, pool.Spec.Image.Ref)
+	if err != nil {
+		log.Error(err, "Failed to resolve tag", "ref", pool.Spec.Image.Ref)
+		apimeta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
+			Type:    bootcv1alpha1.PoolDegraded,
+			Status:  metav1.ConditionTrue,
+			Reason:  bootcv1alpha1.PoolTagResolutionError,
+			Message: err.Error(),
+		})
+	} else {
+		if pool.Status.TargetDigest != digest {
+			log.Info("Resolved tag to new digest", "ref", pool.Spec.Image.Ref, "digest", digest)
+		}
+		pool.Status.TargetDigest = digest
+	}
+
+	next := metav1.NewTime(now.Add(r.TagResolutionInterval))
+	pool.Status.NextTagResolutionTime = &next
+	return ctrl.Result{RequeueAfter: r.TagResolutionInterval}, nil
 }
 
 // parseImageRef parses an image reference string into a named
