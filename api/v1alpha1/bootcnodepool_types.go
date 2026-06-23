@@ -45,6 +45,10 @@ const (
 	// digest ref, or a malformed nodeSelector).
 	PoolInvalidSpec string = "InvalidSpec"
 
+	// PoolRegistryError means the controller failed to contact the
+	// container registry to resolve a tag to a digest.
+	PoolRegistryError string = "RegistryError"
+
 	// PoolHealthy means no issues.
 	PoolHealthy string = "Healthy"
 )
