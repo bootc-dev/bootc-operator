@@ -163,6 +163,11 @@ type BootcNodePoolStatus struct {
 	// +optional
 	TargetDigest string `json:"targetDigest,omitempty"`
 
+	// nextTagResolutionTime is when the controller will next resolve a
+	// tag ref to a digest. Only set for tag-based image refs.
+	// +optional
+	NextTagResolutionTime *metav1.Time `json:"nextTagResolutionTime,omitempty"`
+
 	// deployedDigest is the last digest fully rolled out to all nodes in
 	// the pool.
 	// +optional
