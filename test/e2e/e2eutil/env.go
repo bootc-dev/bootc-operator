@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 	. "github.com/onsi/gomega" //nolint:staticcheck
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -224,6 +226,12 @@ func (e *Env) NodeImageDigestedPullSpec() string {
 	return e.nodeImageRegistry + "@" + e.nodeImageDigest
 }
 
+// NodeImageTagRef returns the tag-based reference for the seeded node
+// image (e.g. "registry.cluster.local:5000/node:latest").
+func (e *Env) NodeImageTagRef() string {
+	return e.nodeImageRegistry + ":latest"
+}
+
 // NodeImageDigest returns the manifest digest of the seeded node image.
 func (e *Env) NodeImageDigest() string {
 	return e.nodeImageDigest
@@ -241,6 +249,33 @@ func (e *Env) NodeImageUpdateDigestedPullSpec() string {
 // NodeImageUpdateDigest returns the manifest digest of the update image.
 func (e *Env) NodeImageUpdateDigest() string {
 	return e.nodeImageUpdateDigest
+}
+
+// RetagImage reads the image at srcRef from the localhost registry and
+// tags it as dstTag.
+func RetagImage(t *testing.T, srcRef, dstTag string) {
+	t.Helper()
+
+	src, err := name.ParseReference(srcRef, name.Insecure)
+	if err != nil {
+		t.Fatalf("parsing src ref %q: %v", srcRef, err)
+	}
+	desc, err := remote.Get(src)
+	if err != nil {
+		t.Fatalf("fetching %q: %v", srcRef, err)
+	}
+	img, err := desc.Image()
+	if err != nil {
+		t.Fatalf("getting image from descriptor: %v", err)
+	}
+
+	dst, err := name.ParseReference(dstTag, name.Insecure)
+	if err != nil {
+		t.Fatalf("parsing dst ref %q: %v", dstTag, err)
+	}
+	if err := remote.Write(dst, img); err != nil {
+		t.Fatalf("writing %q: %v", dstTag, err)
+	}
 }
 
 // cleanup gathers diagnostic logs, then deletes test-scoped resources
