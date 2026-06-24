@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -223,16 +224,14 @@ const (
 	controllerDeployment = "bootc-operator-controller-manager"
 )
 
-// setTagResolutionInterval patches the controller deployment to use
-// the given interval and waits for the rollout to complete. The
-// original args are restored in t.Cleanup.
-func setTagResolutionInterval(t *testing.T, interval string) {
+// patchControllerTestFlags patches the controller deployment args for
+// testing and waits for the rollout to complete. The original args
+// are restored in t.Cleanup.
+func patchControllerTestFlags(t *testing.T, extraFlags ...string) {
 	t.Helper()
 
 	kubeconfigPath := os.Getenv("KUBECONFIG")
-	flag := "--tag-resolution-interval=" + interval
 
-	// Read current args to restore later.
 	out, err := exec.Command("kubectl", "--kubeconfig", kubeconfigPath,
 		"-n", controllerNamespace, "get", "deploy", controllerDeployment,
 		"-o", "jsonpath={.spec.template.spec.containers[0].args}").CombinedOutput()
@@ -241,26 +240,29 @@ func setTagResolutionInterval(t *testing.T, interval string) {
 	}
 	originalArgs := string(out)
 
-	// Patch args to include the interval flag.
-	patch := fmt.Sprintf(`{"spec":{"template":{"spec":{"containers":[{"name":"manager","args":["--leader-elect","--health-probe-bind-address=:8081","%s"]}]}}}}`, flag)
+	baseArgs := []string{"--leader-elect", "--health-probe-bind-address=:8081"}
+	allArgs := append(baseArgs, extraFlags...)
+	argsJSON, err := json.Marshal(allArgs)
+	if err != nil {
+		t.Fatalf("marshalling args: %v", err)
+	}
+	patch := fmt.Sprintf(`{"spec":{"template":{"spec":{"containers":[{"name":"manager","args":%s}]}}}}`, argsJSON)
 	if out, err := exec.Command("kubectl", "--kubeconfig", kubeconfigPath,
 		"-n", controllerNamespace, "patch", "deploy", controllerDeployment,
 		"--type=strategic", "-p", patch).CombinedOutput(); err != nil {
 		t.Fatalf("patching deployment: %s: %v", string(out), err)
 	}
 
-	// Wait for rollout.
 	if out, err := exec.Command("kubectl", "--kubeconfig", kubeconfigPath,
 		"-n", controllerNamespace, "rollout", "status", "deploy/"+controllerDeployment,
 		"--timeout=2m").CombinedOutput(); err != nil {
 		t.Fatalf("waiting for rollout: %s: %v", string(out), err)
 	}
 
-	t.Logf("Set --tag-resolution-interval=%s (was %s)", interval, originalArgs)
+	t.Logf("Patched controller args to %s (was %s)", argsJSON, originalArgs)
 
 	t.Cleanup(func() {
-		// Restore original args.
-		patch := fmt.Sprintf(`{"spec":{"template":{"spec":{"containers":[{"name":"manager","args":["--leader-elect","--health-probe-bind-address=:8081"]}]}}}}`)
+		patch := fmt.Sprintf(`{"spec":{"template":{"spec":{"containers":[{"name":"manager","args":%s}]}}}}`, originalArgs)
 		if out, err := exec.Command("kubectl", "--kubeconfig", kubeconfigPath,
 			"-n", controllerNamespace, "patch", "deploy", controllerDeployment,
 			"--type=strategic", "-p", patch).CombinedOutput(); err != nil {
@@ -288,7 +290,7 @@ func TestTagResolution(t *testing.T) {
 	ctx := context.Background()
 
 	// Shorten the tag resolution interval so re-resolution happens quickly.
-	setTagResolutionInterval(t, "10s")
+	patchControllerTestFlags(t, "--tag-resolution-interval=10s")
 
 	nodeName := env.AddNode(t)
 
