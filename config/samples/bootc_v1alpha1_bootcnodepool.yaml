@@ -9,7 +9,7 @@ spec:
     matchLabels:
       node-role.kubernetes.io/worker: ""
   image:
-    ref: ghcr.io/alicefr/bink/node:latest
+    ref: ghcr.io/bootc-dev/bink/node:latest
   # rollout:
   #   maxUnavailable: 1                    # default
   #   paused: false                        # default

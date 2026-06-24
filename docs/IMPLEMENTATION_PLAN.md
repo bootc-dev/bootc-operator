@@ -1,7 +1,7 @@
 # Bootc Operator -- Implementation Plan
 
 This document breaks the implementation into milestones.
-[bink](https://github.com/alicefr/bink) is used for e2e tests starting
+[bink](https://github.com/bootc-dev/bink) is used for e2e tests starting
 from Milestone 2 (a tool for spinning up K8s clusters backed by bootc
 VMs with a local registry).
 
