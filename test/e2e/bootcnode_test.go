@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -187,4 +189,173 @@ func TestUpdateReboot(t *testing.T) {
 		fmt.Sprintf("expected update-marker to exist on host, kubectl exec output: %s", string(out)))
 
 	t.Logf("Verified update-marker exists on host via daemon pod")
+}
+
+// retagImage reads the image at srcRef from the localhost registry and
+// tags it as dstTag. Both refs use localhost:5000 (host-side registry).
+func retagImage(t *testing.T, srcRef, dstTag string) {
+	t.Helper()
+
+	src, err := name.ParseReference(srcRef, name.Insecure)
+	if err != nil {
+		t.Fatalf("parsing src ref %q: %v", srcRef, err)
+	}
+	desc, err := remote.Get(src)
+	if err != nil {
+		t.Fatalf("fetching %q: %v", srcRef, err)
+	}
+	img, err := desc.Image()
+	if err != nil {
+		t.Fatalf("getting image from descriptor: %v", err)
+	}
+
+	dst, err := name.ParseReference(dstTag, name.Insecure)
+	if err != nil {
+		t.Fatalf("parsing dst ref %q: %v", dstTag, err)
+	}
+	if err := remote.Write(dst, img); err != nil {
+		t.Fatalf("writing %q: %v", dstTag, err)
+	}
+}
+
+const (
+	controllerNamespace  = "bootc-operator"
+	controllerDeployment = "bootc-operator-controller-manager"
+)
+
+// setTagResolutionInterval patches the controller deployment to use
+// the given interval and waits for the rollout to complete. The
+// original args are restored in t.Cleanup.
+func setTagResolutionInterval(t *testing.T, interval string) {
+	t.Helper()
+
+	kubeconfigPath := os.Getenv("KUBECONFIG")
+	flag := "--tag-resolution-interval=" + interval
+
+	// Read current args to restore later.
+	out, err := exec.Command("kubectl", "--kubeconfig", kubeconfigPath,
+		"-n", controllerNamespace, "get", "deploy", controllerDeployment,
+		"-o", "jsonpath={.spec.template.spec.containers[0].args}").CombinedOutput()
+	if err != nil {
+		t.Fatalf("reading deployment args: %s: %v", string(out), err)
+	}
+	originalArgs := string(out)
+
+	// Patch args to include the interval flag.
+	patch := fmt.Sprintf(`{"spec":{"template":{"spec":{"containers":[{"name":"manager","args":["--leader-elect","--health-probe-bind-address=:8081","%s"]}]}}}}`, flag)
+	if out, err := exec.Command("kubectl", "--kubeconfig", kubeconfigPath,
+		"-n", controllerNamespace, "patch", "deploy", controllerDeployment,
+		"--type=strategic", "-p", patch).CombinedOutput(); err != nil {
+		t.Fatalf("patching deployment: %s: %v", string(out), err)
+	}
+
+	// Wait for rollout.
+	if out, err := exec.Command("kubectl", "--kubeconfig", kubeconfigPath,
+		"-n", controllerNamespace, "rollout", "status", "deploy/"+controllerDeployment,
+		"--timeout=2m").CombinedOutput(); err != nil {
+		t.Fatalf("waiting for rollout: %s: %v", string(out), err)
+	}
+
+	t.Logf("Set --tag-resolution-interval=%s (was %s)", interval, originalArgs)
+
+	t.Cleanup(func() {
+		// Restore original args.
+		patch := fmt.Sprintf(`{"spec":{"template":{"spec":{"containers":[{"name":"manager","args":["--leader-elect","--health-probe-bind-address=:8081"]}]}}}}`)
+		if out, err := exec.Command("kubectl", "--kubeconfig", kubeconfigPath,
+			"-n", controllerNamespace, "patch", "deploy", controllerDeployment,
+			"--type=strategic", "-p", patch).CombinedOutput(); err != nil {
+			t.Logf("WARNING: restoring deployment args: %s: %v", string(out), err)
+			return
+		}
+		if out, err := exec.Command("kubectl", "--kubeconfig", kubeconfigPath,
+			"-n", controllerNamespace, "rollout", "status", "deploy/"+controllerDeployment,
+			"--timeout=2m").CombinedOutput(); err != nil {
+			t.Logf("WARNING: waiting for rollout after restore: %s: %v", string(out), err)
+		}
+	})
+}
+
+// TestTagResolution creates a pool with a tag-based image ref, verifies
+// the controller resolves the tag to a digest, then retags the image
+// and verifies re-resolution triggers a rollout.
+func TestTagResolution(t *testing.T) {
+	g := NewWithT(t)
+	g.SetDefaultEventuallyTimeout(pollTimeout)
+	g.SetDefaultEventuallyPollingInterval(pollInterval)
+
+	env := e2eutil.New(t)
+
+	ctx := context.Background()
+
+	// Shorten the tag resolution interval so re-resolution happens quickly.
+	setTagResolutionInterval(t, "10s")
+
+	nodeName := env.AddNode(t)
+
+	// The seed step already pushed node:latest with the original image.
+	// Create a pool using the tag ref.
+	pool := env.NewPool("tag", env.NodeImageTagRef())
+	g.Expect(env.Client.Create(ctx, pool)).To(Succeed())
+
+	// Verify targetDigest is resolved to the original image digest.
+	g.Eventually(func(g Gomega) string {
+		var p bootcv1alpha1.BootcNodePool
+		g.Expect(env.Client.Get(ctx, client.ObjectKeyFromObject(pool), &p)).To(Succeed())
+		return p.Status.TargetDigest
+	}).WithTimeout(1 * time.Minute).Should(Equal(env.NodeImageDigest()))
+
+	t.Logf("Tag resolved to original digest %s", env.NodeImageDigest())
+
+	// Wait for node to reach Idle with the original image.
+	g.Eventually(func(g Gomega) bootcv1alpha1.BootcNodeStatus {
+		var bn bootcv1alpha1.BootcNode
+		g.Expect(env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)).To(Succeed())
+		return bn.Status
+	}).WithTimeout(3 * time.Minute).Should(And(
+		HaveField("Booted", And(
+			Not(BeNil()),
+			HaveField("ImageDigest", Equal(env.NodeImageDigest())),
+		)),
+		HaveField("Conditions", ContainElement(And(
+			HaveField("Type", bootcv1alpha1.NodeIdle),
+			HaveField("Status", metav1.ConditionTrue),
+		))),
+	))
+
+	t.Logf("Node %q is Idle with original image", nodeName)
+
+	// Retag node:latest to point at the update image.
+	retagImage(t,
+		"localhost:5000/node@"+env.NodeImageUpdateDigest(),
+		"localhost:5000/node:latest",
+	)
+
+	t.Logf("Retagged node:latest to update digest %s", env.NodeImageUpdateDigest())
+
+	// Wait for the controller to re-resolve and pick up the new digest.
+	g.Eventually(func(g Gomega) string {
+		var p bootcv1alpha1.BootcNodePool
+		g.Expect(env.Client.Get(ctx, client.ObjectKeyFromObject(pool), &p)).To(Succeed())
+		return p.Status.TargetDigest
+	}).WithTimeout(1 * time.Minute).Should(Equal(env.NodeImageUpdateDigest()))
+
+	t.Logf("Tag re-resolved to update digest %s", env.NodeImageUpdateDigest())
+
+	// Wait for node to reach Idle with the update image.
+	g.Eventually(func(g Gomega) bootcv1alpha1.BootcNodeStatus {
+		var bn bootcv1alpha1.BootcNode
+		g.Expect(env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)).To(Succeed())
+		return bn.Status
+	}).WithTimeout(5 * time.Minute).Should(And(
+		HaveField("Booted", And(
+			Not(BeNil()),
+			HaveField("ImageDigest", Equal(env.NodeImageUpdateDigest())),
+		)),
+		HaveField("Conditions", ContainElement(And(
+			HaveField("Type", bootcv1alpha1.NodeIdle),
+			HaveField("Status", metav1.ConditionTrue),
+		))),
+	))
+
+	t.Logf("Node %q is Idle with update image", nodeName)
 }
