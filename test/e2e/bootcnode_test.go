@@ -289,8 +289,9 @@ func TestTagResolution(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Shorten the tag resolution interval so re-resolution happens quickly.
-	patchControllerTestFlags(t, "--tag-resolution-interval=10s")
+	// Allow insecure registry access (the bink in-cluster registry serves HTTP only)
+	// and shorten the tag resolution interval so re-resolution happens quickly.
+	patchControllerTestFlags(t, "--allow-insecure-registry", "--tag-resolution-interval=10s")
 
 	nodeName := env.AddNode(t)
 
