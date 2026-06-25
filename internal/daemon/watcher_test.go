@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/event"
+
+	testutil "github.com/bootc-dev/bootc-operator/test/util"
 )
 
 func startWatcher(t *testing.T, w *StatusWatcher) (done <-chan error, cancel context.CancelFunc) {
@@ -19,6 +21,20 @@ func startWatcher(t *testing.T, w *StatusWatcher) (done <-chan error, cancel con
 	go func() { ch <- w.Start(ctx) }()
 	<-w.Ready
 	return ch, cancel
+}
+
+func newTestWatcher(ostreePath, composefsPath string, pollInterval time.Duration) *StatusWatcher {
+	f := &fakeExecutor{}
+	f.status = newBootcStatus(testutil.DigestA)
+	return &StatusWatcher{
+		PollInterval:  pollInterval,
+		OstreePath:    ostreePath,
+		ComposefsPath: composefsPath,
+		Events:        make(chan event.GenericEvent, 1),
+		NodeName:      "test-node",
+		Executor:      f,
+		Ready:         make(chan struct{}),
+	}
 }
 
 type triggerKind int
@@ -72,15 +88,7 @@ func TestWatcherEvents(t *testing.T) {
 				}
 			}
 
-			events := make(chan event.GenericEvent, 1)
-			w := &StatusWatcher{
-				PollInterval:  tt.pollInterval,
-				OstreePath:    ostreePath,
-				ComposefsPath: composefsPath,
-				Events:        events,
-				NodeName:      "test-node",
-				Ready:         make(chan struct{}),
-			}
+			w := newTestWatcher(ostreePath, composefsPath, tt.pollInterval)
 
 			done, cancel := startWatcher(t, w)
 			defer cancel()
@@ -98,7 +106,7 @@ func TestWatcherEvents(t *testing.T) {
 			}
 
 			select {
-			case ev := <-events:
+			case ev := <-w.Events:
 				if ev.Object.GetName() != "test-node" {
 					t.Errorf("expected node name test-node, got %s", ev.Object.GetName())
 				}
@@ -114,6 +122,72 @@ func TestWatcherEvents(t *testing.T) {
 	}
 }
 
+func TestWatcherCachesStatus(t *testing.T) {
+	dir := t.TempDir()
+	w := newTestWatcher(filepath.Join(dir, "nonexistent"), filepath.Join(dir, "nonexistent2"), 200*time.Millisecond)
+
+	done, cancel := startWatcher(t, w)
+	defer cancel()
+
+	// Wait for the poll to fire and populate the cache.
+	select {
+	case <-w.Events:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for event")
+	}
+
+	status, err := w.GetStatus(context.Background())
+	if err != nil {
+		t.Fatalf("GetStatus returned error: %v", err)
+	}
+	if status.Status.Booted == nil || status.Status.Booted.Image == nil {
+		t.Fatal("expected booted entry in cached status")
+	}
+	if status.Status.Booted.Image.ImageDigest != testutil.DigestA {
+		t.Errorf("expected digest %s, got %s", testutil.DigestA, status.Status.Booted.Image.ImageDigest)
+	}
+
+	// Change the executor's data to simulate a stale cache where
+	// fsnotify hasn't fired yet. GetStatus must still return the
+	// cached (old) value, proving it serves from cache.
+	f := w.Executor.(*fakeExecutor)
+	f.mu.Lock()
+	f.status = newBootcStatus(testutil.DigestB)
+	f.mu.Unlock()
+
+	status, err = w.GetStatus(context.Background())
+	if err != nil {
+		t.Fatalf("GetStatus returned error after executor change: %v", err)
+	}
+	if status.Status.Booted.Image.ImageDigest != testutil.DigestA {
+		t.Errorf("expected cached digest %s, got %s", testutil.DigestA, status.Status.Booted.Image.ImageDigest)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("watcher returned error: %v", err)
+	}
+}
+
+func TestWatcherGetStatusColdCache(t *testing.T) {
+	f := &fakeExecutor{}
+	f.status = newBootcStatus(testutil.DigestA)
+
+	w := &StatusWatcher{
+		Events:   make(chan event.GenericEvent, 1),
+		NodeName: "test-node",
+		Executor: f,
+	}
+
+	status, err := w.GetStatus(context.Background())
+	if err != nil {
+		t.Fatalf("GetStatus returned error: %v", err)
+	}
+	if status.Status.Booted == nil || status.Status.Booted.Image == nil || status.Status.Booted.Image.ImageDigest != testutil.DigestA {
+		t.Fatalf("expected booted digest %s", testutil.DigestA)
+	}
+}
+
 func TestWatcherShutdown(t *testing.T) {
 	dir := t.TempDir()
 	watchDir := filepath.Join(dir, "bootc")
@@ -121,14 +195,7 @@ func TestWatcherShutdown(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w := &StatusWatcher{
-		PollInterval: 10 * time.Minute,
-		OstreePath:  watchDir,
-		ComposefsPath: filepath.Join(dir, "nonexistent"),
-		Events:       make(chan event.GenericEvent, 1),
-		NodeName:     "test-node",
-		Ready:        make(chan struct{}),
-	}
+	w := newTestWatcher(watchDir, filepath.Join(dir, "nonexistent"), 10*time.Minute)
 
 	done, cancel := startWatcher(t, w)
 	cancel()
@@ -140,5 +207,32 @@ func TestWatcherShutdown(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for watcher to shut down")
+	}
+}
+
+func TestWatcherNoPollWhenFsnotifyHealthy(t *testing.T) {
+	dir := t.TempDir()
+	ostreePath := filepath.Join(dir, "bootc")
+	if err := os.Mkdir(ostreePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	w := newTestWatcher(ostreePath, filepath.Join(dir, "nonexistent"), 200*time.Millisecond)
+
+	done, cancel := startWatcher(t, w)
+	defer cancel()
+
+	// With fsnotify healthy and no filesystem events, the short poll
+	// interval should NOT fire (polling is deferred until fsnotify fails).
+	select {
+	case <-w.Events:
+		t.Fatal("received unexpected poll event while fsnotify is healthy")
+	case <-time.After(500 * time.Millisecond):
+		// expected: no events
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("watcher returned error: %v", err)
 	}
 }
