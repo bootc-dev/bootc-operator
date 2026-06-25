@@ -46,13 +46,14 @@ type stageOp struct {
 }
 
 // BootcNodeReconciler reconciles the BootcNode for the node this daemon
-// runs on. It reads bootc status from the host, detects image mismatches,
-// and drives updates via bootc stage.
+// runs on. It reads bootc status from the watcher's cache, detects image
+// mismatches, and drives updates via bootc stage.
 type BootcNodeReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	NodeName string
-	Executor bootc.Executor
+	Scheme        *runtime.Scheme
+	NodeName      string
+	Executor      bootc.Executor
+	StatusWatcher *StatusWatcher
 
 	inflight  stageOp
 	stageDone chan event.GenericEvent
@@ -67,6 +68,7 @@ func (r *BootcNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&bootcv1alpha1.BootcNode{}).
 		WatchesRawSource(source.Channel(r.stageDone, &handler.EnqueueRequestForObject{})).
+		WatchesRawSource(source.Channel(r.StatusWatcher.Events, &handler.EnqueueRequestForObject{})).
 		Named("bootcnode").
 		Complete(r)
 }
@@ -317,14 +319,9 @@ func (s *stageOp) run(ctx context.Context, nodeName, image string, executor boot
 }
 
 func (r *BootcNodeReconciler) populateBootcFields(ctx context.Context, bn *bootcv1alpha1.BootcNode) error {
-	data, err := r.Executor.Status(ctx)
+	status, err := r.StatusWatcher.GetStatus(ctx)
 	if err != nil {
 		return fmt.Errorf("getting bootc status: %w", err)
-	}
-
-	status, err := bootc.ParseStatus(data)
-	if err != nil {
-		return fmt.Errorf("failed to parse bootc status: %w", err)
 	}
 
 	bn.Status.Booted = convertBootEntry(status.Status.Booted)
