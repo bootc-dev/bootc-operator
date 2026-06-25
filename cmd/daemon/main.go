@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -14,6 +15,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
@@ -32,6 +34,9 @@ func init() {
 }
 
 func main() {
+	var pollInterval time.Duration
+	flag.DurationVar(&pollInterval, "bootc-poll-interval", 5*time.Minute, "Interval for polling bootc status as a fallback to fsnotify")
+
 	opts := zap.Options{
 		Development: true,
 	}
@@ -62,17 +67,33 @@ func main() {
 		os.Exit(1)
 	}
 
+	executor := bootc.NewHostExecutor()
+
+	watcher := &daemon.StatusWatcher{
+		PollInterval: pollInterval,
+		OstreePath:    daemon.DefaultOstreePath,
+		ComposefsPath: daemon.DefaultComposefsPath,
+		Events:       make(chan event.GenericEvent, 1),
+		NodeName:     nodeName,
+		Executor:     executor,
+	}
+	if err := mgr.Add(watcher); err != nil {
+		setupLog.Error(err, "Failed to add status watcher")
+		os.Exit(1)
+	}
+
 	if err := (&daemon.BootcNodeReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		NodeName: nodeName,
-		Executor: bootc.NewHostExecutor(),
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		NodeName:      nodeName,
+		Executor:      executor,
+		StatusWatcher: watcher,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "bootcnode")
 		os.Exit(1)
 	}
 
-	setupLog.Info("Starting daemon", "node", nodeName)
+	setupLog.Info("Starting daemon", "node", nodeName, "pollInterval", pollInterval)
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "Failed to run daemon")
 		os.Exit(1)
