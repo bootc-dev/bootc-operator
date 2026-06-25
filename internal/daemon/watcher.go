@@ -5,6 +5,8 @@ package daemon
 import (
 	"context"
 	"os"
+	"reflect"
+	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -13,6 +15,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
+	"github.com/bootc-dev/bootc-operator/internal/bootc"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 )
 
@@ -27,7 +30,45 @@ type StatusWatcher struct {
 	ComposefsPath string
 	Events        chan event.GenericEvent
 	NodeName      string
+	Executor      bootc.Executor
 	Ready         chan struct{}
+
+	mu      sync.RWMutex
+	cached  *bootc.Status
+	started bool
+}
+
+// GetStatus returns the cached bootc status when the watcher loop is
+// running (fsnotify or polling keeps the cache fresh). If the watcher
+// has not been started, it always reads fresh from the host.
+func (w *StatusWatcher) GetStatus(ctx context.Context) (*bootc.Status, error) {
+	w.mu.RLock()
+	s := w.cached
+	started := w.started
+	w.mu.RUnlock()
+	if started && s != nil {
+		return s, nil
+	}
+	s, _, err := w.refresh(ctx)
+	return s, err
+}
+
+// refresh reads bootc status from the host and updates the cache.
+// Returns the new status, if the cache has changed or an error.
+func (w *StatusWatcher) refresh(ctx context.Context) (*bootc.Status, bool, error) {
+	data, err := w.Executor.Status(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	s, err := bootc.ParseStatus(data)
+	if err != nil {
+		return nil, false, err
+	}
+	w.mu.Lock()
+	changed := !reflect.DeepEqual(s, w.cached)
+	w.cached = s
+	w.mu.Unlock()
+	return s, changed, nil
 }
 
 // Start implements manager.Runnable.
@@ -50,8 +91,18 @@ func (w *StatusWatcher) Start(ctx context.Context) error {
 		w.PollInterval = 5 * time.Minute
 	}
 
-	ticker := time.NewTicker(w.PollInterval)
-	defer ticker.Stop()
+	// Only start polling once fsnotify is unavailable.
+	var ticker *time.Ticker
+	var tickerCh <-chan time.Time
+	if fsWatcher == nil {
+		ticker = time.NewTicker(w.PollInterval)
+		tickerCh = ticker.C
+	}
+	defer func() {
+		if ticker != nil {
+			ticker.Stop()
+		}
+	}()
 
 	var evCh <-chan fsnotify.Event
 	var errCh <-chan error
@@ -59,6 +110,10 @@ func (w *StatusWatcher) Start(ctx context.Context) error {
 		evCh = fsWatcher.Events
 		errCh = fsWatcher.Errors
 	}
+
+	w.mu.Lock()
+	w.started = true
+	w.mu.Unlock()
 
 	if w.Ready != nil {
 		close(w.Ready)
@@ -73,7 +128,7 @@ func (w *StatusWatcher) Start(ctx context.Context) error {
 			// composefs backend: new deploy directory triggers Create.
 			if ev.Has(fsnotify.Chmod) || ev.Has(fsnotify.Create) {
 				log.V(1).Info("Detected bootc status change via fsnotify")
-				w.sendEvent()
+				w.refreshAndNotify(ctx, log)
 			}
 		// Tear down fsnotify so the loop continues with polling only.
 		// A broken inotify fd never delivers events again, so without this
@@ -83,11 +138,27 @@ func (w *StatusWatcher) Start(ctx context.Context) error {
 			closeFsWatcher()
 			evCh = nil
 			errCh = nil
-		case <-ticker.C:
+			ticker = time.NewTicker(w.PollInterval)
+			tickerCh = ticker.C
+		case <-tickerCh:
 			log.V(1).Info("Polling bootc status")
-			w.sendEvent()
+			w.refreshAndNotify(ctx, log)
 		}
 	}
+}
+
+// refreshAndNotify reads bootc status, updates the cache, and sends
+// an event to trigger reconciliation.
+func (w *StatusWatcher) refreshAndNotify(ctx context.Context, log logr.Logger) {
+	_, changed, err := w.refresh(ctx)
+	if err != nil {
+		log.Error(err, "Failed to refresh bootc status")
+		return
+	}
+	if !changed {
+		return
+	}
+	w.sendEvent()
 }
 
 func (w *StatusWatcher) setupFsnotify(log logr.Logger, watchPath string) *fsnotify.Watcher {
