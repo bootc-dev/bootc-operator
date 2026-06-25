@@ -70,12 +70,12 @@ func main() {
 	executor := bootc.NewHostExecutor()
 
 	watcher := &daemon.StatusWatcher{
-		PollInterval: pollInterval,
+		PollInterval:  pollInterval,
 		OstreePath:    daemon.DefaultOstreePath,
 		ComposefsPath: daemon.DefaultComposefsPath,
-		Events:       make(chan event.GenericEvent, 1),
-		NodeName:     nodeName,
-		Executor:     executor,
+		Events:        make(chan event.GenericEvent, 1),
+		NodeName:      nodeName,
+		Executor:      executor,
 	}
 	if err := mgr.Add(watcher); err != nil {
 		setupLog.Error(err, "Failed to add status watcher")
