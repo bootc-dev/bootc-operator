@@ -94,17 +94,6 @@ func (f *fakeExecutor) getRebooted() bool {
 	return f.rebooted
 }
 
-func (f *fakeExecutor) reset() {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.status = bootc.Status{}
-	f.statusErr = nil
-	f.stageErr = nil
-	f.stageImg = ""
-	f.stageHook = nil
-	f.rebooted = false
-}
-
 func newBootEntry(image, digest string) *bootc.BootEntry {
 	return &bootc.BootEntry{
 		Image: &bootc.ImageStatus{

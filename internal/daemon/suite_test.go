@@ -13,6 +13,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
@@ -22,9 +23,9 @@ import (
 const testNodeName = "test-node"
 
 var (
-	testEnv   *envtest.Environment
-	k8sClient client.Client
-	fake      *fakeExecutor
+	testEnv        *envtest.Environment
+	k8sClient      client.Client
+	testReconciler *BootcNodeReconciler
 )
 
 func TestMain(m *testing.M) {
@@ -52,8 +53,6 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	fake = &fakeExecutor{}
-
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme: scheme.Scheme,
 		Metrics: metricsserver.Options{
@@ -65,12 +64,23 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	if err := (&BootcNodeReconciler{
+	fake := &fakeExecutor{}
+	testReconciler = &BootcNodeReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		NodeName: testNodeName,
 		Executor: fake,
-	}).SetupWithManager(mgr); err != nil {
+		StatusWatcher: &StatusWatcher{
+			Events:   make(chan event.GenericEvent, 1),
+			NodeName: testNodeName,
+			Executor: fake,
+		},
+	}
+	if err := mgr.Add(testReconciler.StatusWatcher); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to add status watcher: %v\n", err)
+		os.Exit(1)
+	}
+	if err := testReconciler.SetupWithManager(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to setup reconciler: %v\n", err)
 		os.Exit(1)
 	}
@@ -96,4 +106,17 @@ func TestMain(m *testing.M) {
 	}
 
 	os.Exit(code)
+}
+
+// newTestEnv creates a fresh fakeExecutor and StatusWatcher for a test,
+// wiring them into the shared reconciler. Each test gets its own cache.
+func newTestEnv() *fakeExecutor {
+	fake := &fakeExecutor{}
+	testReconciler.Executor = fake
+	testReconciler.StatusWatcher = &StatusWatcher{
+		Events:   testReconciler.StatusWatcher.Events,
+		NodeName: testNodeName,
+		Executor: fake,
+	}
+	return fake
 }
