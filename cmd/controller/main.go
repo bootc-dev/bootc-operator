@@ -5,6 +5,7 @@ package main
 import (
 	"flag"
 	"os"
+	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -16,6 +17,7 @@ import (
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
 	"github.com/bootc-dev/bootc-operator/internal/controller"
+	"github.com/bootc-dev/bootc-operator/internal/registry"
 )
 
 var (
@@ -31,7 +33,12 @@ func init() {
 func main() {
 	var enableLeaderElection bool
 	var probeAddr string
+	var tagResolutionInterval time.Duration
+	var allowInsecureRegistry bool
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	flag.DurationVar(&tagResolutionInterval, "tag-resolution-interval", 5*time.Minute, "How often to re-resolve tag-based image refs.")
+	flag.BoolVar(&allowInsecureRegistry, "allow-insecure-registry", false,
+		"Allow falling back to HTTP when resolving tag-based image refs against registries that do not serve TLS.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
@@ -61,9 +68,11 @@ func main() {
 	}
 
 	if err := (&controller.BootcNodePoolReconciler{
-		Client:     mgr.GetClient(),
-		Scheme:     mgr.GetScheme(),
-		KubeClient: kubeClient,
+		Client:                mgr.GetClient(),
+		Scheme:                mgr.GetScheme(),
+		KubeClient:            kubeClient,
+		TagResolver:           &registry.GGCRResolver{AllowInsecure: allowInsecureRegistry},
+		TagResolutionInterval: tagResolutionInterval,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "bootcnodepool")
 		os.Exit(1)

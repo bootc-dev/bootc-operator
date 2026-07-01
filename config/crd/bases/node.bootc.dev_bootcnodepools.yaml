@@ -243,6 +243,12 @@ spec:
                   deployedDigest is the last digest fully rolled out to all nodes in
                   the pool.
                 type: string
+              nextTagResolutionTime:
+                description: |-
+                  nextTagResolutionTime is when the controller will next resolve a
+                  tag ref to a digest. Only set for tag-based image refs.
+                format: date-time
+                type: string
               nodeCount:
                 description: nodeCount is the total number of nodes in this pool.
                 format: int32

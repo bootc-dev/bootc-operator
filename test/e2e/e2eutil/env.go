@@ -224,6 +224,12 @@ func (e *Env) NodeImageDigestedPullSpec() string {
 	return e.nodeImageRegistry + "@" + e.nodeImageDigest
 }
 
+// NodeImageTagRef returns the tag-based reference for the seeded node
+// image (e.g. "registry.cluster.local:5000/node:latest").
+func (e *Env) NodeImageTagRef() string {
+	return e.nodeImageRegistry + ":latest"
+}
+
 // NodeImageDigest returns the manifest digest of the seeded node image.
 func (e *Env) NodeImageDigest() string {
 	return e.nodeImageDigest
