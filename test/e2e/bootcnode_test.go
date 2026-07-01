@@ -95,12 +95,29 @@ func TestControllerMembership(t *testing.T) {
 // original image, then updates the pool to a new image and verifies the
 // full update lifecycle: staging, reboot, and idle with the new image.
 func TestUpdateReboot(t *testing.T) {
+	testUpdateReboot(t)
+}
+
+// TestUpdateRebootComposefs runs the same update lifecycle as
+// TestUpdateReboot but boots the worker node from a composefs disk
+// image. Skipped when BINK_NODE_DISK_IMAGE_COMPOSEFS is not set.
+func TestUpdateRebootComposefs(t *testing.T) {
+	img := os.Getenv("BINK_NODE_DISK_IMAGE_COMPOSEFS")
+	if img == "" {
+		t.Skip("BINK_NODE_DISK_IMAGE_COMPOSEFS not set")
+	}
+	testUpdateReboot(t, e2eutil.WithNodeDiskImage(img))
+}
+
+func testUpdateReboot(t *testing.T, nodeOpts ...e2eutil.NodeOption) {
+	t.Helper()
+
 	g := NewWithT(t)
 	g.SetDefaultEventuallyTimeout(pollTimeout)
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
 
 	env := e2eutil.New(t)
-	nodeName := env.AddNode(t)
+	nodeName := env.AddNode(t, nodeOpts...)
 
 	ctx := context.Background()
 

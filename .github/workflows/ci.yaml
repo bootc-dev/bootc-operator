@@ -152,7 +152,7 @@ jobs:
         run: make gather-bink
 
       - name: Run e2e tests
-        run: make e2e V=1
+        run: make e2e V=1 BINK_NODE_DISK_IMAGE_COMPOSEFS=ghcr.io/bootc-dev/bink/node:v1.35-fedora-44-disk-composefs
 
       - name: Upload logs
         if: always()
