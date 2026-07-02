@@ -7,6 +7,7 @@ BINK_CLUSTER_NAME ?= e2e
 KUBECONFIG_BINK ?= ./kubeconfig-$(BINK_CLUSTER_NAME)
 ARTIFACTS ?= $(abspath _output/logs)
 BINK_NODE_DISK_IMAGE ?= ghcr.io/bootc-dev/bink/node:v1.35-fedora-44-disk
+BINK_NODE_DISK_IMAGE_COMPOSEFS ?= $(BINK_NODE_DISK_IMAGE)-composefs
 BINK_LOCAL_REGISTRY_NODE_IMAGE ?= registry.cluster.local:5000/node
 # YEAR defines the year value used for substituting the YEAR placeholder in the boilerplate header.
 YEAR ?= $(shell date +%Y)
@@ -65,6 +66,7 @@ e2e: ## Run e2e tests (requires: make deploy-bink). V=1 for verbose. RUN=<regex>
 	cd test/e2e && KUBECONFIG=$(abspath $(KUBECONFIG_BINK)) BINK_CLUSTER_NAME=$(BINK_CLUSTER_NAME) \
 		$(if $(BINK_NODE_IMAGE),BINK_NODE_IMAGE=$(BINK_NODE_IMAGE)) \
 		BINK_NODE_DISK_IMAGE=$(BINK_NODE_DISK_IMAGE) \
+		BINK_NODE_DISK_IMAGE_COMPOSEFS=$(BINK_NODE_DISK_IMAGE_COMPOSEFS) \
 		BINK_LOCAL_REGISTRY_NODE_IMAGE=$(BINK_LOCAL_REGISTRY_NODE_IMAGE) \
 		ARTIFACTS=$(ARTIFACTS) \
 		BINK_NODE_IMAGE_DIGEST=$$(skopeo inspect --tls-verify=false --format '{{.Digest}}' docker://localhost:5000/node:latest) \
