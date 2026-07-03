@@ -199,3 +199,85 @@ func TestUpdateReboot(t *testing.T) {
 
 	t.Logf("Verified update-marker exists on host via daemon pod")
 }
+
+// TestTagResolution creates a pool with a tag-based image ref, verifies
+// the controller resolves the tag to a digest, then retags the image
+// and verifies re-resolution triggers a rollout.
+func TestTagResolution(t *testing.T) {
+	g := NewWithT(t)
+	g.SetDefaultEventuallyTimeout(pollTimeout)
+	g.SetDefaultEventuallyPollingInterval(pollInterval)
+
+	env := e2eutil.New(t)
+
+	ctx := context.Background()
+
+	nodeName := env.AddNode(t)
+
+	// The seed step already pushed node:latest with the original image.
+	// Create a pool using the tag ref.
+	pool := env.NewPool("tag", env.NodeImageTagRef())
+	g.Expect(env.Client.Create(ctx, pool)).To(Succeed())
+
+	// Verify targetDigest is resolved to the original image digest.
+	g.Eventually(func(g Gomega) string {
+		var p bootcv1alpha1.BootcNodePool
+		g.Expect(env.Client.Get(ctx, client.ObjectKeyFromObject(pool), &p)).To(Succeed())
+		return p.Status.TargetDigest
+	}).WithTimeout(1 * time.Minute).Should(Equal(env.NodeImageDigest()))
+
+	t.Logf("Tag resolved to original digest %s", env.NodeImageDigest())
+
+	// Wait for node to reach Idle with the original image.
+	g.Eventually(func(g Gomega) bootcv1alpha1.BootcNodeStatus {
+		var bn bootcv1alpha1.BootcNode
+		g.Expect(env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)).To(Succeed())
+		return bn.Status
+	}).WithTimeout(3 * time.Minute).Should(And(
+		HaveField("Booted", And(
+			Not(BeNil()),
+			HaveField("ImageDigest", Equal(env.NodeImageDigest())),
+		)),
+		HaveField("Conditions", ContainElement(And(
+			HaveField("Type", bootcv1alpha1.NodeIdle),
+			HaveField("Status", metav1.ConditionTrue),
+		))),
+	))
+
+	t.Logf("Node %q is Idle with original image", nodeName)
+
+	// Retag node:latest to point at the update image.
+	e2eutil.RetagImage(t,
+		"localhost:5000/node@"+env.NodeImageUpdateDigest(),
+		"localhost:5000/node:latest",
+	)
+
+	t.Logf("Retagged node:latest to update digest %s", env.NodeImageUpdateDigest())
+
+	// Wait for the controller to re-resolve and pick up the new digest.
+	g.Eventually(func(g Gomega) string {
+		var p bootcv1alpha1.BootcNodePool
+		g.Expect(env.Client.Get(ctx, client.ObjectKeyFromObject(pool), &p)).To(Succeed())
+		return p.Status.TargetDigest
+	}).WithTimeout(1 * time.Minute).Should(Equal(env.NodeImageUpdateDigest()))
+
+	t.Logf("Tag re-resolved to update digest %s", env.NodeImageUpdateDigest())
+
+	// Wait for node to reach Idle with the update image.
+	g.Eventually(func(g Gomega) bootcv1alpha1.BootcNodeStatus {
+		var bn bootcv1alpha1.BootcNode
+		g.Expect(env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)).To(Succeed())
+		return bn.Status
+	}).WithTimeout(5 * time.Minute).Should(And(
+		HaveField("Booted", And(
+			Not(BeNil()),
+			HaveField("ImageDigest", Equal(env.NodeImageUpdateDigest())),
+		)),
+		HaveField("Conditions", ContainElement(And(
+			HaveField("Type", bootcv1alpha1.NodeIdle),
+			HaveField("Status", metav1.ConditionTrue),
+		))),
+	))
+
+	t.Logf("Node %q is Idle with update image", nodeName)
+}
