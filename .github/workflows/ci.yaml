@@ -17,6 +17,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  supported-versions:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Get supported Kubernetes versions
+        id: set-matrix
+        run: |
+          MATRIX=$(curl -s https://endoflife.date/api/kubernetes.json | \
+            jq -c '[.[] | select(.eol > (now | strftime("%Y-%m-%d"))) | .cycle][:3]')
+          echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
+
   unit:
     runs-on: ubuntu-latest
     permissions:
@@ -107,10 +119,16 @@ jobs:
 
   e2e:
     runs-on: ubuntu-latest
-    needs: [build-bink, build-operator]
+    needs: [build-bink, build-operator, supported-versions]
     timeout-minutes: 30
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        kube-minor: ${{ fromJson(needs.supported-versions.outputs.matrix) }}
+    env:
+      BINK_NODE_DISK_IMAGE: ghcr.io/bootc-dev/bink/node:v${{ matrix.kube-minor }}-fedora-44-disk
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -182,7 +200,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: e2e-logs
+          name: e2e-logs-${{ matrix.kube-minor }}
           path: _output/logs/
           if-no-files-found: ignore
 
