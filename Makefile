@@ -117,6 +117,7 @@ deploy: manifests kustomize yq ## Deploy controller to the K8s cluster specified
 	"$(KUSTOMIZE)" build config/default | \
 		"$(YQ)" '(select(.kind == "Deployment") | .spec.template.spec.containers[] | select(.name == "manager")).image = "$(IMG)"' | \
 		"$(YQ)" '(select(.kind == "DaemonSet") | .spec.template.spec.containers[] | select(.name == "daemon")).image = "$(IMG)"' | \
+		$(if $(MANAGER_EXTRA_ARGS),"$(YQ)" '(select(.kind == "Deployment") | .spec.template.spec.containers[] | select(.name == "manager")).args += [$(MANAGER_EXTRA_ARGS)]' |) \
 		"$(KUBECTL)" apply --server-side -f -
 
 .PHONY: undeploy
@@ -151,7 +152,8 @@ deploy-bink: start-bink build-update-image kustomize ## Deploy to a bink cluster
 	# On re-deploy, restart the rollout to force a re-pull of the :latest tag.
 	# On fresh deploy, skip the restart -- the pod is already pulling the correct image.
 	@existed=$$(kubectl --kubeconfig $(KUBECONFIG_BINK) -n bootc-operator get deploy bootc-operator-controller-manager -o name 2>/dev/null || true) && \
-	$(MAKE) deploy KUBECONFIG=$(abspath $(KUBECONFIG_BINK)) IMG=$(IMG_BINK) && \
+	$(MAKE) deploy KUBECONFIG=$(abspath $(KUBECONFIG_BINK)) IMG=$(IMG_BINK) \
+		MANAGER_EXTRA_ARGS='"--allow-insecure-registry","--tag-resolution-interval=10s"' && \
 	if [ -n "$$existed" ]; then \
 		kubectl --kubeconfig $(KUBECONFIG_BINK) -n bootc-operator rollout restart deployment/bootc-operator-controller-manager; \
 	fi
