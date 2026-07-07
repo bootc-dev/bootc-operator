@@ -59,6 +59,11 @@ func (r *BootcNodePoolReconciler) driveRollout(ctx context.Context, pool *bootcv
 
 	rs := buildRolloutState(log, ownedBootcNodes)
 
+	// Flag degraded nodes at the pool level. NodeConflict (set during
+	// membership sync) takes priority, so we only set NodeDegraded if
+	// the pool isn't already degraded for another reason.
+	syncNodeDegradedCondition(pool, rs.degraded)
+
 	// Free reboot slots for nodes that have successfully rebooted into
 	// the desired image. This runs before computing available slots so
 	// that freed capacity is immediately usable for new candidates.
@@ -356,6 +361,29 @@ func buildRolloutState(log logr.Logger, ownedBootcNodes map[string]*bootcv1alpha
 		}
 	}
 	return rs
+}
+
+// syncNodeDegradedCondition sets Degraded/NodeDegraded on the pool if any
+// nodes are degraded. It respects priority: if the pool is already degraded
+// for another reason (e.g. NodeConflict), it does not overwrite it.
+// XXX(jl): Or... should this be a new condition type so it can be surfaced in
+// parallel? Let's see how this approach feels and iterate.
+func syncNodeDegradedCondition(pool *bootcv1alpha1.BootcNodePool, degraded []*bootcv1alpha1.BootcNode) {
+	if len(degraded) == 0 {
+		return
+	}
+	if apimeta.IsStatusConditionTrue(pool.Status.Conditions, bootcv1alpha1.PoolDegraded) {
+		return
+	}
+	names := nodeNames(degraded)
+	// Sort so the message is stable across reconciles.
+	slices.Sort(names)
+	apimeta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
+		Type:    bootcv1alpha1.PoolDegraded,
+		Status:  metav1.ConditionTrue,
+		Reason:  bootcv1alpha1.PoolNodeDegraded,
+		Message: fmt.Sprintf("Degraded nodes: %s", strings.Join(names, ", ")),
+	})
 }
 
 // resolveMaxUnavailable computes the effective maxUnavailable value from the
