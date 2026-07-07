@@ -255,7 +255,7 @@ the polling interval, proving fsnotify is working).
 
 ## Milestone 5: Tag Resolution & Pull Secrets
 
-### 5a. Tag resolution
+### 5a. Tag resolution ✅
 
 - Registry client (e.g. `go-containerregistry`) to resolve tags to
   digests
