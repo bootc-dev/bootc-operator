@@ -8,6 +8,7 @@ import (
 
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -130,6 +131,71 @@ func TestSimpleRollout(t *testing.T) {
 	}
 }
 
+// TestDegradedNodeSetsPoolCondition verifies that when a daemon reports
+// Degraded=True on a BootcNode, the pool is marked Degraded/NodeDegraded,
+// and the rollout continues on non-degraded nodes.
+func TestDegradedNodeSetsPoolCondition(t *testing.T) {
+	g := NewWithT(t)
+	g.SetDefaultEventuallyTimeout(pollTimeout)
+	g.SetDefaultEventuallyPollingInterval(pollInterval)
+	ctx := context.Background()
+
+	const poolName = "degraded-pool"
+
+	// Create 2 worker nodes.
+	nodeNames := []string{"degraded-w1", "degraded-w2"}
+	for _, name := range nodeNames {
+		name := name
+		node := testutil.NewK8sNode(name, testutil.WorkerLabels())
+		g.Expect(k8sClient.Create(ctx, node)).To(Succeed())
+		t.Cleanup(func() {
+			_ = k8sClient.Delete(ctx, node)
+		})
+	}
+
+	// Create pool targeting digest B with maxUnavailable: 1.
+	pool := testutil.NewPool(poolName, testImageDigestRefB,
+		testutil.WithWorkerSelector(),
+		testutil.WithMaxUnavailable(intstr.FromInt32(1)),
+	)
+	g.Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, pool)
+	})
+
+	// Wait for BootcNodes to be created.
+	for _, name := range nodeNames {
+		name := name
+		g.Eventually(func() error {
+			return k8sClient.Get(ctx, client.ObjectKey{Name: name}, &bootcv1alpha1.BootcNode{})
+		}).Should(Succeed())
+	}
+
+	// Simulate w1 as degraded (staging failed) and w2 as staged.
+	simulateDaemonDegraded(g, ctx, "degraded-w1", testDigestA)
+	simulateDaemonStatus(g, ctx, "degraded-w2", testDigestA, bootcv1alpha1.NodeReasonStaged)
+
+	// Verify pool is Degraded/NodeDegraded mentioning w1.
+	g.Eventually(func() ([]metav1.Condition, error) {
+		var p bootcv1alpha1.BootcNodePool
+		err := k8sClient.Get(ctx, client.ObjectKey{Name: poolName}, &p)
+		return p.Status.Conditions, err
+	}).Should(ContainElement(And(
+		HaveField("Type", bootcv1alpha1.PoolDegraded),
+		HaveField("Status", metav1.ConditionTrue),
+		HaveField("Reason", bootcv1alpha1.PoolNodeDegraded),
+		HaveField("Message", ContainSubstring("degraded-w1")),
+	)))
+
+	// Verify rollout continues on the non-degraded node: w2 should get
+	// a reboot slot despite w1 being degraded.
+	g.Eventually(func() (map[string]string, error) {
+		var bn bootcv1alpha1.BootcNode
+		err := k8sClient.Get(ctx, client.ObjectKey{Name: "degraded-w2"}, &bn)
+		return bn.Annotations, err
+	}).Should(HaveKey(bootcv1alpha1.AnnotationInRebootSlot), "non-degraded node should get a reboot slot")
+}
+
 // simulateDaemonStatus writes BootcNode status as if the daemon had
 // reported the given booted digest and Idle condition reason.
 func simulateDaemonStatus(g Gomega, ctx context.Context, nodeName, bootedDigest, idleReason string) {
@@ -153,6 +219,31 @@ func simulateDaemonStatus(g Gomega, ctx context.Context, nodeName, bootedDigest,
 			LastTransitionTime: metav1.Now(),
 		},
 	}
+
+	g.Expect(k8sClient.Status().Update(ctx, &bn)).To(Succeed())
+}
+
+// simulateDaemonDegraded writes BootcNode status as if the daemon had
+// reported the given booted digest with Degraded=True (e.g. staging failed).
+func simulateDaemonDegraded(g Gomega, ctx context.Context, nodeName, bootedDigest string) {
+	var bn bootcv1alpha1.BootcNode
+	g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)).To(Succeed())
+
+	bn.Status.Booted = &bootcv1alpha1.ImageInfo{
+		Image:       "quay.io/example/myos@" + bootedDigest,
+		ImageDigest: bootedDigest,
+	}
+	apimeta.SetStatusCondition(&bn.Status.Conditions, metav1.Condition{
+		Type:   bootcv1alpha1.NodeIdle,
+		Status: metav1.ConditionFalse,
+		Reason: bootcv1alpha1.NodeReasonStaging,
+	})
+	apimeta.SetStatusCondition(&bn.Status.Conditions, metav1.Condition{
+		Type:    bootcv1alpha1.NodeDegraded,
+		Status:  metav1.ConditionTrue,
+		Reason:  bootcv1alpha1.NodeReasonError,
+		Message: "simulated staging failure",
+	})
 
 	g.Expect(k8sClient.Status().Update(ctx, &bn)).To(Succeed())
 }
