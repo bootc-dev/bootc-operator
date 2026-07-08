@@ -40,6 +40,11 @@ const (
 	// affected nodes and their issues.
 	PoolNodeDegraded string = "NodeDegraded"
 
+	// PoolRolloutHalted means the controller stopped assigning new
+	// reboot slots because 2 or more nodes in reboot slots are
+	// unhealthy (Degraded or not Ready).
+	PoolRolloutHalted string = "RolloutHalted"
+
 	// PoolInvalidSpec means the pool's spec contains invalid values that
 	// the controller cannot process (e.g. an image ref that is not a
 	// digest ref, or a malformed nodeSelector).
