@@ -24,6 +24,15 @@ import (
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
 )
 
+// Hardcode to 2 for now; might make this configurable later, or dynamically
+// adjusted. The rationale is that 1 unhealthy node might be a one-off. But 2
+// unhealthy nodes becomes a pattern that might indicate a bad image. Now, this
+// _probably_ should scale with number of nodes somehow. E.g. a 500 node
+// cluster could tolerate more unhealthy nodes. Just starting conservative here
+// and we can adjust. See
+// https://github.com/bootc-dev/bootc-operator/issues/99.
+const unhealthySlotHaltThreshold = 2
+
 // rolloutState holds the classified BootcNodes for a single reconcile
 // pass.
 type rolloutState struct {
@@ -71,13 +80,34 @@ func (r *BootcNodePoolReconciler) driveRollout(ctx context.Context, pool *bootcv
 		return fmt.Errorf("freeing completed slots: %w", err)
 	}
 
+	// Check for unhealthy nodes on the target digest in reboot slots. If
+	// 2+ are unhealthy, halt the rollout. Note that freeCompletedSlots()
+	// already removed Ready nodes, so any upToDate node still in a slot is
+	// implied to be NotReady.
+	unhealthy := findUnhealthySlots(rs, pool.Status.TargetDigest)
+
+	rolloutHalted := len(unhealthy) >= unhealthySlotHaltThreshold
+	if rolloutHalted {
+		syncRolloutHaltedCondition(pool, unhealthy)
+		log.Info("Rollout halted: 2+ unhealthy nodes in reboot slots",
+			"unhealthyInSlots", len(unhealthy))
+
+		// Return early to block new slot assignments and new/restarted
+		// drains. Note that collectDrainResults() already ran above,
+		// so drains that were in-flight and completed between
+		// reconciles will still have their results collected and
+		// desiredImageState set to Booted. Trying to "un-drain" and
+		// uncordon fully drained nodes is out of scope for now.
+		return nil
+	}
+
 	maxUnavail, err := resolveMaxUnavailable(pool, rs.nodeCount())
 	if err != nil {
 		return err
 	}
 
-	avail := max(0, maxUnavail-rs.occupiedSlots)
-	candidates := selectDrainCandidates(rs.staged, avail)
+	availableSlots := max(0, maxUnavail-rs.occupiedSlots)
+	candidates := selectDrainCandidates(rs.staged, availableSlots)
 
 	log.V(1).Info("Rollout state",
 		"upToDate", len(rs.upToDate),
@@ -89,7 +119,7 @@ func (r *BootcNodePoolReconciler) driveRollout(ctx context.Context, pool *bootcv
 		"unclassified", nodeNames(rs.unclassified),
 		"occupiedSlots", rs.occupiedSlots,
 		"maxUnavailable", maxUnavail,
-		"availableSlots", avail,
+		"availableSlots", availableSlots,
 		"candidates", nodeNames(candidates),
 	)
 
@@ -383,6 +413,60 @@ func syncNodeDegradedCondition(pool *bootcv1alpha1.BootcNodePool, degraded []*bo
 		Status:  metav1.ConditionTrue,
 		Reason:  bootcv1alpha1.PoolNodeDegraded,
 		Message: fmt.Sprintf("Degraded nodes: %s", strings.Join(names, ", ")),
+	})
+}
+
+// unhealthySlot identifies a node in a reboot slot that is unhealthy.
+type unhealthySlot struct {
+	name   string
+	reason string // "Degraded" or "NotReady"
+}
+
+// findUnhealthySlots returns nodes occupying reboot slots that are unhealthy.
+// Two categories qualify:
+//   - Degraded nodes (marked by the daemon itself) that booted the target
+//     digest (the image itself may be bad).
+//   - UpToDate nodes still holding a slot after freeCompletedSlots (not
+//     Ready). I.e. the daemon doesn't see anything wrong, but there's something
+//     wrong preventing the kubelet from working correctly.
+func findUnhealthySlots(rs *rolloutState, targetDigest string) []unhealthySlot {
+	var result []unhealthySlot
+	for _, bn := range rs.degraded {
+		if !metav1.HasAnnotation(bn.ObjectMeta, bootcv1alpha1.AnnotationInRebootSlot) {
+			continue
+		}
+		// Note we count nil Booted as unhealthy here; this really
+		// shouldn't happen because clearly the daemon came up at least
+		// once in this node's history to be able to get to a reboot
+		// slot. And so Booted should always be set here.
+		if bn.Status.Booted == nil || bn.Status.Booted.ImageDigest == targetDigest {
+			result = append(result, unhealthySlot{name: bn.Name, reason: "Degraded"})
+		}
+	}
+	for _, bn := range rs.upToDate {
+		if metav1.HasAnnotation(bn.ObjectMeta, bootcv1alpha1.AnnotationInRebootSlot) {
+			// Still has annotation after freeCompletedSlots → not Ready.
+			result = append(result, unhealthySlot{name: bn.Name, reason: "NotReady"})
+		}
+	}
+	return result
+}
+
+// syncRolloutHaltedCondition sets Degraded/RolloutHalted on the pool. It
+// implicitly takes priority over NodeDegraded (which checks for existing
+// daemon-driven degraded status) by running later than
+// syncNodeDegradedCondition.
+func syncRolloutHaltedCondition(pool *bootcv1alpha1.BootcNodePool, unhealthy []unhealthySlot) {
+	details := make([]string, len(unhealthy))
+	for i, u := range unhealthy {
+		details[i] = u.name + ": " + u.reason
+	}
+	slices.Sort(details)
+	apimeta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
+		Type:    bootcv1alpha1.PoolDegraded,
+		Status:  metav1.ConditionTrue,
+		Reason:  bootcv1alpha1.PoolRolloutHalted,
+		Message: fmt.Sprintf("Rollout halted: 2+ unhealthy nodes in reboot slots (%s)", strings.Join(details, ", ")),
 	})
 }
 
