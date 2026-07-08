@@ -196,6 +196,137 @@ func TestDegradedNodeSetsPoolCondition(t *testing.T) {
 	}).Should(HaveKey(bootcv1alpha1.AnnotationInRebootSlot), "non-degraded node should get a reboot slot")
 }
 
+// TestUnhealthyNodesHaltRollout verifies that when 2+ nodes in reboot slots
+// are unhealthy, the controller stops assigning new slots and sets
+// Degraded/RolloutHalted on the pool. It also verifies recovery: when
+// unhealthy nodes are fixed, the rollout resumes.
+func TestUnhealthyNodesHaltRollout(t *testing.T) {
+	g := NewWithT(t)
+	g.SetDefaultEventuallyTimeout(pollTimeout)
+	g.SetDefaultEventuallyPollingInterval(pollInterval)
+	ctx := context.Background()
+
+	const poolName = "halt-pool"
+
+	// Create 4 worker nodes.
+	nodeNames := []string{"halt-w1", "halt-w2", "halt-w3", "halt-w4"}
+	for _, name := range nodeNames {
+		name := name
+		node := testutil.NewK8sNode(name, testutil.WorkerLabels())
+		g.Expect(k8sClient.Create(ctx, node)).To(Succeed())
+		t.Cleanup(func() {
+			_ = k8sClient.Delete(ctx, node)
+		})
+	}
+
+	// Create pool targeting digest B with maxUnavailable: 3.
+	pool := testutil.NewPool(poolName, testImageDigestRefB,
+		testutil.WithWorkerSelector(),
+		testutil.WithMaxUnavailable(intstr.FromInt32(3)),
+	)
+	g.Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, pool)
+	})
+
+	// Wait for BootcNodes to be created.
+	for _, name := range nodeNames {
+		name := name
+		g.Eventually(func() error {
+			return k8sClient.Get(ctx, client.ObjectKey{Name: name}, &bootcv1alpha1.BootcNode{})
+		}).Should(Succeed())
+	}
+
+	// Simulate all 4 nodes as Staged (booted old image, staged new one).
+	for _, name := range nodeNames {
+		simulateDaemonStatus(g, ctx, name, testDigestA, bootcv1alpha1.NodeReasonStaged)
+	}
+
+	// With maxUnavailable: 3, the first 3 nodes (alphabetical) should get
+	// reboot slots. Wait for w1, w2, w3 to get slots.
+	for _, name := range nodeNames[:3] {
+		name := name
+		g.Eventually(func(g Gomega) {
+			var bn bootcv1alpha1.BootcNode
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: name}, &bn)).To(Succeed())
+			g.Expect(bn.Annotations).To(HaveKey(bootcv1alpha1.AnnotationInRebootSlot),
+				"node %s should have reboot slot", name)
+			g.Expect(bn.Spec.DesiredImageState).To(Equal(bootcv1alpha1.DesiredImageStateBooted),
+				"node %s should have desiredImageState Booted", name)
+		}).Should(Succeed())
+	}
+
+	// w4 should not have a slot (all 3 slots are occupied).
+	var bn4 bootcv1alpha1.BootcNode
+	g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "halt-w4"}, &bn4)).To(Succeed())
+	g.Expect(bn4.Annotations).NotTo(HaveKey(bootcv1alpha1.AnnotationInRebootSlot),
+		"w4 should not have a slot yet")
+
+	// Simulate w1 as degraded (booted the target digest and Ready but daemon says it's bad).
+	simulateDaemonDegraded(g, ctx, "halt-w1", testDigestB)
+	setNodeReady(g, ctx, "halt-w1")
+
+	// Simulate w2 as upToDate but not Ready (booted target, node not Ready).
+	simulateDaemonStatus(g, ctx, "halt-w2", testDigestB, bootcv1alpha1.NodeReasonIdle)
+	// Note: we do NOT call setNodeReady for w2, so it stays not Ready.
+
+	// Simulate w3 as having successfully completed (booted target, Idle, Ready).
+	simulateDaemonStatus(g, ctx, "halt-w3", testDigestB, bootcv1alpha1.NodeReasonIdle)
+	setNodeReady(g, ctx, "halt-w3")
+
+	// Wait for pool to be Degraded/RolloutHalted.
+	g.Eventually(func() ([]metav1.Condition, error) {
+		var p bootcv1alpha1.BootcNodePool
+		err := k8sClient.Get(ctx, client.ObjectKey{Name: poolName}, &p)
+		return p.Status.Conditions, err
+	}).Should(ContainElement(And(
+		HaveField("Type", bootcv1alpha1.PoolDegraded),
+		HaveField("Status", metav1.ConditionTrue),
+		HaveField("Reason", bootcv1alpha1.PoolRolloutHalted),
+		HaveField("Message", ContainSubstring("halt-w1")),
+		HaveField("Message", ContainSubstring("halt-w2")),
+	)))
+
+	// w3's slot should be freed (it's healthy and Ready), but w4 should
+	// still not get a slot because the rollout is halted.
+	g.Eventually(func() (map[string]string, error) {
+		var bn3 bootcv1alpha1.BootcNode
+		err := k8sClient.Get(ctx, client.ObjectKey{Name: "halt-w3"}, &bn3)
+		return bn3.Annotations, err
+	}).ShouldNot(HaveKey(bootcv1alpha1.AnnotationInRebootSlot), "w3 slot should be freed")
+
+	g.Consistently(func() (map[string]string, error) {
+		var bn bootcv1alpha1.BootcNode
+		err := k8sClient.Get(ctx, client.ObjectKey{Name: "halt-w4"}, &bn)
+		return bn.Annotations, err
+	}, "2s", pollInterval).ShouldNot(HaveKey(bootcv1alpha1.AnnotationInRebootSlot), "w4 should not get a slot while rollout is halted")
+
+	// Fix w1: clear degraded, report as booted on target and Idle.
+	simulateDaemonStatus(g, ctx, "halt-w1", testDigestB, bootcv1alpha1.NodeReasonIdle)
+	setNodeReady(g, ctx, "halt-w1")
+
+	// Fix w2: set node Ready.
+	setNodeReady(g, ctx, "halt-w2")
+
+	// Rollout should resume: w4 should now get a slot.
+	g.Eventually(func() (map[string]string, error) {
+		var bn bootcv1alpha1.BootcNode
+		err := k8sClient.Get(ctx, client.ObjectKey{Name: "halt-w4"}, &bn)
+		return bn.Annotations, err
+	}).Should(HaveKey(bootcv1alpha1.AnnotationInRebootSlot), "w4 should get a slot after rollout resumes")
+
+	// Pool should no longer be Degraded/RolloutHalted.
+	g.Eventually(func() ([]metav1.Condition, error) {
+		var p bootcv1alpha1.BootcNodePool
+		err := k8sClient.Get(ctx, client.ObjectKey{Name: poolName}, &p)
+		return p.Status.Conditions, err
+	}).Should(ContainElement(And(
+		HaveField("Type", bootcv1alpha1.PoolDegraded),
+		HaveField("Status", metav1.ConditionFalse),
+		HaveField("Reason", bootcv1alpha1.PoolHealthy),
+	)))
+}
+
 // simulateDaemonStatus writes BootcNode status as if the daemon had
 // reported the given booted digest and Idle condition reason.
 func simulateDaemonStatus(g Gomega, ctx context.Context, nodeName, bootedDigest, idleReason string) {
