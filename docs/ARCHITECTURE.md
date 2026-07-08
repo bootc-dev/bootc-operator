@@ -130,15 +130,16 @@ status:
 
 Pool conditions and their reasons:
 
-| Condition | Status | Reason            | Meaning                                           |
-|-----------|--------|-------------------|---------------------------------------------------|
-| UpToDate  | True   | AllUpdated        | All nodes are running targetDigest                |
-| UpToDate  | False  | RolloutInProgress | Nodes are actively being updated                  |
-| UpToDate  | False  | Paused            | Updates pending but pool is paused                |
-| Degraded  | True   | NodeConflict      | Node selector overlaps with another pool          |
-| Degraded  | True   | NodeDegraded      | At least one node has errors or isn't converging  |
-| Degraded  | True   | InvalidSpec       | Pool spec contains invalid values                 |
-| Degraded  | False  | Healthy           | No issues                                         |
+| Condition | Status | Reason            | Meaning                                             |
+|-----------|--------|-------------------|-----------------------------------------------------|
+| UpToDate  | True   | AllUpdated        | All nodes are running targetDigest                  |
+| UpToDate  | False  | RolloutInProgress | Nodes are actively being updated                    |
+| UpToDate  | False  | Paused            | Updates pending but pool is paused                  |
+| Degraded  | True   | NodeConflict      | Node selector overlaps with another pool            |
+| Degraded  | True   | NodeDegraded      | At least one node has errors or isn't converging    |
+| Degraded  | True   | RolloutHalted     | 2+ unhealthy nodes in reboot slots; rollout stopped |
+| Degraded  | True   | InvalidSpec       | Pool spec contains invalid values                   |
+| Degraded  | False  | Healthy           | No issues                                           |
 
 The `UpToDate` condition is determined by the controller by comparing
 `spec.desiredImage` vs `status.booted.imageDigest` across all nodes in the pool.
