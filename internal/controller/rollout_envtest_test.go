@@ -386,19 +386,21 @@ func setNodeReady(g Gomega, ctx context.Context, nodeName string) {
 	var node corev1.Node
 	g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: nodeName}, &node)).To(Succeed())
 
+	modified := node.DeepCopy()
+
 	// Replace any existing Ready condition, preserving other conditions.
 	var filtered []corev1.NodeCondition
-	for _, c := range node.Status.Conditions {
+	for _, c := range modified.Status.Conditions {
 		if c.Type != corev1.NodeReady {
 			filtered = append(filtered, c)
 		}
 	}
-	node.Status.Conditions = append(filtered, corev1.NodeCondition{
+	modified.Status.Conditions = append(filtered, corev1.NodeCondition{
 		Type:               corev1.NodeReady,
 		Status:             corev1.ConditionTrue,
 		LastHeartbeatTime:  metav1.Now(),
 		LastTransitionTime: metav1.Now(),
 	})
 
-	g.Expect(k8sClient.Status().Update(ctx, &node)).To(Succeed())
+	g.Expect(k8sClient.Status().Patch(ctx, modified, client.MergeFrom(&node))).To(Succeed())
 }
