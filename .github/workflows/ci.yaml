@@ -172,6 +172,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y podman
 
+      # Ubuntu runners ship a v1 (INI) registries.conf that Podman >= 5
+      # rejects. Overwrite with a minimal v2 (TOML) config.
+      - name: Write v2 registries.conf
+        run: printf 'unqualified-search-registries = ["docker.io"]\n' | sudo tee /etc/containers/registries.conf
+
       - name: Start podman socket
         run: systemctl --user start podman.socket
 
