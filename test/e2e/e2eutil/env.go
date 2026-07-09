@@ -117,9 +117,10 @@ func New(t *testing.T) *Env {
 type NodeOption func(*nodeConfig)
 
 type nodeConfig struct {
-	memory       int
-	labels       map[string]string
-	targetImgRef string
+	memory        int
+	labels        map[string]string
+	targetImgRef  string
+	nodeDiskImage string
 }
 
 // WithMemory sets the VM memory in MB for the node.
@@ -137,6 +138,14 @@ func WithLabel(key, value string) NodeOption {
 			c.labels = make(map[string]string)
 		}
 		c.labels[key] = value
+	}
+}
+
+// WithNodeDiskImage sets the VM disk image passed as --node-image
+// to bink node add.
+func WithNodeDiskImage(img string) NodeOption {
+	return func(c *nodeConfig) {
+		c.nodeDiskImage = img
 	}
 }
 
@@ -178,8 +187,12 @@ func (e *Env) AddNode(t *testing.T, opts ...NodeOption) string {
 	if cfg.memory > 0 {
 		args = append(args, "--memory", fmt.Sprintf("%d", cfg.memory))
 	}
-	if img := os.Getenv("BINK_NODE_DISK_IMAGE"); img != "" {
-		args = append(args, "--node-image", img)
+	diskImage := cfg.nodeDiskImage
+	if diskImage == "" {
+		diskImage = os.Getenv("BINK_NODE_DISK_IMAGE")
+	}
+	if diskImage != "" {
+		args = append(args, "--node-image", diskImage)
 	}
 	args = append(args, "--target-imgref", cfg.targetImgRef)
 	t.Logf("Adding node %q...", nodeName)
@@ -289,6 +302,7 @@ func (e *Env) gatherLogs(t *testing.T) {
 // Panics if the result exceeds 63 characters (k8s label value limit).
 func sanitizeTestName(name string) string {
 	name = strings.ToLower(name)
+	name = strings.ReplaceAll(name, "/", "-")
 	if len(name) > 63 {
 		panic(fmt.Sprintf("test name %q is %d characters (max 63)", name, len(name)))
 	}

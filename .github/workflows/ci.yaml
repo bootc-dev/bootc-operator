@@ -8,7 +8,7 @@ on:
     branches: [main]
 
 env:
-  BINK_COMMIT: 3ddb9da3b6e33f5dadd48abdb15ed550bbfe4f31
+  BINK_COMMIT: 61899a68d69b0de1114e165d24364bf5b8b6da2e
 
 permissions: {}
 
