@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/distribution/reference v0.6.0
-	github.com/fsnotify/fsnotify v1.9.0
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-logr/logr v1.4.3
 	github.com/google/go-containerregistry v0.21.7
 	github.com/onsi/gomega v1.42.1
