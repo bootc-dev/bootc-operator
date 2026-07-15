@@ -21,8 +21,9 @@ import (
 )
 
 var (
-	testEnv   *envtest.Environment
-	k8sClient client.Client
+	testEnv        *envtest.Environment
+	k8sClient      client.Client
+	testReconciler *BootcNodePoolReconciler
 )
 
 // TODO: TestMain starts envtest and the manager unconditionally, which means
@@ -73,11 +74,12 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	if err := (&BootcNodePoolReconciler{
+	testReconciler = &BootcNodePoolReconciler{
 		Client:     mgr.GetClient(),
 		Scheme:     mgr.GetScheme(),
 		KubeClient: kubeClient,
-	}).SetupWithManager(mgr); err != nil {
+	}
+	if err := testReconciler.SetupWithManager(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to setup reconciler: %v\n", err)
 		os.Exit(1)
 	}
