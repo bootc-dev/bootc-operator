@@ -327,12 +327,7 @@ func (r *BootcNodePoolReconciler) resolveTargetDigest(ctx context.Context, pool 
 	digest, err := r.TagResolver.Resolve(ctx, pool.Spec.Image.Ref)
 	if err != nil {
 		log.Error(err, "Failed to resolve tag", "ref", pool.Spec.Image.Ref)
-		apimeta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
-			Type:    bootcv1alpha1.PoolDegraded,
-			Status:  metav1.ConditionTrue,
-			Reason:  bootcv1alpha1.PoolTagResolutionError,
-			Message: err.Error(),
-		})
+		setPoolDegraded(pool, bootcv1alpha1.PoolTagResolutionError, err.Error())
 	} else {
 		if pool.Status.TargetDigest != digest {
 			log.Info("Resolved tag to new digest", "ref", pool.Spec.Image.Ref, "digest", digest)
@@ -374,12 +369,7 @@ func isInvalidSpecError(err error) bool {
 // setInvalidSpecCondition sets Degraded/InvalidSpec on the pool and
 // returns (Result, nil) so Reconcile stops without requeueing.
 func (r *BootcNodePoolReconciler) setInvalidSpecCondition(ctx context.Context, pool *bootcv1alpha1.BootcNodePool, specErr error) (ctrl.Result, error) {
-	apimeta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
-		Type:    bootcv1alpha1.PoolDegraded,
-		Status:  metav1.ConditionTrue,
-		Reason:  bootcv1alpha1.PoolInvalidSpec,
-		Message: specErr.Error(),
-	})
+	setPoolDegraded(pool, bootcv1alpha1.PoolInvalidSpec, specErr.Error())
 	if err := r.Status().Update(ctx, pool); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating pool status: %w", err)
 	}
@@ -460,11 +450,16 @@ func (r *BootcNodePoolReconciler) syncMembership(ctx context.Context, pool *boot
 	}
 
 	// Set or clear the conflict condition based on what we found.
-	var conflictingPools []string
-	for name := range conflicting {
-		conflictingPools = append(conflictingPools, name)
+	if len(conflicting) > 0 {
+		var conflictingPools []string
+		for name := range conflicting {
+			conflictingPools = append(conflictingPools, name)
+		}
+		// Sort so the message is stable across reconciles.
+		setPoolDegraded(pool, bootcv1alpha1.PoolNodeConflict,
+			fmt.Sprintf("Node selector overlaps with pool(s): %s",
+				strings.Join(slices.Sorted(slices.Values(conflictingPools)), ", ")))
 	}
-	syncConflictCondition(pool, conflictingPools)
 
 	return ownedSet, nil
 }
@@ -644,18 +639,39 @@ func (r *BootcNodePoolReconciler) restoreCordonState(ctx context.Context, bn *bo
 	return nil
 }
 
-// syncConflictCondition sets or clears the Degraded condition with
-// reason NodeConflict on the pool. It only mutates the in-memory
-// object; the caller is responsible for writing status.
-func syncConflictCondition(pool *bootcv1alpha1.BootcNodePool, conflictingPools []string) {
-	if len(conflictingPools) > 0 {
-		apimeta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
-			Type:   bootcv1alpha1.PoolDegraded,
-			Status: metav1.ConditionTrue,
-			Reason: bootcv1alpha1.PoolNodeConflict,
-			// Sort so the message is stable across reconciles.
-			Message: fmt.Sprintf("Node selector overlaps with pool(s): %s",
-				strings.Join(slices.Sorted(slices.Values(conflictingPools)), ", ")),
-		})
+// poolDegradedPrecedence defines the priority ordering of PoolDegraded
+// condition reasons. When multiple degraded reasons apply in a single
+// reconcile, the highest-precedence reason wins. setPoolDegraded uses this to
+// avoid overwriting a higher-precedence reason with a lower one.
+//
+// InvalidSpec and TagResolutionError cause early returns in Reconcile and
+// don't coexist with the others in practice, but are included for
+// completeness.
+var poolDegradedPrecedence = map[string]int{
+	bootcv1alpha1.PoolHealthy:            0,
+	bootcv1alpha1.PoolNodeDegraded:       1,
+	bootcv1alpha1.PoolNodeConflict:       2,
+	bootcv1alpha1.PoolRolloutHalted:      3,
+	bootcv1alpha1.PoolInvalidSpec:        4,
+	bootcv1alpha1.PoolTagResolutionError: 5,
+}
+
+// setPoolDegraded sets the Degraded condition on the pool, but only if the new
+// reason has higher precedence than the current one. This prevents e.g.
+// RolloutHalted from overwriting NodeConflict. Unknown reasons get precedence
+// 0 (map zero-value), so they silently no-op. Keep poolDegradedPrecedence in
+// sync with the API constants.
+func setPoolDegraded(pool *bootcv1alpha1.BootcNodePool, reason, message string) {
+	current := apimeta.FindStatusCondition(pool.Status.Conditions, bootcv1alpha1.PoolDegraded)
+	if current != nil && current.Status == metav1.ConditionTrue {
+		if poolDegradedPrecedence[reason] <= poolDegradedPrecedence[current.Reason] {
+			return
+		}
 	}
+	apimeta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
+		Type:    bootcv1alpha1.PoolDegraded,
+		Status:  metav1.ConditionTrue,
+		Reason:  reason,
+		Message: message,
+	})
 }
