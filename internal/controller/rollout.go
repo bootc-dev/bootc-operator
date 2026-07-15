@@ -268,6 +268,7 @@ func (r *BootcNodePoolReconciler) ensureDrain(ctx context.Context, pool *bootcv1
 	drainCtx, cancel := context.WithCancel(ctx)
 	status := &drainStatus{
 		result:    make(chan error, 1),
+		ctx:       drainCtx,
 		cancel:    cancel,
 		startTime: time.Now(),
 	}
@@ -328,8 +329,18 @@ func (r *BootcNodePoolReconciler) collectDrainResults(ctx context.Context, owned
 		delete(r.drains, nodeName)
 
 		if drainErr != nil {
-			// TODO: handle drain errors and cancellations.
-			log.Info("Drain failed", "node", nodeName, "error", drainErr)
+			if ds.ctx.Err() != nil {
+				// Context was cancelled (node left pool or controller
+				// shutdown). The canceller is responsible for cleanup.
+				log.V(1).Info("Drain cancelled", "node", nodeName)
+			} else {
+				// Real drain error (e.g. PDB timeout). The node keeps
+				// its reboot slot and stays cordoned. It will be
+				// retried naturally: the entry is deleted from the map,
+				// selectDrainCandidates picks the still-slotted Staged
+				// node, and ensureDrain starts a new goroutine.
+				log.Info("Drain failed, will retry", "node", nodeName, "error", drainErr)
+			}
 			continue
 		}
 

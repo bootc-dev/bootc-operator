@@ -40,6 +40,7 @@ import (
 // drainStatus tracks an in-progress drain goroutine for a single node.
 type drainStatus struct {
 	result    chan error         // receives nil on success, error on failure; closed after send
+	ctx       context.Context    // the drain goroutine's context; checked to distinguish cancellation from real errors
 	cancel    context.CancelFunc // to abort on targetDigest change or node removal
 	startTime time.Time          // for stall detection
 	isStalled bool               //nolint:unused // used by drain stall detection
@@ -596,8 +597,18 @@ func (r *BootcNodePoolReconciler) ensureManagedLabel(ctx context.Context, node *
 // removeBootcNode deletes a BootcNode for a node leaving the pool,
 // removes the managed label, and restores prior cordon state.
 func (r *BootcNodePoolReconciler) removeBootcNode(ctx context.Context, bn *bootcv1alpha1.BootcNode) error {
-	// TODO: if the node has an active drain goroutine, cancel it and
-	// remove it from the drains map.
+	// Cancel any active drain goroutine for this node. The goroutine will
+	// exit on its own and send a result on the channel, but since we've
+	// removed the entry from the map, collectDrainResults will never see
+	// it. The spurious re-enqueue from drainCh is harmless.
+	r.drainsMu.Lock()
+	if ds, exists := r.drains[bn.Name]; exists {
+		log := logf.FromContext(ctx)
+		log.Info("Cancelling drain for departing node", "node", bn.Name)
+		ds.cancel()
+		delete(r.drains, bn.Name)
+	}
+	r.drainsMu.Unlock()
 
 	// Try to clean up the node (label + cordon state) before deleting
 	// the BootcNode. The node may have been deleted from the cluster.
