@@ -342,14 +342,17 @@ func simulateDaemonStatus(g Gomega, ctx context.Context, nodeName, bootedDigest,
 	if idleReason == bootcv1alpha1.NodeReasonIdle {
 		idleStatus = metav1.ConditionTrue
 	}
-	bn.Status.Conditions = []metav1.Condition{
-		{
-			Type:               bootcv1alpha1.NodeIdle,
-			Status:             idleStatus,
-			Reason:             idleReason,
-			LastTransitionTime: metav1.Now(),
-		},
-	}
+	apimeta.SetStatusCondition(&bn.Status.Conditions, metav1.Condition{
+		Type:   bootcv1alpha1.NodeIdle,
+		Status: idleStatus,
+		Reason: idleReason,
+	})
+	// Clear Degraded when simulating a healthy status.
+	apimeta.SetStatusCondition(&bn.Status.Conditions, metav1.Condition{
+		Type:   bootcv1alpha1.NodeDegraded,
+		Status: metav1.ConditionFalse,
+		Reason: bootcv1alpha1.NodeReasonHealthy,
+	})
 
 	g.Expect(k8sClient.Status().Update(ctx, &bn)).To(Succeed())
 }
