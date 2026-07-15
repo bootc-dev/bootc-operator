@@ -30,7 +30,9 @@ const (
 	PoolPaused string = "Paused"
 )
 
-// PoolDegraded condition reasons.
+// PoolDegraded condition reasons. Precedence ordering (which reason
+// takes priority when multiple apply) is defined by
+// poolDegradedPrecedence in the controller package.
 const (
 	// PoolNodeConflict means a node's labels match multiple pool selectors.
 	PoolNodeConflict string = "NodeConflict"
