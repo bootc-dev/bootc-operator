@@ -240,7 +240,7 @@ and verify the daemon stages it and reports `Idle=False reason=Staged`.
 Then set `desiredImageState: Booted`, verify the node reboots into the
 new image and the daemon reports `Idle=True`.
 
-### 4d. fsnotify + polling
+### 4d. fsnotify + polling ✅
 
 - fsnotify watch on `/proc/1/root/ostree/bootc` for CHMOD events
 - Fallback: also try `/proc/1/root/sysroot/state/deploy` (for composefs
