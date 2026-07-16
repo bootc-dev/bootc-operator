@@ -198,6 +198,35 @@ func TestUpdateReboot(t *testing.T) {
 		fmt.Sprintf("expected update-marker to exist on host, kubectl exec output: %s", string(out)))
 
 	t.Logf("Verified update-marker exists on host via daemon pod")
+
+	// Phase 7: Rollback to original image.
+	originalRef := env.NodeImageDigestedPullSpec()
+
+	modified = pool.DeepCopy()
+	modified.Spec.Image.Ref = originalRef
+	g.Expect(env.Client.Patch(ctx, modified, client.MergeFrom(pool))).To(Succeed())
+	*pool = *modified
+
+	t.Logf("Patched pool to rollback to original image %s", originalRef)
+
+	// Phase 8: Wait for Idle with the original digest — proves rollback succeeded.
+	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
+		var bn2 bootcv1alpha1.BootcNode
+		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn2)
+		return bn2.Status, err
+	}).WithTimeout(5*time.Minute).Should(And(
+		HaveField("Booted", And(
+			Not(BeNil()),
+			HaveField("ImageDigest", Equal(env.NodeImageDigest())),
+		)),
+		HaveField("Conditions", ContainElement(And(
+			HaveField("Type", bootcv1alpha1.NodeIdle),
+			HaveField("Status", metav1.ConditionTrue),
+			HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
+		))),
+	), "expected node to reach Idle with original image after rollback")
+
+	t.Logf("Node %q successfully rolled back to original image", nodeName)
 }
 
 // TestTagResolution creates a pool with a tag-based image ref, verifies
@@ -220,19 +249,19 @@ func TestTagResolution(t *testing.T) {
 	g.Expect(env.Client.Create(ctx, pool)).To(Succeed())
 
 	// Verify targetDigest is resolved to the original image digest.
-	g.Eventually(func(g Gomega) string {
+	g.Eventually(func() (string, error) {
 		var p bootcv1alpha1.BootcNodePool
-		g.Expect(env.Client.Get(ctx, client.ObjectKeyFromObject(pool), &p)).To(Succeed())
-		return p.Status.TargetDigest
+		err := env.Client.Get(ctx, client.ObjectKeyFromObject(pool), &p)
+		return p.Status.TargetDigest, err
 	}).WithTimeout(1 * time.Minute).Should(Equal(env.NodeImageDigest()))
 
 	t.Logf("Tag resolved to original digest %s", env.NodeImageDigest())
 
 	// Wait for node to reach Idle with the original image.
-	g.Eventually(func(g Gomega) bootcv1alpha1.BootcNodeStatus {
+	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
 		var bn bootcv1alpha1.BootcNode
-		g.Expect(env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)).To(Succeed())
-		return bn.Status
+		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
+		return bn.Status, err
 	}).WithTimeout(3 * time.Minute).Should(And(
 		HaveField("Booted", And(
 			Not(BeNil()),
@@ -251,23 +280,30 @@ func TestTagResolution(t *testing.T) {
 		"localhost:5000/node@"+env.NodeImageUpdateDigest(),
 		"localhost:5000/node:latest",
 	)
+	// Restore the original tag on cleanup so later tests are not affected.
+	t.Cleanup(func() {
+		e2eutil.RetagImage(t,
+			"localhost:5000/node@"+env.NodeImageDigest(),
+			"localhost:5000/node:latest",
+		)
+	})
 
 	t.Logf("Retagged node:latest to update digest %s", env.NodeImageUpdateDigest())
 
 	// Wait for the controller to re-resolve and pick up the new digest.
-	g.Eventually(func(g Gomega) string {
+	g.Eventually(func() (string, error) {
 		var p bootcv1alpha1.BootcNodePool
-		g.Expect(env.Client.Get(ctx, client.ObjectKeyFromObject(pool), &p)).To(Succeed())
-		return p.Status.TargetDigest
+		err := env.Client.Get(ctx, client.ObjectKeyFromObject(pool), &p)
+		return p.Status.TargetDigest, err
 	}).WithTimeout(1 * time.Minute).Should(Equal(env.NodeImageUpdateDigest()))
 
 	t.Logf("Tag re-resolved to update digest %s", env.NodeImageUpdateDigest())
 
 	// Wait for node to reach Idle with the update image.
-	g.Eventually(func(g Gomega) bootcv1alpha1.BootcNodeStatus {
+	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
 		var bn bootcv1alpha1.BootcNode
-		g.Expect(env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)).To(Succeed())
-		return bn.Status
+		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
+		return bn.Status, err
 	}).WithTimeout(5 * time.Minute).Should(And(
 		HaveField("Booted", And(
 			Not(BeNil()),
@@ -280,4 +316,182 @@ func TestTagResolution(t *testing.T) {
 	))
 
 	t.Logf("Node %q is Idle with update image", nodeName)
+}
+
+// TestPauseResume provisions a worker node, starts an update with the
+// pool paused, verifies the node stages but does not reboot, then resumes
+// and verifies the update completes.
+func TestPauseResume(t *testing.T) {
+	g := NewWithT(t)
+	g.SetDefaultEventuallyTimeout(pollTimeout)
+	g.SetDefaultEventuallyPollingInterval(pollInterval)
+
+	env := e2eutil.New(t)
+	nodeName := env.AddNode(t)
+
+	ctx := context.Background()
+
+	// Phase 1: Create pool with original image and wait for Idle.
+	pool := env.NewPool("bnp-pause", env.NodeImageDigestedPullSpec())
+	g.Expect(env.Client.Create(ctx, pool)).To(Succeed())
+
+	var bn bootcv1alpha1.BootcNode
+	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
+		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
+		return bn.Status, err
+	}).WithTimeout(3 * time.Minute).Should(And(
+		HaveField("Booted", Not(BeNil())),
+		HaveField("Conditions", ContainElement(And(
+			HaveField("Type", bootcv1alpha1.NodeIdle),
+			HaveField("Status", metav1.ConditionTrue),
+			HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
+		))),
+	))
+
+	t.Logf("Node %q is Idle with original image", nodeName)
+
+	// Phase 2: Patch pool to update image with paused=true.
+	updateRef := env.NodeImageUpdateDigestedPullSpec()
+
+	modified := pool.DeepCopy()
+	modified.Spec.Image.Ref = updateRef
+	if modified.Spec.Rollout == nil {
+		modified.Spec.Rollout = &bootcv1alpha1.RolloutSpec{}
+	}
+	modified.Spec.Rollout.Paused = true
+	g.Expect(env.Client.Patch(ctx, modified, client.MergeFrom(pool))).To(Succeed())
+	*pool = *modified
+
+	t.Logf("Patched pool to update image %s with paused=true", updateRef)
+
+	// Phase 3: Wait for node to stage the image. The node should reach
+	// Staged state but not proceed to reboot because the pool is paused.
+	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
+		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
+		return bn.Status, err
+	}).WithTimeout(5 * time.Minute).Should(And(
+		HaveField("Staged", And(
+			Not(BeNil()),
+			HaveField("ImageDigest", Equal(env.NodeImageUpdateDigest())),
+		)),
+		HaveField("Conditions", ContainElement(And(
+			HaveField("Type", bootcv1alpha1.NodeIdle),
+			HaveField("Status", metav1.ConditionFalse),
+			HaveField("Reason", bootcv1alpha1.NodeReasonStaged),
+		))),
+		HaveField("Booted", And(
+			Not(BeNil()),
+			HaveField("ImageDigest", Equal(env.NodeImageDigest())),
+		)),
+	))
+
+	t.Logf("Node %q staged update but did not reboot (paused)", nodeName)
+
+	// Verify the node stays Staged and does not proceed to reboot.
+	g.Consistently(func() ([]metav1.Condition, error) {
+		var bn2 bootcv1alpha1.BootcNode
+		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn2)
+		return bn2.Status.Conditions, err
+	}).WithTimeout(10*time.Second).WithPolling(2*time.Second).Should(ContainElement(And(
+		HaveField("Type", bootcv1alpha1.NodeIdle),
+		HaveField("Status", metav1.ConditionFalse),
+		HaveField("Reason", bootcv1alpha1.NodeReasonStaged),
+	)), "node should remain Staged while paused")
+
+	// Phase 4: Resume the rollout.
+	modified = pool.DeepCopy()
+	modified.Spec.Rollout.Paused = false
+	g.Expect(env.Client.Patch(ctx, modified, client.MergeFrom(pool))).To(Succeed())
+	*pool = *modified
+
+	t.Logf("Resumed rollout (paused=false)")
+
+	// Phase 5: Wait for node to complete the update — proves the full
+	// update lifecycle completed after resume (reboot, boot into new image).
+	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
+		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
+		return bn.Status, err
+	}).WithTimeout(5*time.Minute).Should(And(
+		HaveField("Booted", And(
+			Not(BeNil()),
+			HaveField("ImageDigest", Equal(env.NodeImageUpdateDigest())),
+		)),
+		HaveField("Conditions", ContainElement(And(
+			HaveField("Type", bootcv1alpha1.NodeIdle),
+			HaveField("Status", metav1.ConditionTrue),
+			HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
+		))),
+	), "expected node to reach Idle with update image after resume")
+
+	t.Logf("Node %q completed update after resume", nodeName)
+}
+
+// TestNonExistingImage provisions a worker node, creates a pool with the
+// original image, then updates to a non-existing image and verifies the
+// node enters degraded state and the update does not proceed.
+func TestNonExistingImage(t *testing.T) {
+	g := NewWithT(t)
+	g.SetDefaultEventuallyTimeout(pollTimeout)
+	g.SetDefaultEventuallyPollingInterval(pollInterval)
+
+	env := e2eutil.New(t)
+	nodeName := env.AddNode(t)
+
+	ctx := context.Background()
+
+	// Phase 1: Create pool with original image and wait for Idle.
+	pool := env.NewPool("bnp-noimg", env.NodeImageDigestedPullSpec())
+	g.Expect(env.Client.Create(ctx, pool)).To(Succeed())
+
+	var bn bootcv1alpha1.BootcNode
+	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
+		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
+		return bn.Status, err
+	}).WithTimeout(3 * time.Minute).Should(And(
+		HaveField("Booted", Not(BeNil())),
+		HaveField("Conditions", ContainElement(And(
+			HaveField("Type", bootcv1alpha1.NodeIdle),
+			HaveField("Status", metav1.ConditionTrue),
+			HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
+		))),
+	))
+
+	t.Logf("Node %q is Idle with original image", nodeName)
+
+	// Phase 2: Patch pool to update to a non-existing image.
+	nonExistingRef := "localhost:5000/node@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+	modified := pool.DeepCopy()
+	modified.Spec.Image.Ref = nonExistingRef
+	g.Expect(env.Client.Patch(ctx, modified, client.MergeFrom(pool))).To(Succeed())
+	*pool = *modified
+
+	t.Logf("Patched pool to non-existing image %s", nonExistingRef)
+
+	// Phase 3: Wait for node to enter degraded state.
+	// The daemon should fail to pull the image and report an error.
+	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
+		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
+		return bn.Status, err
+	}).WithTimeout(5*time.Minute).Should(And(
+		HaveField("Conditions", ContainElement(And(
+			HaveField("Type", bootcv1alpha1.NodeDegraded),
+			HaveField("Status", metav1.ConditionTrue),
+			HaveField("Reason", bootcv1alpha1.NodeReasonError),
+			HaveField("Message", ContainSubstring("stage failed")),
+		))),
+		HaveField("Booted", And(
+			Not(BeNil()),
+			HaveField("ImageDigest", Equal(env.NodeImageDigest())),
+		)),
+	), "expected node to enter degraded state when pulling non-existing image")
+
+	t.Logf("Node %q entered degraded state as expected", nodeName)
+
+	// Phase 4: Verify the node did not stage the non-existing image.
+	g.Expect(env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)).To(Succeed())
+	g.Expect(bn.Status.Staged).To(BeNil(),
+		"node should not have staged the non-existing image")
+
+	t.Logf("Verified node %q did not stage non-existing image", nodeName)
 }
