@@ -30,7 +30,8 @@ The Bootc Operator then exposes this bootc API to the Kubernetes control plane
 in pure operator declarative fashion: you define the desired state your hosts
 should be in, and the operator handles the reconciliation. This includes image
 updates, but also future bootc enhancements like dynamic config overlays,
-sysexts, etc. See the [PRD](docs/PRD.md) for more details.
+sysexts, etc. See the [PRD](docs/PRD.md) for more details and the
+[Roadmap](ROADMAP.md) for what's ahead.
 
 ## Highlights
 
