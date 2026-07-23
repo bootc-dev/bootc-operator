@@ -63,36 +63,42 @@ func TestReconcilePopulatesStatus(t *testing.T) {
 		_ = k8sClient.Delete(ctx, bn)
 	})
 
-	g.Eventually(func(g Gomega) {
+	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
 		var got bootcv1alpha1.BootcNode
-		g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(bn), &got)).To(Succeed())
-
-		g.Expect(got.Status.Booted).NotTo(BeNil())
-		g.Expect(got.Status.Booted.Image).To(Equal(testutil.ImageTaggedRef))
-		g.Expect(got.Status.Booted.ImageDigest).To(Equal(testutil.DigestA))
-		g.Expect(got.Status.Booted.Version).To(Equal(v1))
-		g.Expect(got.Status.Booted.Architecture).To(Equal("amd64"))
-
-		g.Expect(got.Status.Staged).NotTo(BeNil())
-		g.Expect(got.Status.Staged.ImageDigest).To(Equal(testutil.DigestB))
-		g.Expect(got.Status.Staged.Version).To(Equal(v2))
-		g.Expect(got.Status.Staged.SoftRebootCapable).To(BeTrue())
-
-		g.Expect(got.Status.Rollback).NotTo(BeNil())
-		g.Expect(got.Status.Rollback.ImageDigest).To(Equal(testutil.DigestC))
-		g.Expect(got.Status.Rollback.Version).To(Equal(v3))
-
-		g.Expect(got.Status.Conditions).To(ContainElement(And(
-			HaveField("Type", bootcv1alpha1.NodeIdle),
-			HaveField("Status", metav1.ConditionTrue),
-			HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
-		)))
-		g.Expect(got.Status.Conditions).To(ContainElement(And(
-			HaveField("Type", bootcv1alpha1.NodeDegraded),
-			HaveField("Status", metav1.ConditionFalse),
-			HaveField("Reason", bootcv1alpha1.NodeReasonHealthy),
-		)))
-	}).Should(Succeed())
+		err := k8sClient.Get(ctx, client.ObjectKeyFromObject(bn), &got)
+		return got.Status, err
+	}).Should(And(
+		HaveField("Booted", And(
+			Not(BeNil()),
+			HaveField("Image", testutil.ImageTaggedRef),
+			HaveField("ImageDigest", testutil.DigestA),
+			HaveField("Version", v1),
+			HaveField("Architecture", "amd64"),
+		)),
+		HaveField("Staged", And(
+			Not(BeNil()),
+			HaveField("ImageDigest", testutil.DigestB),
+			HaveField("Version", v2),
+			HaveField("SoftRebootCapable", BeTrue()),
+		)),
+		HaveField("Rollback", And(
+			Not(BeNil()),
+			HaveField("ImageDigest", testutil.DigestC),
+			HaveField("Version", v3),
+		)),
+		HaveField("Conditions", And(
+			ContainElement(And(
+				HaveField("Type", bootcv1alpha1.NodeIdle),
+				HaveField("Status", metav1.ConditionTrue),
+				HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
+			)),
+			ContainElement(And(
+				HaveField("Type", bootcv1alpha1.NodeDegraded),
+				HaveField("Status", metav1.ConditionFalse),
+				HaveField("Reason", bootcv1alpha1.NodeReasonHealthy),
+			)),
+		)),
+	))
 }
 
 func TestReconcileBootcStatusError(t *testing.T) {
@@ -110,16 +116,16 @@ func TestReconcileBootcStatusError(t *testing.T) {
 		_ = k8sClient.Delete(ctx, bn)
 	})
 
-	g.Eventually(func(g Gomega) {
+	g.Eventually(func() ([]metav1.Condition, error) {
 		var got bootcv1alpha1.BootcNode
-		g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(bn), &got)).To(Succeed())
-		g.Expect(got.Status.Conditions).To(ContainElement(And(
-			HaveField("Type", bootcv1alpha1.NodeDegraded),
-			HaveField("Status", metav1.ConditionTrue),
-			HaveField("Reason", bootcv1alpha1.NodeReasonError),
-			HaveField("Message", Equal(fmt.Sprintf("populating bootc fields: getting bootc status: %s", bootcStatusErrMsg))),
-		)))
-	}).Should(Succeed())
+		err := k8sClient.Get(ctx, client.ObjectKeyFromObject(bn), &got)
+		return got.Status.Conditions, err
+	}).Should(ContainElement(And(
+		HaveField("Type", bootcv1alpha1.NodeDegraded),
+		HaveField("Status", metav1.ConditionTrue),
+		HaveField("Reason", bootcv1alpha1.NodeReasonError),
+		HaveField("Message", Equal(fmt.Sprintf("populating bootc fields: getting bootc status: %s", bootcStatusErrMsg))),
+	)))
 }
 
 func TestStagingTriggered(t *testing.T) {
@@ -137,23 +143,27 @@ func TestStagingTriggered(t *testing.T) {
 		_ = k8sClient.Delete(ctx, bn)
 	})
 
-	g.Eventually(func(g Gomega) {
+	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
 		var got bootcv1alpha1.BootcNode
-		g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(bn), &got)).To(Succeed())
-
-		g.Expect(got.Status.Staged).NotTo(BeNil())
-		g.Expect(got.Status.Staged.ImageDigest).To(Equal(testutil.DigestB))
-
-		g.Expect(got.Status.Conditions).To(ContainElement(And(
-			HaveField("Type", bootcv1alpha1.NodeIdle),
-			HaveField("Status", metav1.ConditionFalse),
-			HaveField("Reason", bootcv1alpha1.NodeReasonStaged),
-		)))
-		g.Expect(got.Status.Conditions).To(ContainElement(And(
-			HaveField("Type", bootcv1alpha1.NodeDegraded),
-			HaveField("Status", metav1.ConditionFalse),
-		)))
-	}).Should(Succeed())
+		err := k8sClient.Get(ctx, client.ObjectKeyFromObject(bn), &got)
+		return got.Status, err
+	}).Should(And(
+		HaveField("Staged", And(
+			Not(BeNil()),
+			HaveField("ImageDigest", testutil.DigestB),
+		)),
+		HaveField("Conditions", And(
+			ContainElement(And(
+				HaveField("Type", bootcv1alpha1.NodeIdle),
+				HaveField("Status", metav1.ConditionFalse),
+				HaveField("Reason", bootcv1alpha1.NodeReasonStaged),
+			)),
+			ContainElement(And(
+				HaveField("Type", bootcv1alpha1.NodeDegraded),
+				HaveField("Status", metav1.ConditionFalse),
+			)),
+		)),
+	))
 
 	g.Expect(fake.getStageImg()).To(Equal(testutil.ImageDigestRefB))
 	g.Expect(fake.getRebooted()).To(BeFalse())
@@ -175,21 +185,23 @@ func TestStagingError(t *testing.T) {
 		_ = k8sClient.Delete(ctx, bn)
 	})
 
-	g.Eventually(func(g Gomega) {
+	g.Eventually(func() ([]metav1.Condition, error) {
 		var got bootcv1alpha1.BootcNode
-		g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(bn), &got)).To(Succeed())
-		g.Expect(got.Status.Conditions).To(ContainElement(And(
+		err := k8sClient.Get(ctx, client.ObjectKeyFromObject(bn), &got)
+		return got.Status.Conditions, err
+	}).Should(And(
+		ContainElement(And(
 			HaveField("Type", bootcv1alpha1.NodeIdle),
 			HaveField("Status", metav1.ConditionTrue),
 			HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
-		)))
-		g.Expect(got.Status.Conditions).To(ContainElement(And(
+		)),
+		ContainElement(And(
 			HaveField("Type", bootcv1alpha1.NodeDegraded),
 			HaveField("Status", metav1.ConditionTrue),
 			HaveField("Reason", bootcv1alpha1.NodeReasonError),
 			HaveField("Message", Equal(fmt.Sprintf("bootc stage failed: %s", stageErrMsg))),
-		)))
-	}).Should(Succeed())
+		)),
+	))
 }
 
 func TestAlreadyStaged(t *testing.T) {
@@ -208,15 +220,15 @@ func TestAlreadyStaged(t *testing.T) {
 		_ = k8sClient.Delete(ctx, bn)
 	})
 
-	g.Eventually(func(g Gomega) {
+	g.Eventually(func() ([]metav1.Condition, error) {
 		var got bootcv1alpha1.BootcNode
-		g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(bn), &got)).To(Succeed())
-		g.Expect(got.Status.Conditions).To(ContainElement(And(
-			HaveField("Type", bootcv1alpha1.NodeIdle),
-			HaveField("Status", metav1.ConditionFalse),
-			HaveField("Reason", bootcv1alpha1.NodeReasonStaged),
-		)))
-	}).Should(Succeed())
+		err := k8sClient.Get(ctx, client.ObjectKeyFromObject(bn), &got)
+		return got.Status.Conditions, err
+	}).Should(ContainElement(And(
+		HaveField("Type", bootcv1alpha1.NodeIdle),
+		HaveField("Status", metav1.ConditionFalse),
+		HaveField("Reason", bootcv1alpha1.NodeReasonStaged),
+	)))
 
 	g.Expect(fake.getStageImg()).To(BeEmpty())
 }
@@ -237,15 +249,15 @@ func TestRebootingSet(t *testing.T) {
 		_ = k8sClient.Delete(ctx, bn)
 	})
 
-	g.Eventually(func(g Gomega) {
+	g.Eventually(func() ([]metav1.Condition, error) {
 		var got bootcv1alpha1.BootcNode
-		g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(bn), &got)).To(Succeed())
-		g.Expect(got.Status.Conditions).To(ContainElement(And(
-			HaveField("Type", bootcv1alpha1.NodeIdle),
-			HaveField("Status", metav1.ConditionFalse),
-			HaveField("Reason", bootcv1alpha1.NodeReasonRebooting),
-		)))
-	}).Should(Succeed())
+		err := k8sClient.Get(ctx, client.ObjectKeyFromObject(bn), &got)
+		return got.Status.Conditions, err
+	}).Should(ContainElement(And(
+		HaveField("Type", bootcv1alpha1.NodeIdle),
+		HaveField("Status", metav1.ConditionFalse),
+		HaveField("Reason", bootcv1alpha1.NodeReasonRebooting),
+	)))
 
 	g.Expect(fake.getRebooted()).To(BeTrue())
 }
@@ -266,17 +278,21 @@ func TestRollback(t *testing.T) {
 		_ = k8sClient.Delete(ctx, bn)
 	})
 
-	g.Eventually(func(g Gomega) {
+	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
 		var got bootcv1alpha1.BootcNode
-		g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(bn), &got)).To(Succeed())
-		g.Expect(got.Status.Conditions).To(ContainElement(And(
+		err := k8sClient.Get(ctx, client.ObjectKeyFromObject(bn), &got)
+		return got.Status, err
+	}).Should(And(
+		HaveField("Conditions", ContainElement(And(
 			HaveField("Type", bootcv1alpha1.NodeIdle),
 			HaveField("Status", metav1.ConditionFalse),
 			HaveField("Reason", bootcv1alpha1.NodeReasonStaged),
-		)))
-		g.Expect(got.Status.Staged).NotTo(BeNil())
-		g.Expect(got.Status.Staged.ImageDigest).To(Equal(testutil.DigestC))
-	}).Should(Succeed())
+		))),
+		HaveField("Staged", And(
+			Not(BeNil()),
+			HaveField("ImageDigest", testutil.DigestC),
+		)),
+	))
 
 	g.Expect(fake.getRebooted()).To(BeFalse())
 }
@@ -308,11 +324,13 @@ func TestCancelInflightStage(t *testing.T) {
 	fake.setStageHook(nil)
 	close(firstBlock)
 
-	g.Eventually(func(g Gomega) {
+	g.Eventually(func() error {
 		var latest bootcv1alpha1.BootcNode
-		g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(bn), &latest)).To(Succeed())
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(bn), &latest); err != nil {
+			return err
+		}
 		latest.Spec.DesiredImage = testutil.ImageDigestRefC
-		g.Expect(k8sClient.Update(ctx, &latest)).To(Succeed())
+		return k8sClient.Update(ctx, &latest)
 	}).Should(Succeed())
 
 	g.Eventually(func() string {
