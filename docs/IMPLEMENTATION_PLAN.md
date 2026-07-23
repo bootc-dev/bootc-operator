@@ -136,7 +136,7 @@ the full controller+daemon loop can be tested end-to-end.
   nodes are labeled. This exercises the e2e harness for the first time
   with a running operator and validates it functions in a real cluster.
 
-### 3b. Digest-only rollout state machine
+### 3b. Digest-only rollout state machine ✅
 
 - Set `targetDigest` directly from `spec.image.ref` (digest refs only;
   tag resolution deferred to Milestone 5)
