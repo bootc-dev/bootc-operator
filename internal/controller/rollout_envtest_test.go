@@ -79,21 +79,23 @@ func TestSimpleRollout(t *testing.T) {
 		// Wait for this node to receive its reboot slot: cordoned,
 		// annotated, desiredImageState set to Booted (drain completes
 		// instantly in envtest since there are no pods).
-		g.Eventually(func(g Gomega) {
+		g.Eventually(func() (*bootcv1alpha1.BootcNode, error) {
 			var bn bootcv1alpha1.BootcNode
-			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: name}, &bn)).To(Succeed())
-			g.Expect(bn.Annotations).To(HaveKey(bootcv1alpha1.AnnotationInRebootSlot),
-				"node %s should have in-reboot-slot annotation", name)
-			g.Expect(bn.Annotations).To(HaveKey(bootcv1alpha1.AnnotationWasCordoned),
-				"node %s should have was-cordoned annotation", name)
-			g.Expect(bn.Spec.DesiredImageState).To(Equal(bootcv1alpha1.DesiredImageStateBooted),
-				"node %s should have desiredImageState Booted", name)
+			err := k8sClient.Get(ctx, client.ObjectKey{Name: name}, &bn)
+			return &bn, err
+		}).Should(And(
+			HaveField("Annotations", And(
+				HaveKey(bootcv1alpha1.AnnotationInRebootSlot),
+				HaveKey(bootcv1alpha1.AnnotationWasCordoned),
+			)),
+			HaveField("Spec.DesiredImageState", Equal(bootcv1alpha1.DesiredImageStateBooted)),
+		), "node %s reboot slot", name)
 
+		g.Eventually(func() (bool, error) {
 			var node corev1.Node
-			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: name}, &node)).To(Succeed())
-			g.Expect(node.Spec.Unschedulable).To(BeTrue(),
-				"node %s should be cordoned", name)
-		}).Should(Succeed())
+			err := k8sClient.Get(ctx, client.ObjectKey{Name: name}, &node)
+			return node.Spec.Unschedulable, err
+		}).Should(BeTrue(), "node %s should be cordoned", name)
 
 		// Verify remaining nodes are not yet touched.
 		for _, other := range nodeNames[i+1:] {
@@ -115,19 +117,20 @@ func TestSimpleRollout(t *testing.T) {
 
 		// Verify the reboot slot is freed: annotations removed and
 		// node uncordoned.
-		g.Eventually(func(g Gomega) {
+		g.Eventually(func() (map[string]string, error) {
 			var bn bootcv1alpha1.BootcNode
-			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: name}, &bn)).To(Succeed())
-			g.Expect(bn.Annotations).NotTo(HaveKey(bootcv1alpha1.AnnotationInRebootSlot),
-				"node %s should have in-reboot-slot annotation removed", name)
-			g.Expect(bn.Annotations).NotTo(HaveKey(bootcv1alpha1.AnnotationWasCordoned),
-				"node %s should have was-cordoned annotation removed", name)
+			err := k8sClient.Get(ctx, client.ObjectKey{Name: name}, &bn)
+			return bn.Annotations, err
+		}).Should(And(
+			Not(HaveKey(bootcv1alpha1.AnnotationInRebootSlot)),
+			Not(HaveKey(bootcv1alpha1.AnnotationWasCordoned)),
+		), "node %s reboot slot should be freed", name)
 
+		g.Eventually(func() (bool, error) {
 			var node corev1.Node
-			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: name}, &node)).To(Succeed())
-			g.Expect(node.Spec.Unschedulable).To(BeFalse(),
-				"node %s should be uncordoned after reboot", name)
-		}).Should(Succeed())
+			err := k8sClient.Get(ctx, client.ObjectKey{Name: name}, &node)
+			return node.Spec.Unschedulable, err
+		}).Should(BeFalse(), "node %s should be uncordoned after reboot", name)
 	}
 }
 
@@ -246,14 +249,14 @@ func TestUnhealthyNodesHaltRollout(t *testing.T) {
 	// reboot slots. Wait for w1, w2, w3 to get slots.
 	for _, name := range nodeNames[:3] {
 		name := name
-		g.Eventually(func(g Gomega) {
+		g.Eventually(func() (*bootcv1alpha1.BootcNode, error) {
 			var bn bootcv1alpha1.BootcNode
-			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: name}, &bn)).To(Succeed())
-			g.Expect(bn.Annotations).To(HaveKey(bootcv1alpha1.AnnotationInRebootSlot),
-				"node %s should have reboot slot", name)
-			g.Expect(bn.Spec.DesiredImageState).To(Equal(bootcv1alpha1.DesiredImageStateBooted),
-				"node %s should have desiredImageState Booted", name)
-		}).Should(Succeed())
+			err := k8sClient.Get(ctx, client.ObjectKey{Name: name}, &bn)
+			return &bn, err
+		}).Should(And(
+			HaveField("Annotations", HaveKey(bootcv1alpha1.AnnotationInRebootSlot)),
+			HaveField("Spec.DesiredImageState", Equal(bootcv1alpha1.DesiredImageStateBooted)),
+		), "node %s reboot slot", name)
 	}
 
 	// w4 should not have a slot (all 3 slots are occupied).

@@ -10,7 +10,6 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -102,31 +101,34 @@ func TestMembershipCreatesBootcNodes(t *testing.T) {
 	// Wait for BootcNodes to appear and verify their properties.
 	for _, nodeName := range []string{"mem-worker-1", "mem-worker-2"} {
 		name := nodeName
-		var bn bootcv1alpha1.BootcNode
-		g.Eventually(func() error {
-			return k8sClient.Get(ctx, client.ObjectKey{Name: name}, &bn)
-		}).Should(Succeed())
 
 		// Check ownerReference.
-		owner := metav1.GetControllerOf(&bn)
-		g.Expect(owner).NotTo(BeNil(), "BootcNode %s has no controller owner", name)
-		g.Expect(owner.Name).To(Equal(pool.Name), "BootcNode %s owner mismatch", name)
+		g.Eventually(func() (*metav1.OwnerReference, error) {
+			var bn bootcv1alpha1.BootcNode
+			err := k8sClient.Get(ctx, client.ObjectKey{Name: name}, &bn)
+			return metav1.GetControllerOf(&bn), err
+		}).Should(And(Not(BeNil()), HaveField("Name", pool.Name)),
+			"BootcNode %s owner", name)
 
-		// Check desiredImage.
-		g.Expect(bn.Spec.DesiredImage).To(Equal(testImageDigestRefA), "BootcNode %s desiredImage mismatch", name)
-
-		// Check desiredImageState.
-		g.Expect(bn.Spec.DesiredImageState).To(Equal(bootcv1alpha1.DesiredImageStateStaged), "BootcNode %s desiredImageState mismatch", name)
+		// Check desiredImage and desiredImageState.
+		g.Eventually(func() (bootcv1alpha1.BootcNodeSpec, error) {
+			var bn bootcv1alpha1.BootcNode
+			err := k8sClient.Get(ctx, client.ObjectKey{Name: name}, &bn)
+			return bn.Spec, err
+		}).Should(And(
+			HaveField("DesiredImage", testImageDigestRefA),
+			HaveField("DesiredImageState", bootcv1alpha1.DesiredImageStateStaged),
+		), "BootcNode %s spec", name)
 	}
 
 	// Verify nodes are labeled bootc.dev/managed.
 	for _, nodeName := range []string{"mem-worker-1", "mem-worker-2"} {
 		name := nodeName
-		g.Eventually(func(g Gomega) {
+		g.Eventually(func() (map[string]string, error) {
 			var n corev1.Node
-			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: name}, &n)).To(Succeed())
-			g.Expect(n.Labels).To(HaveKey(bootcv1alpha1.LabelManaged))
-		}).Should(Succeed())
+			err := k8sClient.Get(ctx, client.ObjectKey{Name: name}, &n)
+			return n.Labels, err
+		}).Should(HaveKey(bootcv1alpha1.LabelManaged))
 	}
 
 	// Remove the worker label from mem-worker-1 and verify cleanup.
@@ -142,11 +144,11 @@ func TestMembershipCreatesBootcNodes(t *testing.T) {
 	}).Should(MatchError(apierrors.IsNotFound, "IsNotFound"))
 
 	// Verify managed label is removed.
-	g.Eventually(func(g Gomega) {
+	g.Eventually(func() (map[string]string, error) {
 		var n corev1.Node
-		g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "mem-worker-1"}, &n)).To(Succeed())
-		g.Expect(n.Labels).NotTo(HaveKey(bootcv1alpha1.LabelManaged))
-	}).Should(Succeed())
+		err := k8sClient.Get(ctx, client.ObjectKey{Name: "mem-worker-1"}, &n)
+		return n.Labels, err
+	}).ShouldNot(HaveKey(bootcv1alpha1.LabelManaged))
 
 	// Delete mem-worker-2 and verify its BootcNode is also deleted.
 	g.Expect(k8sClient.Delete(ctx, node2)).To(Succeed())
@@ -178,11 +180,11 @@ func TestMembershipSyncsDesiredImage(t *testing.T) {
 	})
 
 	// Wait for BootcNode to be created and verify image A.
-	var bn bootcv1alpha1.BootcNode
-	g.Eventually(func() error {
-		return k8sClient.Get(ctx, client.ObjectKeyFromObject(node), &bn)
-	}).Should(Succeed())
-	g.Expect(bn.Spec.DesiredImage).To(Equal(testImageDigestRefA))
+	g.Eventually(func() (string, error) {
+		var bn bootcv1alpha1.BootcNode
+		err := k8sClient.Get(ctx, client.ObjectKeyFromObject(node), &bn)
+		return bn.Spec.DesiredImage, err
+	}).Should(Equal(testImageDigestRefA))
 
 	// Update pool image to B.
 	var freshPool bootcv1alpha1.BootcNodePool
@@ -191,12 +193,14 @@ func TestMembershipSyncsDesiredImage(t *testing.T) {
 	g.Expect(k8sClient.Update(ctx, &freshPool)).To(Succeed())
 
 	// Wait for BootcNode to be updated with image B.
-	g.Eventually(func(g Gomega) {
+	g.Eventually(func() (bootcv1alpha1.BootcNodeSpec, error) {
 		var bn bootcv1alpha1.BootcNode
-		g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(node), &bn)).To(Succeed())
-		g.Expect(bn.Spec.DesiredImage).To(Equal(testImageDigestRefB))
-		g.Expect(bn.Spec.DesiredImageState).To(Equal(bootcv1alpha1.DesiredImageStateStaged))
-	}).Should(Succeed())
+		err := k8sClient.Get(ctx, client.ObjectKeyFromObject(node), &bn)
+		return bn.Spec, err
+	}).Should(And(
+		HaveField("DesiredImage", testImageDigestRefB),
+		HaveField("DesiredImageState", bootcv1alpha1.DesiredImageStateStaged),
+	))
 }
 
 // TestMembershipConflictDetection verifies that when a node matches two
@@ -260,11 +264,10 @@ func TestMembershipConflictDetection(t *testing.T) {
 	// Verify pool1 is not degraded.
 	var p1 bootcv1alpha1.BootcNodePool
 	g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(pool1), &p1)).To(Succeed())
-	cond := apimeta.FindStatusCondition(p1.Status.Conditions, bootcv1alpha1.PoolDegraded)
-	if cond != nil {
-		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse),
-			"pool1 should not be degraded, but got: %s/%s: %s", cond.Reason, cond.Status, cond.Message)
-	}
+	g.Expect(p1.Status.Conditions).NotTo(ContainElement(And(
+		HaveField("Type", bootcv1alpha1.PoolDegraded),
+		HaveField("Status", metav1.ConditionTrue),
+	)), "pool1 should not be degraded")
 
 	// Verify non-contested nodes are still handled: node1 by pool1,
 	// node2 by pool2.
@@ -276,13 +279,11 @@ func TestMembershipConflictDetection(t *testing.T) {
 		{node2.Name, pool2.Name},
 	} {
 		tc := tc
-		var bn bootcv1alpha1.BootcNode
-		g.Eventually(func() error {
-			return k8sClient.Get(ctx, client.ObjectKey{Name: tc.nodeName}, &bn)
-		}).Should(Succeed())
-		owner := metav1.GetControllerOf(&bn)
-		g.Expect(owner).NotTo(BeNil())
-		g.Expect(owner.Name).To(Equal(tc.poolName))
+		g.Eventually(func() (*metav1.OwnerReference, error) {
+			var bn bootcv1alpha1.BootcNode
+			err := k8sClient.Get(ctx, client.ObjectKey{Name: tc.nodeName}, &bn)
+			return metav1.GetControllerOf(&bn), err
+		}).Should(And(Not(BeNil()), HaveField("Name", tc.poolName)))
 	}
 
 	// Now resolve the conflict: remove pool1=true from node3 so pool1

@@ -40,19 +40,19 @@ func TestControllerMembership(t *testing.T) {
 	pool := env.NewPool("workers", env.NodeImageDigestedPullSpec())
 	g.Expect(env.Client.Create(ctx, pool)).To(Succeed())
 
-	// Wait for BootcNode to appear for the worker.
-	var bn bootcv1alpha1.BootcNode
-	g.Eventually(func() error {
-		return env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
-	}).Should(Succeed())
-
-	// Verify ownerReference.
-	owner := metav1.GetControllerOf(&bn)
-	g.Expect(owner).NotTo(BeNil())
-	g.Expect(owner.Name).To(Equal(pool.Name))
+	// Wait for BootcNode to appear and verify ownerReference.
+	g.Eventually(func() (*metav1.OwnerReference, error) {
+		var bn bootcv1alpha1.BootcNode
+		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
+		return metav1.GetControllerOf(&bn), err
+	}).Should(And(Not(BeNil()), HaveField("Name", pool.Name)))
 
 	// Verify desiredImage.
-	g.Expect(bn.Spec.DesiredImage).To(Equal(env.NodeImageDigestedPullSpec()))
+	g.Eventually(func() (string, error) {
+		var bn bootcv1alpha1.BootcNode
+		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
+		return bn.Spec.DesiredImage, err
+	}).Should(Equal(env.NodeImageDigestedPullSpec()))
 
 	// Verify the worker has the managed label.
 	var node corev1.Node
@@ -76,19 +76,22 @@ func TestControllerMembership(t *testing.T) {
 		HaveField("Status.Phase", corev1.PodRunning),
 	)), "expected exactly one running daemon pod on %s", nodeName)
 
-	g.Eventually(func(g Gomega) {
-		g.Expect(env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)).To(Succeed())
-		g.Expect(bn.Status.Booted).NotTo(BeNil(), "expected booted status to be populated")
-		g.Expect(bn.Status.Booted.Image).To(Equal(env.NodeImageDigestedPullSpec()),
-			"booted image should match seeded registry image")
-		g.Expect(bn.Status.Booted.ImageDigest).To(Equal(env.NodeImageDigest()),
-			"booted image digest should match seeded registry image")
-		g.Expect(bn.Status.Conditions).To(ContainElement(And(
+	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
+		var bn bootcv1alpha1.BootcNode
+		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
+		return bn.Status, err
+	}).WithTimeout(3 * time.Minute).Should(And(
+		HaveField("Booted", And(
+			Not(BeNil()),
+			HaveField("Image", env.NodeImageDigestedPullSpec()),
+			HaveField("ImageDigest", env.NodeImageDigest()),
+		)),
+		HaveField("Conditions", ContainElement(And(
 			HaveField("Type", bootcv1alpha1.NodeIdle),
 			HaveField("Status", metav1.ConditionTrue),
 			HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
-		)))
-	}).WithTimeout(3 * time.Minute).Should(Succeed())
+		))),
+	))
 }
 
 // TestUpdateReboot provisions a worker node, creates a pool with the
@@ -108,16 +111,18 @@ func TestUpdateReboot(t *testing.T) {
 	pool := env.NewPool("workers", env.NodeImageDigestedPullSpec())
 	g.Expect(env.Client.Create(ctx, pool)).To(Succeed())
 
-	var bn bootcv1alpha1.BootcNode
-	g.Eventually(func(g Gomega) {
-		g.Expect(env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)).To(Succeed())
-		g.Expect(bn.Status.Booted).NotTo(BeNil())
-		g.Expect(bn.Status.Conditions).To(ContainElement(And(
+	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
+		var bn bootcv1alpha1.BootcNode
+		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
+		return bn.Status, err
+	}).WithTimeout(3 * time.Minute).Should(And(
+		HaveField("Booted", Not(BeNil())),
+		HaveField("Conditions", ContainElement(And(
 			HaveField("Type", bootcv1alpha1.NodeIdle),
 			HaveField("Status", metav1.ConditionTrue),
 			HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
-		)))
-	}).WithTimeout(3 * time.Minute).Should(Succeed())
+		))),
+	))
 
 	t.Logf("Node %q is Idle with original image", nodeName)
 
@@ -133,61 +138,85 @@ func TestUpdateReboot(t *testing.T) {
 
 	// Phase 3: Wait for Rebooting — the daemon skips reconciliation after
 	// issuing a reboot, so this state is durable until the node goes down.
-	g.Eventually(func(g Gomega) {
-		g.Expect(env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)).To(Succeed())
-		g.Expect(bn.Status.Conditions).To(ContainElement(And(
-			HaveField("Type", bootcv1alpha1.NodeIdle),
-			HaveField("Status", metav1.ConditionFalse),
-			HaveField("Reason", bootcv1alpha1.NodeReasonRebooting),
-		)))
-	}).WithTimeout(5*time.Minute).Should(Succeed(), "expected node to reach Rebooting state")
+	g.Eventually(func() ([]metav1.Condition, error) {
+		var bn bootcv1alpha1.BootcNode
+		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
+		return bn.Status.Conditions, err
+	}).WithTimeout(5*time.Minute).Should(ContainElement(And(
+		HaveField("Type", bootcv1alpha1.NodeIdle),
+		HaveField("Status", metav1.ConditionFalse),
+		HaveField("Reason", bootcv1alpha1.NodeReasonRebooting),
+	)), "expected node to reach Rebooting state")
 
 	t.Logf("Node %q is Rebooting", nodeName)
 
 	// Phase 4: Wait for Idle with the update digest — proves the full
 	// update lifecycle completed (staging, reboot, boot into new image).
-	g.Eventually(func(g Gomega) {
-		g.Expect(env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)).To(Succeed())
-		g.Expect(bn.Status.Booted).NotTo(BeNil())
-		g.Expect(bn.Status.Booted.ImageDigest).To(Equal(env.NodeImageUpdateDigest()),
-			"expected booted digest to match update image")
-		g.Expect(bn.Status.Conditions).To(ContainElement(And(
+	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
+		var bn bootcv1alpha1.BootcNode
+		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
+		return bn.Status, err
+	}).WithTimeout(5*time.Minute).Should(And(
+		HaveField("Booted", And(
+			Not(BeNil()),
+			HaveField("ImageDigest", env.NodeImageUpdateDigest()),
+		)),
+		HaveField("Conditions", ContainElement(And(
 			HaveField("Type", bootcv1alpha1.NodeIdle),
 			HaveField("Status", metav1.ConditionTrue),
 			HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
-		)))
-	}).WithTimeout(5*time.Minute).Should(Succeed(), "expected node to reach Idle with update image after reboot")
+		))),
+	), "expected node to reach Idle with update image after reboot")
 
 	t.Logf("Node %q is Idle with update image", nodeName)
 
 	// Phase 5: Verify node is schedulable (uncordoned after reboot).
-	var node corev1.Node
-	g.Eventually(func(g Gomega) bool {
-		g.Expect(env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &node)).To(Succeed())
-		return node.Spec.Unschedulable
+	g.Eventually(func() (bool, error) {
+		var node corev1.Node
+		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &node)
+		return node.Spec.Unschedulable, err
 	}).WithTimeout(3*time.Minute).Should(BeFalse(), "expected node to be schedulable after update")
 
 	// Phase 6: Verify update marker exists on the host via daemon pod exec.
-	var daemonPod corev1.Pod
-	g.Eventually(func(g Gomega) {
+	g.Eventually(func() ([]corev1.Pod, error) {
 		var pods corev1.PodList
-		g.Expect(env.Client.List(ctx, &pods,
+		err := env.Client.List(ctx, &pods,
 			client.InNamespace("bootc-operator"),
 			client.MatchingLabels{
 				"app.kubernetes.io/name":      "bootc-operator",
 				"app.kubernetes.io/component": "daemon",
 			},
-		)).To(Succeed())
+		)
+		if err != nil {
+			return nil, err
+		}
 		var matched []corev1.Pod
 		for _, p := range pods.Items {
 			if p.Spec.NodeName == nodeName {
 				matched = append(matched, p)
 			}
 		}
-		g.Expect(matched).To(HaveLen(1), "expected exactly one daemon pod on %s", nodeName)
-		g.Expect(matched[0].Status.Phase).To(Equal(corev1.PodRunning))
-		daemonPod = matched[0]
-	}).WithTimeout(1*time.Minute).Should(Succeed(), "expected running daemon pod on %s", nodeName)
+		return matched, nil
+	}).WithTimeout(1*time.Minute).Should(ConsistOf(
+		HaveField("Status.Phase", corev1.PodRunning),
+	), "expected running daemon pod on %s", nodeName)
+
+	// Retrieve the daemon pod for exec.
+	var daemonPods corev1.PodList
+	g.Expect(env.Client.List(ctx, &daemonPods,
+		client.InNamespace("bootc-operator"),
+		client.MatchingLabels{
+			"app.kubernetes.io/name":      "bootc-operator",
+			"app.kubernetes.io/component": "daemon",
+		},
+	)).To(Succeed())
+	var daemonPod corev1.Pod
+	for _, p := range daemonPods.Items {
+		if p.Spec.NodeName == nodeName {
+			daemonPod = p
+			break
+		}
+	}
 
 	kubeconfigPath := os.Getenv("KUBECONFIG")
 	cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath,
@@ -220,19 +249,19 @@ func TestTagResolution(t *testing.T) {
 	g.Expect(env.Client.Create(ctx, pool)).To(Succeed())
 
 	// Verify targetDigest is resolved to the original image digest.
-	g.Eventually(func(g Gomega) string {
+	g.Eventually(func() (string, error) {
 		var p bootcv1alpha1.BootcNodePool
-		g.Expect(env.Client.Get(ctx, client.ObjectKeyFromObject(pool), &p)).To(Succeed())
-		return p.Status.TargetDigest
+		err := env.Client.Get(ctx, client.ObjectKeyFromObject(pool), &p)
+		return p.Status.TargetDigest, err
 	}).WithTimeout(1 * time.Minute).Should(Equal(env.NodeImageDigest()))
 
 	t.Logf("Tag resolved to original digest %s", env.NodeImageDigest())
 
 	// Wait for node to reach Idle with the original image.
-	g.Eventually(func(g Gomega) bootcv1alpha1.BootcNodeStatus {
+	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
 		var bn bootcv1alpha1.BootcNode
-		g.Expect(env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)).To(Succeed())
-		return bn.Status
+		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
+		return bn.Status, err
 	}).WithTimeout(3 * time.Minute).Should(And(
 		HaveField("Booted", And(
 			Not(BeNil()),
@@ -255,19 +284,19 @@ func TestTagResolution(t *testing.T) {
 	t.Logf("Retagged node:latest to update digest %s", env.NodeImageUpdateDigest())
 
 	// Wait for the controller to re-resolve and pick up the new digest.
-	g.Eventually(func(g Gomega) string {
+	g.Eventually(func() (string, error) {
 		var p bootcv1alpha1.BootcNodePool
-		g.Expect(env.Client.Get(ctx, client.ObjectKeyFromObject(pool), &p)).To(Succeed())
-		return p.Status.TargetDigest
+		err := env.Client.Get(ctx, client.ObjectKeyFromObject(pool), &p)
+		return p.Status.TargetDigest, err
 	}).WithTimeout(1 * time.Minute).Should(Equal(env.NodeImageUpdateDigest()))
 
 	t.Logf("Tag re-resolved to update digest %s", env.NodeImageUpdateDigest())
 
 	// Wait for node to reach Idle with the update image.
-	g.Eventually(func(g Gomega) bootcv1alpha1.BootcNodeStatus {
+	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
 		var bn bootcv1alpha1.BootcNode
-		g.Expect(env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)).To(Succeed())
-		return bn.Status
+		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
+		return bn.Status, err
 	}).WithTimeout(5 * time.Minute).Should(And(
 		HaveField("Booted", And(
 			Not(BeNil()),
