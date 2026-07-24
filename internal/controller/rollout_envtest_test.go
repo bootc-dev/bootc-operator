@@ -8,6 +8,8 @@ import (
 
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -79,21 +81,23 @@ func TestSimpleRollout(t *testing.T) {
 		// Wait for this node to receive its reboot slot: cordoned,
 		// annotated, desiredImageState set to Booted (drain completes
 		// instantly in envtest since there are no pods).
-		g.Eventually(func(g Gomega) {
+		g.Eventually(func() (*bootcv1alpha1.BootcNode, error) {
 			var bn bootcv1alpha1.BootcNode
-			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: name}, &bn)).To(Succeed())
-			g.Expect(bn.Annotations).To(HaveKey(bootcv1alpha1.AnnotationInRebootSlot),
-				"node %s should have in-reboot-slot annotation", name)
-			g.Expect(bn.Annotations).To(HaveKey(bootcv1alpha1.AnnotationWasCordoned),
-				"node %s should have was-cordoned annotation", name)
-			g.Expect(bn.Spec.DesiredImageState).To(Equal(bootcv1alpha1.DesiredImageStateBooted),
-				"node %s should have desiredImageState Booted", name)
+			err := k8sClient.Get(ctx, client.ObjectKey{Name: name}, &bn)
+			return &bn, err
+		}).Should(And(
+			HaveField("Annotations", And(
+				HaveKey(bootcv1alpha1.AnnotationInRebootSlot),
+				HaveKey(bootcv1alpha1.AnnotationWasCordoned),
+			)),
+			HaveField("Spec.DesiredImageState", Equal(bootcv1alpha1.DesiredImageStateBooted)),
+		), "node %s reboot slot", name)
 
+		g.Eventually(func() (bool, error) {
 			var node corev1.Node
-			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: name}, &node)).To(Succeed())
-			g.Expect(node.Spec.Unschedulable).To(BeTrue(),
-				"node %s should be cordoned", name)
-		}).Should(Succeed())
+			err := k8sClient.Get(ctx, client.ObjectKey{Name: name}, &node)
+			return node.Spec.Unschedulable, err
+		}).Should(BeTrue(), "node %s should be cordoned", name)
 
 		// Verify remaining nodes are not yet touched.
 		for _, other := range nodeNames[i+1:] {
@@ -115,19 +119,20 @@ func TestSimpleRollout(t *testing.T) {
 
 		// Verify the reboot slot is freed: annotations removed and
 		// node uncordoned.
-		g.Eventually(func(g Gomega) {
+		g.Eventually(func() (map[string]string, error) {
 			var bn bootcv1alpha1.BootcNode
-			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: name}, &bn)).To(Succeed())
-			g.Expect(bn.Annotations).NotTo(HaveKey(bootcv1alpha1.AnnotationInRebootSlot),
-				"node %s should have in-reboot-slot annotation removed", name)
-			g.Expect(bn.Annotations).NotTo(HaveKey(bootcv1alpha1.AnnotationWasCordoned),
-				"node %s should have was-cordoned annotation removed", name)
+			err := k8sClient.Get(ctx, client.ObjectKey{Name: name}, &bn)
+			return bn.Annotations, err
+		}).Should(And(
+			Not(HaveKey(bootcv1alpha1.AnnotationInRebootSlot)),
+			Not(HaveKey(bootcv1alpha1.AnnotationWasCordoned)),
+		), "node %s reboot slot should be freed", name)
 
+		g.Eventually(func() (bool, error) {
 			var node corev1.Node
-			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: name}, &node)).To(Succeed())
-			g.Expect(node.Spec.Unschedulable).To(BeFalse(),
-				"node %s should be uncordoned after reboot", name)
-		}).Should(Succeed())
+			err := k8sClient.Get(ctx, client.ObjectKey{Name: name}, &node)
+			return node.Spec.Unschedulable, err
+		}).Should(BeFalse(), "node %s should be uncordoned after reboot", name)
 	}
 }
 
@@ -246,14 +251,14 @@ func TestUnhealthyNodesHaltRollout(t *testing.T) {
 	// reboot slots. Wait for w1, w2, w3 to get slots.
 	for _, name := range nodeNames[:3] {
 		name := name
-		g.Eventually(func(g Gomega) {
+		g.Eventually(func() (*bootcv1alpha1.BootcNode, error) {
 			var bn bootcv1alpha1.BootcNode
-			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: name}, &bn)).To(Succeed())
-			g.Expect(bn.Annotations).To(HaveKey(bootcv1alpha1.AnnotationInRebootSlot),
-				"node %s should have reboot slot", name)
-			g.Expect(bn.Spec.DesiredImageState).To(Equal(bootcv1alpha1.DesiredImageStateBooted),
-				"node %s should have desiredImageState Booted", name)
-		}).Should(Succeed())
+			err := k8sClient.Get(ctx, client.ObjectKey{Name: name}, &bn)
+			return &bn, err
+		}).Should(And(
+			HaveField("Annotations", HaveKey(bootcv1alpha1.AnnotationInRebootSlot)),
+			HaveField("Spec.DesiredImageState", Equal(bootcv1alpha1.DesiredImageStateBooted)),
+		), "node %s reboot slot", name)
 	}
 
 	// w4 should not have a slot (all 3 slots are occupied).
@@ -406,4 +411,145 @@ func setNodeReady(g Gomega, ctx context.Context, nodeName string) {
 	})
 
 	g.Expect(k8sClient.Status().Patch(ctx, modified, client.MergeFrom(&node))).To(Succeed())
+}
+
+// TestNodeLeavesPoolCancelsDrain verifies that when a node leaves the pool
+// while a drain is in progress, the drain is cancelled and the node is
+// cleaned up: BootcNode deleted, managed label removed, and node uncordoned.
+// The drain is held by a PDB-protected pod so we can observe the cancellation.
+func TestNodeLeavesPoolCancelsDrain(t *testing.T) {
+	g := NewWithT(t)
+	g.SetDefaultEventuallyTimeout(pollTimeout)
+	g.SetDefaultEventuallyPollingInterval(pollInterval)
+	ctx := context.Background()
+
+	const (
+		poolName  = "drain-cancel-pool"
+		nodeName  = "drain-cancel-w1"
+		namespace = "default"
+	)
+
+	// Create a worker node.
+	node := testutil.NewK8sNode(nodeName, testutil.WorkerLabels())
+	g.Expect(k8sClient.Create(ctx, node)).To(Succeed())
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, node)
+	})
+
+	// Create a pod on the node that will resist eviction via a PDB.
+	podLabels := map[string]string{"app": "drain-block-" + nodeName}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "drain-blocker-" + nodeName,
+			Namespace: namespace,
+			Labels:    podLabels,
+		},
+		Spec: corev1.PodSpec{
+			NodeName: nodeName,
+			Containers: []corev1.Container{{
+				Name:  "pause",
+				Image: "registry.k8s.io/pause:3.9",
+			}},
+		},
+	}
+	g.Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, pod)
+	})
+
+	// Set the pod to Running/Ready so the drain helper considers it.
+	pod.Status.Phase = corev1.PodRunning
+	pod.Status.Conditions = []corev1.PodCondition{{
+		Type:   corev1.PodReady,
+		Status: corev1.ConditionTrue,
+	}}
+	g.Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+
+	// Create a PDB that prevents eviction of the pod.
+	minAvail := intstr.FromInt32(1)
+	pdb := &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "drain-block-" + nodeName,
+			Namespace: namespace,
+		},
+		Spec: policyv1.PodDisruptionBudgetSpec{
+			MinAvailable: &minAvail,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: podLabels,
+			},
+		},
+	}
+	g.Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, pdb)
+	})
+
+	// Create pool targeting digest B.
+	pool := testutil.NewPool(poolName, testImageDigestRefB,
+		testutil.WithWorkerSelector(),
+		testutil.WithMaxUnavailable(intstr.FromInt32(1)),
+	)
+	g.Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, pool)
+	})
+
+	// Wait for BootcNode to be created.
+	g.Eventually(func() error {
+		return k8sClient.Get(ctx, client.ObjectKey{Name: nodeName}, &bootcv1alpha1.BootcNode{})
+	}).Should(Succeed())
+
+	// Simulate daemon: node has staged the new image.
+	simulateDaemonStatus(g, ctx, nodeName, testDigestA, bootcv1alpha1.NodeReasonStaged)
+
+	// Wait for the node to get its reboot slot and be cordoned. The drain
+	// will be stuck because of the PDB.
+	g.Eventually(func() (map[string]string, error) {
+		var bn bootcv1alpha1.BootcNode
+		err := k8sClient.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
+		return bn.Annotations, err
+	}).Should(HaveKey(bootcv1alpha1.AnnotationInRebootSlot))
+
+	g.Eventually(func() (bool, error) {
+		var n corev1.Node
+		err := k8sClient.Get(ctx, client.ObjectKey{Name: nodeName}, &n)
+		return n.Spec.Unschedulable, err
+	}).Should(BeTrue())
+
+	// Verify desiredImageState is still Staged (drain hasn't completed).
+	var bn bootcv1alpha1.BootcNode
+	g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)).To(Succeed())
+	g.Expect(bn.Spec.DesiredImageState).To(Equal(bootcv1alpha1.DesiredImageStateStaged),
+		"desiredImageState should still be Staged while drain is blocked")
+
+	// Remove the worker label so the node no longer matches the pool.
+	var freshNode corev1.Node
+	g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: nodeName}, &freshNode)).To(Succeed())
+	modified := freshNode.DeepCopy()
+	delete(modified.Labels, "node-role.kubernetes.io/worker")
+	g.Expect(k8sClient.Patch(ctx, modified, client.MergeFrom(&freshNode))).To(Succeed())
+
+	// Verify cleanup: BootcNode should be deleted.
+	g.Eventually(func() error {
+		return k8sClient.Get(ctx, client.ObjectKey{Name: nodeName}, &bootcv1alpha1.BootcNode{})
+	}).Should(MatchError(apierrors.IsNotFound, "IsNotFound"))
+
+	// Node should be uncordoned and managed label removed.
+	g.Eventually(func() (bool, error) {
+		var n corev1.Node
+		err := k8sClient.Get(ctx, client.ObjectKey{Name: nodeName}, &n)
+		return n.Spec.Unschedulable, err
+	}).Should(BeFalse())
+
+	g.Eventually(func() (map[string]string, error) {
+		var n corev1.Node
+		err := k8sClient.Get(ctx, client.ObjectKey{Name: nodeName}, &n)
+		return n.Labels, err
+	}).ShouldNot(HaveKey(bootcv1alpha1.LabelManaged))
+
+	// Verify the drain entry was removed from the reconciler's map.
+	testReconciler.drainsMu.Lock()
+	_, drainExists := testReconciler.drains[nodeName]
+	testReconciler.drainsMu.Unlock()
+	g.Expect(drainExists).To(BeFalse(), "drain entry should be removed from map")
 }
