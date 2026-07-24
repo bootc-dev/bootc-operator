@@ -8,7 +8,7 @@ on:
     branches: [main]
 
 env:
-  BINK_COMMIT: 3ddb9da3b6e33f5dadd48abdb15ed550bbfe4f31
+  BINK_COMMIT: 61899a68d69b0de1114e165d24364bf5b8b6da2e
 
 permissions: {}
 
@@ -171,6 +171,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y podman
+
+      # Ubuntu runners ship a v1 (INI) registries.conf that Podman >= 5
+      # rejects. Overwrite with a minimal v2 (TOML) config.
+      - name: Write v2 registries.conf
+        run: printf 'unqualified-search-registries = ["docker.io"]\n' | sudo tee /etc/containers/registries.conf
 
       - name: Start podman socket
         run: systemctl --user start podman.socket

@@ -91,16 +91,45 @@ func TestControllerMembership(t *testing.T) {
 	}).WithTimeout(3 * time.Minute).Should(Succeed())
 }
 
+type diskImage struct {
+	name   string
+	envVar string
+}
+
+var diskImages = []diskImage{
+	{name: "ostree", envVar: "BINK_NODE_DISK_IMAGE"},
+	{name: "composefs", envVar: "BINK_NODE_DISK_IMAGE_COMPOSEFS"},
+}
+
+func forEachDiskImage(t *testing.T, fn func(t *testing.T, nodeOpts ...e2eutil.NodeOption)) {
+	t.Helper()
+	for _, di := range diskImages {
+		t.Run(di.name, func(t *testing.T) {
+			img := os.Getenv(di.envVar)
+			if img == "" {
+				t.Skipf("%s not set", di.envVar)
+			}
+			fn(t, e2eutil.WithNodeDiskImage(img))
+		})
+	}
+}
+
 // TestUpdateReboot provisions a worker node, creates a pool with the
 // original image, then updates the pool to a new image and verifies the
 // full update lifecycle: staging, reboot, and idle with the new image.
 func TestUpdateReboot(t *testing.T) {
+	forEachDiskImage(t, testUpdateReboot)
+}
+
+func testUpdateReboot(t *testing.T, nodeOpts ...e2eutil.NodeOption) {
+	t.Helper()
+
 	g := NewWithT(t)
 	g.SetDefaultEventuallyTimeout(pollTimeout)
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
 
 	env := e2eutil.New(t)
-	nodeName := env.AddNode(t)
+	nodeName := env.AddNode(t, nodeOpts...)
 
 	ctx := context.Background()
 
