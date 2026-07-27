@@ -46,6 +46,13 @@ Several of our projects use the `cargo xtask` pattern to put arbitrary "glue"
 code in Rust using the `xshell` crate to keep it easy to run external commands.
 This is preferred over long shell scripts.
 
+## Code Formatting
+
+After making changes to any .rs files, `cargo fmt` should be run.
+There are CI jobs that lint and expect `cargo fmt` to be a no-op.
+Failing to properly format rust code will result in wasted CI
+resources.
+
 ## General
 
 Prefer rustix over `libc`. All `unsafe` code must be very carefully
