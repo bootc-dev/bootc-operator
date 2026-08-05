@@ -287,7 +287,8 @@ func (r *BootcNodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// reconciliation run.
 
 	// Drive the rollout state machine.
-	if err := r.driveRollout(ctx, &pool, ownedBootcNodes); err != nil {
+	_, err = r.driveRollout(ctx, &pool, ownedBootcNodes)
+	if err != nil {
 		if isInvalidSpecError(err) {
 			return r.setInvalidSpecCondition(ctx, &pool, err)
 		}
