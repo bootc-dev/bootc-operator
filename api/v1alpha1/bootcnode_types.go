@@ -158,7 +158,7 @@ type BootcNodeStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster
+// +kubebuilder:resource:scope=Cluster,shortName=bn
 
 // BootcNode represents a single node managed by the bootc operator.
 // BootcNode objects are auto-created by the controller (one per managed

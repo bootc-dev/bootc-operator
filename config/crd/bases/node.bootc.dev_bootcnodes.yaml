@@ -11,6 +11,8 @@ spec:
     kind: BootcNode
     listKind: BootcNodeList
     plural: bootcnodes
+    shortNames:
+    - bn
     singular: bootcnode
   scope: Cluster
   versions:
