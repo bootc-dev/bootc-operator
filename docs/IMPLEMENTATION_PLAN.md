@@ -172,7 +172,7 @@ the full controller+daemon loop can be tested end-to-end.
   NotReady), verify the controller stops assigning new slots even
   when `maxUnavailable` has capacity.
 
-### 3c. Pool status aggregation
+### 3c. Pool status aggregation ✅
 
 - Compute `nodeCount`, `updatedCount`, `updatingCount`, `degradedCount`
 - `UpToDate` condition with reasons: `AllUpdated`, `RolloutInProgress`,
