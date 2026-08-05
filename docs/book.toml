@@ -1,0 +1,8 @@
+[book]
+title = "Bootc Operator"
+language = "en"
+src = "src"
+
+[output.html]
+git-repository-url = "https://github.com/bootc-dev/bootc-operator"
+edit-url-template = "https://github.com/bootc-dev/bootc-operator/edit/main/docs/{path}"

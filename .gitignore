@@ -2,3 +2,4 @@ _output/
 bin/
 *.out
 kubeconfig-*
+docs/book/
