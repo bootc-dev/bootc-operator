@@ -11,6 +11,8 @@ spec:
     kind: BootcNodePool
     listKind: BootcNodePoolList
     plural: bootcnodepools
+    shortNames:
+    - bnp
     singular: bootcnodepool
   scope: Cluster
   versions:
