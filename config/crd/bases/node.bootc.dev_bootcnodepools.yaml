@@ -14,7 +14,20 @@ spec:
     singular: bootcnodepool
   scope: Cluster
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .status.nodeCount
+      name: Nodes
+      type: integer
+    - jsonPath: .status.updatedCount
+      name: Updated
+      type: integer
+    - jsonPath: .status.updatingCount
+      name: Updating
+      type: integer
+    - jsonPath: .status.degradedCount
+      name: Degraded
+      type: integer
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: |-
