@@ -57,13 +57,13 @@ func (rs *rolloutState) nodeCount() int {
 }
 
 // driveRollout is the main function that advances the rollout state machine.
-func (r *BootcNodePoolReconciler) driveRollout(ctx context.Context, pool *bootcv1alpha1.BootcNodePool, ownedBootcNodes map[string]*bootcv1alpha1.BootcNode) error {
+func (r *BootcNodePoolReconciler) driveRollout(ctx context.Context, pool *bootcv1alpha1.BootcNodePool, ownedBootcNodes map[string]*bootcv1alpha1.BootcNode) (*rolloutState, error) {
 	log := logf.FromContext(ctx)
 
 	// Process drain results first. This isn't really ordering dependent,
 	// but it feels natural to do this upfront before classifying.
 	if err := r.collectDrainResults(ctx, ownedBootcNodes); err != nil {
-		return fmt.Errorf("collecting drain results: %w", err)
+		return nil, fmt.Errorf("collecting drain results: %w", err)
 	}
 
 	rs := buildRolloutState(log, ownedBootcNodes)
@@ -80,7 +80,7 @@ func (r *BootcNodePoolReconciler) driveRollout(ctx context.Context, pool *bootcv
 	// the desired image. This runs before computing available slots so
 	// that freed capacity is immediately usable for new candidates.
 	if err := r.freeCompletedSlots(ctx, rs); err != nil {
-		return fmt.Errorf("freeing completed slots: %w", err)
+		return nil, fmt.Errorf("freeing completed slots: %w", err)
 	}
 
 	// Check for unhealthy nodes on the target digest in reboot slots. If
@@ -107,12 +107,12 @@ func (r *BootcNodePoolReconciler) driveRollout(ctx context.Context, pool *bootcv
 		// reconciles will still have their results collected and
 		// desiredImageState set to Booted. Trying to "un-drain" and
 		// uncordon fully drained nodes is out of scope for now.
-		return nil
+		return rs, nil
 	}
 
 	maxUnavail, err := resolveMaxUnavailable(pool, rs.nodeCount())
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	availableSlots := max(0, maxUnavail-rs.occupiedSlots)
@@ -136,10 +136,10 @@ func (r *BootcNodePoolReconciler) driveRollout(ctx context.Context, pool *bootcv
 	for _, bn := range candidates {
 		var node corev1.Node
 		if err := r.Get(ctx, types.NamespacedName{Name: bn.Name}, &node); err != nil {
-			return fmt.Errorf("fetching node %s: %w", bn.Name, err)
+			return nil, fmt.Errorf("fetching node %s: %w", bn.Name, err)
 		}
 		if err := r.assignRebootSlot(ctx, bn, &node); err != nil {
-			return fmt.Errorf("assigning reboot slot to %s: %w", bn.Name, err)
+			return nil, fmt.Errorf("assigning reboot slot to %s: %w", bn.Name, err)
 		}
 	}
 
@@ -155,7 +155,7 @@ func (r *BootcNodePoolReconciler) driveRollout(ctx context.Context, pool *bootcv
 		r.ensureDrain(ctx, pool, bn)
 	}
 
-	return nil
+	return rs, nil
 }
 
 // assignRebootSlot marks a BootcNode as occupying a reboot slot and
