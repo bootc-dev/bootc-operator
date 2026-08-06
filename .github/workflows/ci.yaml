@@ -153,15 +153,6 @@ jobs:
       - name: Set up KVM
         run: sudo chmod 666 /dev/kvm
 
-      - name: Configure kernel
-        run: |
-          # Unload AppArmor profiles — the passt profile blocks remount
-          # operations needed for passt's self-sandboxing inside containers.
-          sudo aa-teardown 2>/dev/null || true
-          # Allow unprivileged user namespace creation (needed by passt
-          # inside containers).
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-
       - name: Enable KSM
         run: |
           sudo sh -c 'echo 1 > /sys/kernel/mm/ksm/run'
@@ -171,6 +162,17 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y podman
+
+      - name: Configure kernel
+        run: |
+          # Unload AppArmor profiles — the host-loaded passt profile
+          # blocks passt's self-sandboxing inside bink node containers.
+          # Must run AFTER installing podman, whose passt dependency
+          # loads the profile during package installation.
+          sudo aa-teardown 2>/dev/null || true
+          # Allow unprivileged user namespace creation (needed by passt
+          # inside containers).
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       - name: Start podman socket
         run: systemctl --user start podman.socket
