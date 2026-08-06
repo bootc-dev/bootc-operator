@@ -211,7 +211,11 @@ type BootcNodePoolStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster
+// +kubebuilder:resource:scope=Cluster,shortName=bnp
+// +kubebuilder:printcolumn:name="Nodes",type=integer,JSONPath=`.status.nodeCount`
+// +kubebuilder:printcolumn:name="Updated",type=integer,JSONPath=`.status.updatedCount`
+// +kubebuilder:printcolumn:name="Updating",type=integer,JSONPath=`.status.updatingCount`
+// +kubebuilder:printcolumn:name="Degraded",type=integer,JSONPath=`.status.degradedCount`
 
 // BootcNodePool defines a group of nodes and their desired OS image state.
 // Users create BootcNodePool resources to register nodes with the bootc

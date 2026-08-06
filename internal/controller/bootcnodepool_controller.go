@@ -287,12 +287,18 @@ func (r *BootcNodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// reconciliation run.
 
 	// Drive the rollout state machine.
-	if err := r.driveRollout(ctx, &pool, ownedBootcNodes); err != nil {
+	rs, err := r.driveRollout(ctx, &pool, ownedBootcNodes)
+	if err != nil {
 		if isInvalidSpecError(err) {
 			return r.setInvalidSpecCondition(ctx, &pool, err)
 		}
 		return ctrl.Result{}, fmt.Errorf("driving rollout: %w", err)
 	}
+
+	// Early-return paths above (TargetDigest empty, InvalidSpec) skip
+	// aggregation. In-flight updates may complete during error conditions
+	// but counts catch up on the next successful reconcile.
+	syncPoolStatus(&pool, rs)
 
 	return complete(resolveResult)
 }

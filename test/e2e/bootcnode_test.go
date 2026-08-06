@@ -11,6 +11,7 @@ import (
 	"time"
 
 	. "github.com/onsi/gomega"
+	"github.com/onsi/gomega/types"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -92,6 +93,9 @@ func TestControllerMembership(t *testing.T) {
 			HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
 		))),
 	))
+
+	// Verify pool status reflects steady state.
+	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).Should(poolAllUpdated(1, env.NodeImageDigest()))
 }
 
 // TestUpdateReboot provisions a worker node, creates a pool with the
@@ -150,6 +154,19 @@ func TestUpdateReboot(t *testing.T) {
 
 	t.Logf("Node %q is Rebooting", nodeName)
 
+	// Verify pool status during rollout.
+	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).Should(And(
+		HaveField("NodeCount", BeEquivalentTo(1)),
+		HaveField("UpdatedCount", BeEquivalentTo(0)),
+		HaveField("UpdatingCount", BeEquivalentTo(1)),
+		HaveField("UpdateAvailable", BeTrue()),
+		HaveField("Conditions", ContainElement(And(
+			HaveField("Type", bootcv1alpha1.PoolUpToDate),
+			HaveField("Status", metav1.ConditionFalse),
+			HaveField("Reason", bootcv1alpha1.PoolRolloutInProgress),
+		))),
+	))
+
 	// Phase 4: Wait for Idle with the update digest — proves the full
 	// update lifecycle completed (staging, reboot, boot into new image).
 	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
@@ -169,6 +186,9 @@ func TestUpdateReboot(t *testing.T) {
 	), "expected node to reach Idle with update image after reboot")
 
 	t.Logf("Node %q is Idle with update image", nodeName)
+
+	// Verify pool status after rollout completes.
+	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).Should(poolAllUpdated(1, env.NodeImageUpdateDigest()))
 
 	// Phase 5: Verify node is schedulable (uncordoned after reboot).
 	g.Eventually(func() (bool, error) {
@@ -256,6 +276,9 @@ func TestUpdateReboot(t *testing.T) {
 	), "expected node to reach Idle with original image after rollback")
 
 	t.Logf("Node %q successfully rolled back to original image", nodeName)
+
+	// Verify pool status after rollback completes.
+	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).Should(poolAllUpdated(1, env.NodeImageDigest()))
 }
 
 // TestTagResolution creates a pool with a tag-based image ref, verifies
@@ -416,6 +439,18 @@ func TestPauseResume(t *testing.T) {
 
 	t.Logf("Node %q staged update but did not reboot (paused)", nodeName)
 
+	// Verify pool status while paused.
+	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).Should(And(
+		HaveField("NodeCount", BeEquivalentTo(1)),
+		HaveField("UpdatedCount", BeEquivalentTo(0)),
+		HaveField("UpdateAvailable", BeTrue()),
+		HaveField("Conditions", ContainElement(And(
+			HaveField("Type", bootcv1alpha1.PoolUpToDate),
+			HaveField("Status", metav1.ConditionFalse),
+			HaveField("Reason", bootcv1alpha1.PoolPaused),
+		))),
+	))
+
 	// Verify the node stays Staged and does not proceed to reboot.
 	g.Consistently(func() ([]metav1.Condition, error) {
 		var bn2 bootcv1alpha1.BootcNode
@@ -453,6 +488,9 @@ func TestPauseResume(t *testing.T) {
 	), "expected node to reach Idle with update image after resume")
 
 	t.Logf("Node %q completed update after resume", nodeName)
+
+	// Verify pool status after resume completes.
+	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).Should(poolAllUpdated(1, env.NodeImageUpdateDigest()))
 }
 
 // TestNonExistingImage provisions a worker node, creates a pool with the
@@ -517,10 +555,48 @@ func TestNonExistingImage(t *testing.T) {
 
 	t.Logf("Node %q entered degraded state as expected", nodeName)
 
+	// Verify pool status reflects degraded node.
+	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).Should(And(
+		HaveField("NodeCount", BeEquivalentTo(1)),
+		HaveField("UpdatedCount", BeEquivalentTo(0)),
+		HaveField("UpdatingCount", BeEquivalentTo(0)),
+		HaveField("DegradedCount", BeEquivalentTo(1)),
+		HaveField("UpdateAvailable", BeTrue()),
+		HaveField("Conditions", ContainElement(And(
+			HaveField("Type", bootcv1alpha1.PoolDegraded),
+			HaveField("Status", metav1.ConditionTrue),
+			HaveField("Reason", bootcv1alpha1.PoolNodeDegraded),
+		))),
+	))
+
 	// Phase 4: Verify the node did not stage the non-existing image.
 	g.Expect(env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)).To(Succeed())
 	g.Expect(bn.Status.Staged).To(BeNil(),
 		"node should not have staged the non-existing image")
 
 	t.Logf("Verified node %q did not stage non-existing image", nodeName)
+}
+
+func fetchPoolStatus(ctx context.Context, c client.Client, pool *bootcv1alpha1.BootcNodePool) func() (bootcv1alpha1.BootcNodePoolStatus, error) {
+	return func() (bootcv1alpha1.BootcNodePoolStatus, error) {
+		var p bootcv1alpha1.BootcNodePool
+		err := c.Get(ctx, client.ObjectKeyFromObject(pool), &p)
+		return p.Status, err
+	}
+}
+
+func poolAllUpdated(nodeCount int32, deployedDigest string) types.GomegaMatcher {
+	return And(
+		HaveField("NodeCount", BeEquivalentTo(nodeCount)),
+		HaveField("UpdatedCount", BeEquivalentTo(nodeCount)),
+		HaveField("UpdatingCount", BeEquivalentTo(0)),
+		HaveField("DegradedCount", BeEquivalentTo(0)),
+		HaveField("DeployedDigest", Equal(deployedDigest)),
+		HaveField("UpdateAvailable", BeFalse()),
+		HaveField("Conditions", ContainElement(And(
+			HaveField("Type", bootcv1alpha1.PoolUpToDate),
+			HaveField("Status", metav1.ConditionTrue),
+			HaveField("Reason", bootcv1alpha1.PoolAllUpdated),
+		))),
+	)
 }
