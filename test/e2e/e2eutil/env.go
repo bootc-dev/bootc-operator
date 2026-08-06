@@ -66,6 +66,10 @@ type Env struct {
 	// nodeImageUpdateDigest is the manifest digest of the update image
 	// (e.g. "sha256:def456..."). Empty when not built.
 	nodeImageUpdateDigest string
+
+	// nodeImageUpdate2Digest is the manifest digest of the second update
+	// image (e.g. "sha256:789abc..."). Used by mid-rollout image change tests.
+	nodeImageUpdate2Digest string
 }
 
 // New connects to an existing bink cluster and returns an Env ready
@@ -96,16 +100,21 @@ func New(t *testing.T) *Env {
 	if nodeImageUpdateDigest == "" {
 		t.Fatal("BINK_NODE_IMAGE_UPDATE_DIGEST must be set")
 	}
+	nodeImageUpdate2Digest := os.Getenv("BINK_NODE_IMAGE_UPDATE2_DIGEST")
+	if nodeImageUpdate2Digest == "" {
+		t.Fatal("BINK_NODE_IMAGE_UPDATE2_DIGEST must be set")
+	}
 
 	k8sClient := buildClient(t, kubeconfigPath)
 
 	env := &Env{
-		Client:                k8sClient,
-		clusterName:           clusterName,
-		testID:                sanitizeTestName(t.Name()),
-		nodeImageDigest:       nodeImageDigest,
-		nodeImageRegistry:     nodeImageRegistry,
-		nodeImageUpdateDigest: nodeImageUpdateDigest,
+		Client:                 k8sClient,
+		clusterName:            clusterName,
+		testID:                 sanitizeTestName(t.Name()),
+		nodeImageDigest:        nodeImageDigest,
+		nodeImageRegistry:      nodeImageRegistry,
+		nodeImageUpdateDigest:  nodeImageUpdateDigest,
+		nodeImageUpdate2Digest: nodeImageUpdate2Digest,
 	}
 
 	t.Cleanup(func() {
@@ -249,6 +258,20 @@ func (e *Env) NodeImageUpdateDigestedPullSpec() string {
 // NodeImageUpdateDigest returns the manifest digest of the update image.
 func (e *Env) NodeImageUpdateDigest() string {
 	return e.nodeImageUpdateDigest
+}
+
+// NodeImageUpdate2DigestedPullSpec returns the digest-qualified reference for the
+// second update image (e.g. "registry.cluster.local:5000/node@sha256:789abc").
+func (e *Env) NodeImageUpdate2DigestedPullSpec() string {
+	if e.nodeImageRegistry == "" || e.nodeImageUpdate2Digest == "" {
+		return ""
+	}
+	return e.nodeImageRegistry + "@" + e.nodeImageUpdate2Digest
+}
+
+// NodeImageUpdate2Digest returns the manifest digest of the second update image.
+func (e *Env) NodeImageUpdate2Digest() string {
+	return e.nodeImageUpdate2Digest
 }
 
 // RetagImage reads the image at srcRef from the localhost registry and
