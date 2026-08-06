@@ -16,10 +16,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
@@ -66,7 +68,7 @@ func (r *BootcNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.stageDone = make(chan event.GenericEvent, 1)
 
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&bootcv1alpha1.BootcNode{}).
+		For(&bootcv1alpha1.BootcNode{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		WatchesRawSource(source.Channel(r.stageDone, &handler.EnqueueRequestForObject{})).
 		WatchesRawSource(source.Channel(r.StatusWatcher.Events, &handler.EnqueueRequestForObject{})).
 		Named("bootcnode").
