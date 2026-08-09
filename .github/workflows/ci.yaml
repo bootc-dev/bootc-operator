@@ -183,6 +183,12 @@ jobs:
       - name: Load operator image
         run: podman load -i operator-image.tar
 
+      - name: Fix registries configuration
+        run: |
+          sudo tee /etc/containers/registries.conf > /dev/null <<'EOF'
+          unqualified-search-registries = ["docker.io"]
+          EOF
+
       - name: Start bink cluster
         run: make start-bink
 
