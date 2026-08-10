@@ -85,7 +85,10 @@ func (e *HostExecutor) Stage(ctx context.Context, image string) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		e.copyJournalUnitLogs(log, stageUnitName, cursor)
+		journalOutput := e.copyJournalUnitLogs(log, stageUnitName, cursor)
+		if journalOutput != "" {
+			return fmt.Errorf("running bootc switch: %s: %w", journalOutput, err)
+		}
 		return fmt.Errorf("running bootc switch: %w", err)
 	}
 	return nil
@@ -117,10 +120,10 @@ func (e *HostExecutor) journalCursor() string {
 	return ""
 }
 
-// copyJournalUnitLogs logs recent journal output from the given systemd unit.
-// If cursor is non-empty, only entries after that cursor are shown; otherwise
-// shows all entries.
-func (e *HostExecutor) copyJournalUnitLogs(log logr.Logger, unit string, cursor string) {
+// copyJournalUnitLogs logs recent journal output from the given systemd unit
+// and returns the raw output. If cursor is non-empty, only entries after that
+// cursor are shown; otherwise shows all entries.
+func (e *HostExecutor) copyJournalUnitLogs(log logr.Logger, unit string, cursor string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	args := []string{"journalctl", "-o", "cat", "--no-pager",
@@ -132,13 +135,18 @@ func (e *HostExecutor) copyJournalUnitLogs(log logr.Logger, unit string, cursor 
 	out, err := e.nsenterCmd(ctx, args...).Output()
 	if err != nil {
 		log.Error(err, "Failed to read unit journal", "unit", unit)
-		return
+		return ""
 	}
+	var errLines []string
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		if line != "" {
 			log.Info(line, "unit", unit)
+			if strings.HasPrefix(line, "error:") {
+				errLines = append(errLines, line)
+			}
 		}
 	}
+	return strings.Join(errLines, "\n")
 }
 
 func (e *HostExecutor) Reboot(ctx context.Context) error {
