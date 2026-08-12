@@ -52,12 +52,24 @@ unit: manifests generate setup-envtest ## Run unit tests (envtest). V=1 for verb
 	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test $(if $(V),-v) $(if $(RUN),-run $(RUN)) $$(go list ./... | grep -v /test/e2e)
 
 .PHONY: lint
-lint: golangci-lint ## Run golangci-lint linter.
+lint: golangci-lint ## Run golangci-lint linter and go-lines
 	"$(GOLANGCI_LINT)" run
+	$(MAKE) go-lines
 
 .PHONY: lint-fix
 lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes.
 	"$(GOLANGCI_LINT)" run --fix
+
+.PHONY: go-lines
+go-lines: get-golines
+	@if [ "$$("$(GOLINES_BIN)" --dry-run . | wc -l)" -gt 0 ]; then \
+		echo "Run make go-lines-fix"; \
+		exit 1; \
+	fi
+
+.PHONY: go-lines-fix
+go-lines-fix: get-golines
+	"$(GOLINES_BIN)" -w .
 
 .PHONY: e2e
 e2e: ## Run e2e tests (requires: make deploy-bink). V=1 for verbose. RUN=<regex> to filter.
@@ -180,6 +192,7 @@ KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+GOLINES_BIN = $(LOCALBIN)/golines
 YQ ?= $(LOCALBIN)/yq
 
 KUSTOMIZE_VERSION ?= v5.8.1
@@ -223,6 +236,11 @@ $(ENVTEST): $(LOCALBIN)
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
 	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
+
+.PHONY: get-golines
+get-golines: $(GOLINES_BIN) ## Download golines locally if necessary.
+$(GOLINES_BIN): $(LOCALBIN)
+	$(call go-install-tool,$(GOLINES_BIN),github.com/golangci/golines,latest)
 
 .PHONY: yq
 yq: $(YQ) ## Download yq locally if necessary.
