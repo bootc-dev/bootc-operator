@@ -35,7 +35,12 @@ func init() {
 
 func main() {
 	var pollInterval time.Duration
-	flag.DurationVar(&pollInterval, "bootc-poll-interval", 5*time.Minute, "Interval for polling bootc status as a fallback to fsnotify")
+	flag.DurationVar(
+		&pollInterval,
+		"bootc-poll-interval",
+		5*time.Minute,
+		"Interval for polling bootc status as a fallback to fsnotify",
+	)
 
 	opts := zap.Options{
 		Development: true,
@@ -47,7 +52,10 @@ func main() {
 
 	nodeName := os.Getenv("NODE_NAME")
 	if nodeName == "" {
-		setupLog.Error(fmt.Errorf("NODE_NAME not set"), "NODE_NAME environment variable is required")
+		setupLog.Error(
+			fmt.Errorf("NODE_NAME not set"),
+			"NODE_NAME environment variable is required",
+		)
 		os.Exit(1)
 	}
 

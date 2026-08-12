@@ -57,7 +57,11 @@ func (rs *rolloutState) nodeCount() int {
 }
 
 // driveRollout is the main function that advances the rollout state machine.
-func (r *BootcNodePoolReconciler) driveRollout(ctx context.Context, pool *bootcv1alpha1.BootcNodePool, ownedBootcNodes map[string]*bootcv1alpha1.BootcNode) (*rolloutState, error) {
+func (r *BootcNodePoolReconciler) driveRollout(
+	ctx context.Context,
+	pool *bootcv1alpha1.BootcNodePool,
+	ownedBootcNodes map[string]*bootcv1alpha1.BootcNode,
+) (*rolloutState, error) {
 	log := logf.FromContext(ctx)
 
 	// Process drain results first. This isn't really ordering dependent,
@@ -96,8 +100,14 @@ func (r *BootcNodePoolReconciler) driveRollout(ctx context.Context, pool *bootcv
 			details[i] = u.name + ": " + u.reason
 		}
 		slices.Sort(details)
-		setPoolDegraded(pool, bootcv1alpha1.PoolRolloutHalted,
-			fmt.Sprintf("Rollout halted: 2+ unhealthy nodes in reboot slots (%s)", strings.Join(details, ", ")))
+		setPoolDegraded(
+			pool,
+			bootcv1alpha1.PoolRolloutHalted,
+			fmt.Sprintf(
+				"Rollout halted: 2+ unhealthy nodes in reboot slots (%s)",
+				strings.Join(details, ", "),
+			),
+		)
 		log.Info("Rollout halted: 2+ unhealthy nodes in reboot slots",
 			"unhealthyInSlots", len(unhealthy))
 
@@ -163,7 +173,11 @@ func (r *BootcNodePoolReconciler) driveRollout(ctx context.Context, pool *bootcv
 // annotation on the BootcNode, records prior cordon state in the
 // was-cordoned annotation, and cordons the node. All operations are
 // idempotent.
-func (r *BootcNodePoolReconciler) assignRebootSlot(ctx context.Context, bn *bootcv1alpha1.BootcNode, node *corev1.Node) error {
+func (r *BootcNodePoolReconciler) assignRebootSlot(
+	ctx context.Context,
+	bn *bootcv1alpha1.BootcNode,
+	node *corev1.Node,
+) error {
 	log := logf.FromContext(ctx)
 
 	// Set annotations on the BootcNode if not already present.
@@ -233,7 +247,11 @@ func (r *BootcNodePoolReconciler) freeCompletedSlots(ctx context.Context, rs *ro
 
 // freeRebootSlot releases a node's reboot slot by restoring its prior cordon
 // state and removing annotations from the BootcNode.
-func (r *BootcNodePoolReconciler) freeRebootSlot(ctx context.Context, bn *bootcv1alpha1.BootcNode, node *corev1.Node) error {
+func (r *BootcNodePoolReconciler) freeRebootSlot(
+	ctx context.Context,
+	bn *bootcv1alpha1.BootcNode,
+	node *corev1.Node,
+) error {
 	if err := r.restoreCordonState(ctx, bn, node); err != nil {
 		return err
 	}
@@ -252,7 +270,11 @@ func (r *BootcNodePoolReconciler) freeRebootSlot(ctx context.Context, bn *bootcv
 // ensureDrain checks whether a drain goroutine is already running for
 // the given node and starts one if not. It is a no-op if a drain is
 // already in progress.
-func (r *BootcNodePoolReconciler) ensureDrain(ctx context.Context, pool *bootcv1alpha1.BootcNodePool, bn *bootcv1alpha1.BootcNode) {
+func (r *BootcNodePoolReconciler) ensureDrain(
+	ctx context.Context,
+	pool *bootcv1alpha1.BootcNodePool,
+	bn *bootcv1alpha1.BootcNode,
+) {
 	log := logf.FromContext(ctx)
 
 	r.drainsMu.Lock()
@@ -309,7 +331,10 @@ func (r *BootcNodePoolReconciler) ensureDrain(ctx context.Context, pool *bootcv1
 // collectDrainResults checks all in-progress drains for completed
 // results. On success, it sets desiredImageState to Booted on the
 // BootcNode.
-func (r *BootcNodePoolReconciler) collectDrainResults(ctx context.Context, ownedBootcNodes map[string]*bootcv1alpha1.BootcNode) error {
+func (r *BootcNodePoolReconciler) collectDrainResults(
+	ctx context.Context,
+	ownedBootcNodes map[string]*bootcv1alpha1.BootcNode,
+) error {
 	log := logf.FromContext(ctx)
 
 	r.drainsMu.Lock()
@@ -375,7 +400,10 @@ func (r *BootcNodePoolReconciler) collectDrainResults(ctx context.Context, owned
 
 // buildRolloutState classifies all owned BootcNodes and counts occupied
 // reboot slots.
-func buildRolloutState(log logr.Logger, ownedBootcNodes map[string]*bootcv1alpha1.BootcNode) *rolloutState {
+func buildRolloutState(
+	log logr.Logger,
+	ownedBootcNodes map[string]*bootcv1alpha1.BootcNode,
+) *rolloutState {
 	rs := &rolloutState{}
 	for _, bn := range ownedBootcNodes {
 		// Count occupied reboot slots from the persistent annotation.
@@ -404,7 +432,10 @@ func buildRolloutState(log logr.Logger, ownedBootcNodes map[string]*bootcv1alpha
 		case nodeStateRebooting:
 			rs.rebooting = append(rs.rebooting, bn)
 		case nodeStateDegraded:
-			if cond := apimeta.FindStatusCondition(bn.Status.Conditions, bootcv1alpha1.NodeDegraded); cond != nil {
+			if cond := apimeta.FindStatusCondition(
+				bn.Status.Conditions,
+				bootcv1alpha1.NodeDegraded,
+			); cond != nil {
 				log.Info("Node is degraded", "node", bn.Name, "message", cond.Message)
 			}
 			rs.degraded = append(rs.degraded, bn)
@@ -462,9 +493,19 @@ func resolveMaxUnavailable(pool *bootcv1alpha1.BootcNodePool, nodeCount int) (in
 	}
 
 	// We roundUp here; this matches Deployments maxUnavailable for example
-	v, err := intstr.GetScaledValueFromIntOrPercent(pool.Spec.Rollout.MaxUnavailable, nodeCount, true)
+	v, err := intstr.GetScaledValueFromIntOrPercent(
+		pool.Spec.Rollout.MaxUnavailable,
+		nodeCount,
+		true,
+	)
 	if err != nil {
-		return 0, newInvalidSpecError(fmt.Sprintf("invalid maxUnavailable %q: %v", pool.Spec.Rollout.MaxUnavailable.String(), err))
+		return 0, newInvalidSpecError(
+			fmt.Sprintf(
+				"invalid maxUnavailable %q: %v",
+				pool.Spec.Rollout.MaxUnavailable.String(),
+				err,
+			),
+		)
 	}
 	return v, nil
 }
@@ -475,7 +516,10 @@ func resolveMaxUnavailable(pool *bootcv1alpha1.BootcNodePool, nodeCount int) (in
 // drain restarted). These nodes are already counted in occupiedSlots so they
 // don't consume availableSlots. Beyond those, up to availableSlots unslotted
 // nodes are appended, sorted alphabetically.
-func selectDrainCandidates(staged []*bootcv1alpha1.BootcNode, availableSlots int) []*bootcv1alpha1.BootcNode {
+func selectDrainCandidates(
+	staged []*bootcv1alpha1.BootcNode,
+	availableSlots int,
+) []*bootcv1alpha1.BootcNode {
 	if len(staged) == 0 {
 		return nil
 	}

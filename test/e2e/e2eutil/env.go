@@ -164,7 +164,9 @@ func (e *Env) AddNode(t *testing.T, opts ...NodeOption) string {
 
 	if cfg.targetImgRef == "" {
 		if e.nodeImageRegistry == "" || e.nodeImageDigest == "" {
-			t.Fatal("BINK_LOCAL_REGISTRY_NODE_IMAGE and NODE_IMAGE_DIGEST must be set (or use WithTargetImgRef)")
+			t.Fatal(
+				"BINK_LOCAL_REGISTRY_NODE_IMAGE and NODE_IMAGE_DIGEST must be set (or use WithTargetImgRef)",
+			)
 		}
 		cfg.targetImgRef = e.nodeImageRegistry + "@" + e.nodeImageDigest
 	}
@@ -201,7 +203,10 @@ func (e *Env) AddNode(t *testing.T, opts ...NodeOption) string {
 // The pool is labeled with LabelE2ETest for cleanup. If no
 // WithNodeSelector option is provided, it defaults to selecting nodes
 // with LabelE2ETest (i.e. all nodes belonging to this test).
-func (e *Env) NewPool(suffix, imageRef string, opts ...testutil.PoolOption) *bootcv1alpha1.BootcNodePool {
+func (e *Env) NewPool(
+	suffix, imageRef string,
+	opts ...testutil.PoolOption,
+) *bootcv1alpha1.BootcNodePool {
 	defaults := []testutil.PoolOption{
 		testutil.WithLabel(LabelE2ETest, e.testID),
 		testutil.WithNodeSelector(e.TestLabels()),
@@ -285,12 +290,24 @@ func (e *Env) cleanup(t *testing.T) {
 
 	ctx := context.Background()
 	t.Logf("Removing pools with label %s=%s...", LabelE2ETest, e.testID)
-	if err := e.Client.DeleteAllOf(ctx, &bootcv1alpha1.BootcNodePool{}, client.MatchingLabels(e.TestLabels())); err != nil {
+	if err := e.Client.DeleteAllOf(
+		ctx,
+		&bootcv1alpha1.BootcNodePool{},
+		client.MatchingLabels(e.TestLabels()),
+	); err != nil {
 		t.Logf("WARNING: pool cleanup: %v", err)
 	}
 	for _, name := range e.nodes {
 		t.Logf("Removing node %q...", name)
-		if err := runBink(t, "node", "remove", name, "--force", "--cluster-name", e.clusterName); err != nil {
+		if err := runBink(
+			t,
+			"node",
+			"remove",
+			name,
+			"--force",
+			"--cluster-name",
+			e.clusterName,
+		); err != nil {
 			t.Logf("WARNING: failed to remove node %q: %v", name, err)
 		}
 	}

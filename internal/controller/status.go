@@ -21,7 +21,9 @@ func syncPoolStatus(pool *bootcv1alpha1.BootcNodePool, rs *rolloutState) {
 	pool.Status.ObservedGeneration = pool.Generation
 	pool.Status.NodeCount = int32(rs.nodeCount())
 	pool.Status.UpdatedCount = int32(len(rs.upToDate))
-	pool.Status.UpdatingCount = int32(len(rs.pending) + len(rs.staging) + len(rs.staged) + len(rs.rebooting))
+	pool.Status.UpdatingCount = int32(
+		len(rs.pending) + len(rs.staging) + len(rs.staged) + len(rs.rebooting),
+	)
 	pool.Status.DegradedCount = int32(len(rs.degraded))
 
 	if pool.Status.NodeCount == pool.Status.UpdatedCount {

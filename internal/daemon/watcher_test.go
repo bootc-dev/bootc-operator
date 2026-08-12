@@ -124,7 +124,11 @@ func TestWatcherEvents(t *testing.T) {
 
 func TestWatcherCachesStatus(t *testing.T) {
 	dir := t.TempDir()
-	w := newTestWatcher(filepath.Join(dir, "nonexistent"), filepath.Join(dir, "nonexistent2"), 200*time.Millisecond)
+	w := newTestWatcher(
+		filepath.Join(dir, "nonexistent"),
+		filepath.Join(dir, "nonexistent2"),
+		200*time.Millisecond,
+	)
 
 	done, cancel := startWatcher(t, w)
 	defer cancel()
@@ -144,7 +148,11 @@ func TestWatcherCachesStatus(t *testing.T) {
 		t.Fatal("expected booted entry in cached status")
 	}
 	if status.Status.Booted.Image.ImageDigest != testutil.DigestA {
-		t.Errorf("expected digest %s, got %s", testutil.DigestA, status.Status.Booted.Image.ImageDigest)
+		t.Errorf(
+			"expected digest %s, got %s",
+			testutil.DigestA,
+			status.Status.Booted.Image.ImageDigest,
+		)
 	}
 
 	// Change the executor's data to simulate a stale cache where
@@ -160,7 +168,11 @@ func TestWatcherCachesStatus(t *testing.T) {
 		t.Fatalf("GetStatus returned error after executor change: %v", err)
 	}
 	if status.Status.Booted.Image.ImageDigest != testutil.DigestA {
-		t.Errorf("expected cached digest %s, got %s", testutil.DigestA, status.Status.Booted.Image.ImageDigest)
+		t.Errorf(
+			"expected cached digest %s, got %s",
+			testutil.DigestA,
+			status.Status.Booted.Image.ImageDigest,
+		)
 	}
 
 	cancel()
@@ -183,7 +195,8 @@ func TestWatcherGetStatusColdCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetStatus returned error: %v", err)
 	}
-	if status.Status.Booted == nil || status.Status.Booted.Image == nil || status.Status.Booted.Image.ImageDigest != testutil.DigestA {
+	if status.Status.Booted == nil || status.Status.Booted.Image == nil ||
+		status.Status.Booted.Image.ImageDigest != testutil.DigestA {
 		t.Fatalf("expected booted digest %s", testutil.DigestA)
 	}
 }

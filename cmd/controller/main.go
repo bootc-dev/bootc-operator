@@ -35,10 +35,24 @@ func main() {
 	var probeAddr string
 	var tagResolutionInterval time.Duration
 	var allowInsecureRegistry bool
-	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	flag.DurationVar(&tagResolutionInterval, "tag-resolution-interval", 5*time.Minute, "How often to re-resolve tag-based image refs.")
-	flag.BoolVar(&allowInsecureRegistry, "allow-insecure-registry", false,
-		"Allow falling back to HTTP when resolving tag-based image refs against registries that do not serve TLS.")
+	flag.StringVar(
+		&probeAddr,
+		"health-probe-bind-address",
+		":8081",
+		"The address the probe endpoint binds to.",
+	)
+	flag.DurationVar(
+		&tagResolutionInterval,
+		"tag-resolution-interval",
+		5*time.Minute,
+		"How often to re-resolve tag-based image refs.",
+	)
+	flag.BoolVar(
+		&allowInsecureRegistry,
+		"allow-insecure-registry",
+		false,
+		"Allow falling back to HTTP when resolving tag-based image refs against registries that do not serve TLS.",
+	)
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")

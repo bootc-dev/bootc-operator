@@ -105,7 +105,10 @@ func (r *BootcNodePoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // pool that owns it. The second set is needed so the owning pool can clean up
 // when a node's labels change such that it no longer matches, or when the node
 // is deleted entirely.
-func (r *BootcNodePoolReconciler) mapNodeToPoolRequests(ctx context.Context, obj client.Object) []reconcile.Request {
+func (r *BootcNodePoolReconciler) mapNodeToPoolRequests(
+	ctx context.Context,
+	obj client.Object,
+) []reconcile.Request {
 	node, ok := obj.(*corev1.Node)
 	if !ok {
 		return nil
@@ -218,7 +221,10 @@ func nodeUnschedulableChanged(oldNode, newNode *corev1.Node) bool {
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
-func (r *BootcNodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *BootcNodePoolReconciler) Reconcile(
+	ctx context.Context,
+	req ctrl.Request,
+) (ctrl.Result, error) {
 	log := logf.FromContext(ctx).WithValues("pool", req.Name)
 
 	// Fetch the pool.
@@ -306,12 +312,17 @@ func (r *BootcNodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 // resolveTargetDigest resolves the target digest from the pool's image
 // ref. Digest refs are extracted directly. Tag refs are resolved via
 // the registry, respecting the re-resolution interval.
-func (r *BootcNodePoolReconciler) resolveTargetDigest(ctx context.Context, pool *bootcv1alpha1.BootcNodePool) (ctrl.Result, error) {
+func (r *BootcNodePoolReconciler) resolveTargetDigest(
+	ctx context.Context,
+	pool *bootcv1alpha1.BootcNodePool,
+) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	ref, err := parseImageRef(pool.Spec.Image.Ref)
 	if err != nil {
-		return ctrl.Result{}, newInvalidSpecError(fmt.Sprintf("invalid image ref %q: %v", pool.Spec.Image.Ref, err))
+		return ctrl.Result{}, newInvalidSpecError(
+			fmt.Sprintf("invalid image ref %q: %v", pool.Spec.Image.Ref, err),
+		)
 	}
 
 	digested, ok := ref.(reference.Digested)
@@ -325,7 +336,8 @@ func (r *BootcNodePoolReconciler) resolveTargetDigest(ctx context.Context, pool 
 
 	// Tag ref — check if resolution is due.
 	now := time.Now()
-	if pool.Status.NextTagResolutionTime != nil && now.Before(pool.Status.NextTagResolutionTime.Time) {
+	if pool.Status.NextTagResolutionTime != nil &&
+		now.Before(pool.Status.NextTagResolutionTime.Time) {
 		remaining := pool.Status.NextTagResolutionTime.Sub(now)
 		log.V(1).Info("Tag resolution not yet due", "remaining", remaining)
 		return ctrl.Result{RequeueAfter: remaining}, nil
@@ -375,7 +387,11 @@ func isInvalidSpecError(err error) bool {
 
 // setInvalidSpecCondition sets Degraded/InvalidSpec on the pool and
 // returns (Result, nil) so Reconcile stops without requeueing.
-func (r *BootcNodePoolReconciler) setInvalidSpecCondition(ctx context.Context, pool *bootcv1alpha1.BootcNodePool, specErr error) (ctrl.Result, error) {
+func (r *BootcNodePoolReconciler) setInvalidSpecCondition(
+	ctx context.Context,
+	pool *bootcv1alpha1.BootcNodePool,
+	specErr error,
+) (ctrl.Result, error) {
 	setPoolDegraded(pool, bootcv1alpha1.PoolInvalidSpec, specErr.Error())
 	if err := r.Status().Update(ctx, pool); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating pool status: %w", err)
@@ -386,7 +402,10 @@ func (r *BootcNodePoolReconciler) setInvalidSpecCondition(ctx context.Context, p
 // syncMembership reconciles the set of BootcNodes owned by this pool
 // against the set of Nodes matching the pool's nodeSelector. It returns
 // the owned BootcNodes after mutations (creates and deletes) are applied.
-func (r *BootcNodePoolReconciler) syncMembership(ctx context.Context, pool *bootcv1alpha1.BootcNodePool) (map[string]*bootcv1alpha1.BootcNode, error) {
+func (r *BootcNodePoolReconciler) syncMembership(
+	ctx context.Context,
+	pool *bootcv1alpha1.BootcNodePool,
+) (map[string]*bootcv1alpha1.BootcNode, error) {
 	log := logf.FromContext(ctx).WithValues("pool", pool.Name)
 
 	// List all nodes matching the pool's selector.
@@ -473,21 +492,30 @@ func (r *BootcNodePoolReconciler) syncMembership(ctx context.Context, pool *boot
 
 // listMatchingNodes returns all Nodes whose labels match the pool's
 // nodeSelector.
-func (r *BootcNodePoolReconciler) listMatchingNodes(ctx context.Context, pool *bootcv1alpha1.BootcNodePool) ([]corev1.Node, error) {
+func (r *BootcNodePoolReconciler) listMatchingNodes(
+	ctx context.Context,
+	pool *bootcv1alpha1.BootcNodePool,
+) ([]corev1.Node, error) {
 	selector, err := metav1.LabelSelectorAsSelector(pool.Spec.NodeSelector)
 	if err != nil {
 		return nil, newInvalidSpecError(fmt.Sprintf("invalid nodeSelector: %v", err))
 	}
 
 	var nodeList corev1.NodeList
-	if err := r.List(ctx, &nodeList, client.MatchingLabelsSelector{Selector: selector}); err != nil {
+	if err := r.List(
+		ctx,
+		&nodeList,
+		client.MatchingLabelsSelector{Selector: selector},
+	); err != nil {
 		return nil, fmt.Errorf("listing nodes: %w", err)
 	}
 	return nodeList.Items, nil
 }
 
 // listAllBootcNodes returns all BootcNodes keyed by name.
-func (r *BootcNodePoolReconciler) listAllBootcNodes(ctx context.Context) (map[string]*bootcv1alpha1.BootcNode, error) {
+func (r *BootcNodePoolReconciler) listAllBootcNodes(
+	ctx context.Context,
+) (map[string]*bootcv1alpha1.BootcNode, error) {
 	var bnList bootcv1alpha1.BootcNodeList
 	if err := r.List(ctx, &bnList); err != nil {
 		return nil, fmt.Errorf("listing BootcNodes: %w", err)
@@ -501,7 +529,11 @@ func (r *BootcNodePoolReconciler) listAllBootcNodes(ctx context.Context) (map[st
 }
 
 // syncBootcNodeSpec updates a BootcNode's spec fields to match the pool.
-func (r *BootcNodePoolReconciler) syncBootcNodeSpec(ctx context.Context, pool *bootcv1alpha1.BootcNodePool, bn *bootcv1alpha1.BootcNode) error {
+func (r *BootcNodePoolReconciler) syncBootcNodeSpec(
+	ctx context.Context,
+	pool *bootcv1alpha1.BootcNodePool,
+	bn *bootcv1alpha1.BootcNode,
+) error {
 	modified := bn.DeepCopy()
 	desiredImage := desiredImageFromPool(pool)
 	needPatch := false
@@ -540,7 +572,11 @@ func desiredImageFromPool(pool *bootcv1alpha1.BootcNodePool) string {
 
 // createBootcNode creates a BootcNode for a node joining the pool and
 // labels the node as managed.
-func (r *BootcNodePoolReconciler) createBootcNode(ctx context.Context, pool *bootcv1alpha1.BootcNodePool, node *corev1.Node) (*bootcv1alpha1.BootcNode, error) {
+func (r *BootcNodePoolReconciler) createBootcNode(
+	ctx context.Context,
+	pool *bootcv1alpha1.BootcNodePool,
+	node *corev1.Node,
+) (*bootcv1alpha1.BootcNode, error) {
 	bn := &bootcv1alpha1.BootcNode{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: node.Name,
@@ -575,7 +611,11 @@ func (r *BootcNodePoolReconciler) createBootcNode(ctx context.Context, pool *boo
 }
 
 // ensureManagedLabel adds or removes the bootc.dev/managed label on a Node.
-func (r *BootcNodePoolReconciler) ensureManagedLabel(ctx context.Context, node *corev1.Node, managed bool) error {
+func (r *BootcNodePoolReconciler) ensureManagedLabel(
+	ctx context.Context,
+	node *corev1.Node,
+	managed bool,
+) error {
 	_, hasLabel := node.Labels[bootcv1alpha1.LabelManaged]
 	if managed && hasLabel {
 		return nil
@@ -602,7 +642,10 @@ func (r *BootcNodePoolReconciler) ensureManagedLabel(ctx context.Context, node *
 
 // removeBootcNode deletes a BootcNode for a node leaving the pool,
 // removes the managed label, and restores prior cordon state.
-func (r *BootcNodePoolReconciler) removeBootcNode(ctx context.Context, bn *bootcv1alpha1.BootcNode) error {
+func (r *BootcNodePoolReconciler) removeBootcNode(
+	ctx context.Context,
+	bn *bootcv1alpha1.BootcNode,
+) error {
 	// Cancel any active drain goroutine for this node. The goroutine will
 	// exit on its own and send a result on the channel, but since we've
 	// removed the entry from the map, collectDrainResults will never see
@@ -643,7 +686,11 @@ func (r *BootcNodePoolReconciler) removeBootcNode(ctx context.Context, bn *bootc
 // restoreCordonState uncordons the Node if the BootcNode's was-cordoned
 // annotation indicates the operator cordoned it. If the annotation is absent
 // or "true" (node was already cordoned before us), this is a no-op.
-func (r *BootcNodePoolReconciler) restoreCordonState(ctx context.Context, bn *bootcv1alpha1.BootcNode, node *corev1.Node) error {
+func (r *BootcNodePoolReconciler) restoreCordonState(
+	ctx context.Context,
+	bn *bootcv1alpha1.BootcNode,
+	node *corev1.Node,
+) error {
 	if bn.Annotations[bootcv1alpha1.AnnotationWasCordoned] != "false" {
 		return nil
 	}

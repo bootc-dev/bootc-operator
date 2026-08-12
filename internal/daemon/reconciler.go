@@ -75,7 +75,10 @@ func (r *BootcNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func (r *BootcNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *BootcNodeReconciler) Reconcile(
+	ctx context.Context,
+	req ctrl.Request,
+) (ctrl.Result, error) {
 	log := logf.FromContext(ctx).WithValues("node", r.NodeName)
 
 	if req.Name != r.NodeName {
@@ -153,7 +156,10 @@ type reconcileResult struct {
 // reconcileBootcNode defines the result of the reconcile of the bootc nodes. It returns the results for the reconcile,
 // the degraded message and eventual errors. We distinguish the degraded message from a reconcile error since we want to
 // implement an exponential back-off if the staging failed.
-func (r *BootcNodeReconciler) reconcileBootcNode(ctx context.Context, bn *bootcv1alpha1.BootcNode) (reconcileResult, error) {
+func (r *BootcNodeReconciler) reconcileBootcNode(
+	ctx context.Context,
+	bn *bootcv1alpha1.BootcNode,
+) (reconcileResult, error) {
 	log := logf.FromContext(ctx).WithValues("node", r.NodeName)
 
 	if err := r.populateBootcFields(ctx, bn); err != nil {
@@ -284,7 +290,12 @@ func (s *stageOp) reset() {
 // there's multiple rapid image changes (e.g. B→C→D spawns three goroutines).
 // This is harmless: each cancelled goroutine checks ctx.Err() after acquiring
 // the lock and exits immediately without starting a process.
-func (s *stageOp) run(ctx context.Context, nodeName, image string, executor bootc.Executor, done chan<- event.GenericEvent) {
+func (s *stageOp) run(
+	ctx context.Context,
+	nodeName, image string,
+	executor bootc.Executor,
+	done chan<- event.GenericEvent,
+) {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 
@@ -320,7 +331,10 @@ func (s *stageOp) run(ctx context.Context, nodeName, image string, executor boot
 	}
 }
 
-func (r *BootcNodeReconciler) populateBootcFields(ctx context.Context, bn *bootcv1alpha1.BootcNode) error {
+func (r *BootcNodeReconciler) populateBootcFields(
+	ctx context.Context,
+	bn *bootcv1alpha1.BootcNode,
+) error {
 	status, err := r.StatusWatcher.GetStatus(ctx)
 	if err != nil {
 		return fmt.Errorf("getting bootc status: %w", err)
@@ -344,7 +358,11 @@ const (
 	actionReboot                          // staged + approved, issue reboot
 )
 
-func (r *BootcNodeReconciler) classifyAction(bn *bootcv1alpha1.BootcNode, digested reference.Digested, desiredImage string) updateAction {
+func (r *BootcNodeReconciler) classifyAction(
+	bn *bootcv1alpha1.BootcNode,
+	digested reference.Digested,
+	desiredImage string,
+) updateAction {
 	desiredDigest := digested.Digest().String()
 	alreadyStaged := bn.Status.Staged != nil && bn.Status.Staged.ImageDigest == desiredDigest
 	if !alreadyStaged {
