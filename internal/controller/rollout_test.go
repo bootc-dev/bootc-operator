@@ -26,23 +26,58 @@ func TestBuildRolloutState(t *testing.T) {
 	// test focuses more on aggregation: bucketing, slot counting, and
 	// nodeCount.
 	nodes := map[string]*bootcv1alpha1.BootcNode{
-		"uptodate": testutil.NewNode("uptodate", desiredImage,
+		"uptodate": testutil.NewNode(
+			"uptodate",
+			desiredImage,
 			testutil.WithBootedDigest(testDigestA),
-			testutil.WithNodeCondition(bootcv1alpha1.NodeIdle, metav1.ConditionTrue, bootcv1alpha1.NodeReasonIdle)),
-		"pending": testutil.NewNode("pending", desiredImage,
+			testutil.WithNodeCondition(
+				bootcv1alpha1.NodeIdle,
+				metav1.ConditionTrue,
+				bootcv1alpha1.NodeReasonIdle,
+			),
+		),
+		"pending": testutil.NewNode(
+			"pending",
+			desiredImage,
 			testutil.WithBootedDigest(otherDigest),
-			testutil.WithNodeCondition(bootcv1alpha1.NodeIdle, metav1.ConditionTrue, bootcv1alpha1.NodeReasonIdle)),
-		"staged": testutil.NewNode("staged", desiredImage,
+			testutil.WithNodeCondition(
+				bootcv1alpha1.NodeIdle,
+				metav1.ConditionTrue,
+				bootcv1alpha1.NodeReasonIdle,
+			),
+		),
+		"staged": testutil.NewNode(
+			"staged",
+			desiredImage,
 			testutil.WithBootedDigest(otherDigest),
-			testutil.WithNodeCondition(bootcv1alpha1.NodeIdle, metav1.ConditionFalse, bootcv1alpha1.NodeReasonStaged)),
-		"rebooting-1": testutil.NewNode("rebooting-1", desiredImage,
+			testutil.WithNodeCondition(
+				bootcv1alpha1.NodeIdle,
+				metav1.ConditionFalse,
+				bootcv1alpha1.NodeReasonStaged,
+			),
+		),
+		"rebooting-1": testutil.NewNode(
+			"rebooting-1",
+			desiredImage,
 			testutil.WithBootedDigest(otherDigest),
-			testutil.WithNodeCondition(bootcv1alpha1.NodeIdle, metav1.ConditionFalse, bootcv1alpha1.NodeReasonRebooting),
-			testutil.WithNodeAnnotation(bootcv1alpha1.AnnotationInRebootSlot, "")),
-		"rebooting-2": testutil.NewNode("rebooting-2", desiredImage,
+			testutil.WithNodeCondition(
+				bootcv1alpha1.NodeIdle,
+				metav1.ConditionFalse,
+				bootcv1alpha1.NodeReasonRebooting,
+			),
+			testutil.WithNodeAnnotation(bootcv1alpha1.AnnotationInRebootSlot, ""),
+		),
+		"rebooting-2": testutil.NewNode(
+			"rebooting-2",
+			desiredImage,
 			testutil.WithBootedDigest(otherDigest),
-			testutil.WithNodeCondition(bootcv1alpha1.NodeIdle, metav1.ConditionFalse, bootcv1alpha1.NodeReasonRebooting),
-			testutil.WithNodeAnnotation(bootcv1alpha1.AnnotationInRebootSlot, "")),
+			testutil.WithNodeCondition(
+				bootcv1alpha1.NodeIdle,
+				metav1.ConditionFalse,
+				bootcv1alpha1.NodeReasonRebooting,
+			),
+			testutil.WithNodeAnnotation(bootcv1alpha1.AnnotationInRebootSlot, ""),
+		),
 	}
 
 	rs := buildRolloutState(logr.Discard(), nodes)
@@ -186,14 +221,18 @@ func TestClassifyNode(t *testing.T) {
 		{
 			name:         "UpToDate: image matches, Idle=True",
 			bootedDigest: desiredDigest,
-			conditions:   []metav1.Condition{idleCond(metav1.ConditionTrue, bootcv1alpha1.NodeReasonIdle)},
-			want:         nodeStateUpToDate,
+			conditions: []metav1.Condition{
+				idleCond(metav1.ConditionTrue, bootcv1alpha1.NodeReasonIdle),
+			},
+			want: nodeStateUpToDate,
 		},
 		{
 			name:         "Pending: image differs, Idle=True (daemon hasn't reacted)",
 			bootedDigest: otherDigest,
-			conditions:   []metav1.Condition{idleCond(metav1.ConditionTrue, bootcv1alpha1.NodeReasonIdle)},
-			want:         nodeStatePending,
+			conditions: []metav1.Condition{
+				idleCond(metav1.ConditionTrue, bootcv1alpha1.NodeReasonIdle),
+			},
+			want: nodeStatePending,
 		},
 		{
 			name:         "Pending: no booted status yet (daemon starting)",
@@ -210,20 +249,26 @@ func TestClassifyNode(t *testing.T) {
 		{
 			name:         "Staging: image differs, Idle=False reason=Staging",
 			bootedDigest: otherDigest,
-			conditions:   []metav1.Condition{idleCond(metav1.ConditionFalse, bootcv1alpha1.NodeReasonStaging)},
-			want:         nodeStateStaging,
+			conditions: []metav1.Condition{
+				idleCond(metav1.ConditionFalse, bootcv1alpha1.NodeReasonStaging),
+			},
+			want: nodeStateStaging,
 		},
 		{
 			name:         "Staged: image differs, Idle=False reason=Staged",
 			bootedDigest: otherDigest,
-			conditions:   []metav1.Condition{idleCond(metav1.ConditionFalse, bootcv1alpha1.NodeReasonStaged)},
-			want:         nodeStateStaged,
+			conditions: []metav1.Condition{
+				idleCond(metav1.ConditionFalse, bootcv1alpha1.NodeReasonStaged),
+			},
+			want: nodeStateStaged,
 		},
 		{
 			name:         "Rebooting: image differs, Idle=False reason=Rebooting",
 			bootedDigest: otherDigest,
-			conditions:   []metav1.Condition{idleCond(metav1.ConditionFalse, bootcv1alpha1.NodeReasonRebooting)},
-			want:         nodeStateRebooting,
+			conditions: []metav1.Condition{
+				idleCond(metav1.ConditionFalse, bootcv1alpha1.NodeReasonRebooting),
+			},
+			want: nodeStateRebooting,
 		},
 		{
 			name:         "Staging: Degraded=False does not affect classification",

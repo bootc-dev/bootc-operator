@@ -166,11 +166,10 @@ func WithBootedDigest(digest string) NodeOption {
 // WithNodeCondition appends a condition to the node's status.
 func WithNodeCondition(condType string, status metav1.ConditionStatus, reason string) NodeOption {
 	return func(node *bootcv1alpha1.BootcNode) {
-		node.Status.Conditions = append(node.Status.Conditions, metav1.Condition{
-			Type:   condType,
-			Status: status,
-			Reason: reason,
-		})
+		node.Status.Conditions = append(
+			node.Status.Conditions,
+			metav1.Condition{Type: condType, Status: status, Reason: reason},
+		)
 	}
 }
 

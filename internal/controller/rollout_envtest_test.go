@@ -334,7 +334,11 @@ func TestUnhealthyNodesHaltRollout(t *testing.T) {
 
 // simulateDaemonStatus writes BootcNode status as if the daemon had
 // reported the given booted digest and Idle condition reason.
-func simulateDaemonStatus(g Gomega, ctx context.Context, nodeName, bootedDigest, idleReason string) {
+func simulateDaemonStatus(
+	g Gomega,
+	ctx context.Context,
+	nodeName, bootedDigest, idleReason string,
+) {
 	var bn bootcv1alpha1.BootcNode
 	g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)).To(Succeed())
 

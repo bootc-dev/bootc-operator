@@ -79,7 +79,10 @@ func TestSyncPoolStatusRolloutInProgress(t *testing.T) {
 		HaveField("Type", bootcv1alpha1.PoolUpToDate),
 		HaveField("Status", metav1.ConditionFalse),
 		HaveField("Reason", bootcv1alpha1.PoolRolloutInProgress),
-		HaveField("Message", Equal("1/5 updated; 1 pending, 1 staging, 1 staged, 1 rebooting, 0 degraded")),
+		HaveField(
+			"Message",
+			Equal("1/5 updated; 1 pending, 1 staging, 1 staged, 1 rebooting, 0 degraded"),
+		),
 	)))
 }
 
@@ -88,7 +91,12 @@ func TestSyncPoolStatusRolloutInProgress(t *testing.T) {
 func TestSyncPoolStatusPaused(t *testing.T) {
 	g := NewWithT(t)
 
-	pool := testutil.NewPool("test", testImageDigestRefA, testutil.WithWorkerSelector(), testutil.WithPaused(true))
+	pool := testutil.NewPool(
+		"test",
+		testImageDigestRefA,
+		testutil.WithWorkerSelector(),
+		testutil.WithPaused(true),
+	)
 	pool.Status.TargetDigest = testDigestA
 
 	rs := &rolloutState{
@@ -110,7 +118,10 @@ func TestSyncPoolStatusPaused(t *testing.T) {
 		HaveField("Type", bootcv1alpha1.PoolUpToDate),
 		HaveField("Status", metav1.ConditionFalse),
 		HaveField("Reason", bootcv1alpha1.PoolPaused),
-		HaveField("Message", Equal("1/3 updated; 2 pending, 0 staging, 0 staged, 0 rebooting, 0 degraded")),
+		HaveField(
+			"Message",
+			Equal("1/3 updated; 2 pending, 0 staging, 0 staged, 0 rebooting, 0 degraded"),
+		),
 	)))
 }
 

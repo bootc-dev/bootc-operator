@@ -140,7 +140,11 @@ func TestMembershipCreatesBootcNodes(t *testing.T) {
 
 	// Wait for BootcNode to be deleted.
 	g.Eventually(func() error {
-		return k8sClient.Get(ctx, client.ObjectKey{Name: "mem-worker-1"}, &bootcv1alpha1.BootcNode{})
+		return k8sClient.Get(
+			ctx,
+			client.ObjectKey{Name: "mem-worker-1"},
+			&bootcv1alpha1.BootcNode{},
+		)
 	}).Should(MatchError(apierrors.IsNotFound, "IsNotFound"))
 
 	// Verify managed label is removed.
@@ -154,7 +158,11 @@ func TestMembershipCreatesBootcNodes(t *testing.T) {
 	g.Expect(k8sClient.Delete(ctx, node2)).To(Succeed())
 
 	g.Eventually(func() error {
-		return k8sClient.Get(ctx, client.ObjectKey{Name: "mem-worker-2"}, &bootcv1alpha1.BootcNode{})
+		return k8sClient.Get(
+			ctx,
+			client.ObjectKey{Name: "mem-worker-2"},
+			&bootcv1alpha1.BootcNode{},
+		)
 	}).Should(MatchError(apierrors.IsNotFound, "IsNotFound"))
 }
 
@@ -216,7 +224,10 @@ func TestMembershipConflictDetection(t *testing.T) {
 	// node1: pool1 only, node2: pool2 only, node3: both (contested).
 	node1 := testutil.NewK8sNode("mem-conflict-1", map[string]string{"pool1": "true"})
 	node2 := testutil.NewK8sNode("mem-conflict-2", map[string]string{"pool2": "true"})
-	node3 := testutil.NewK8sNode("mem-conflict-3", map[string]string{"pool1": "true", "pool2": "true"})
+	node3 := testutil.NewK8sNode(
+		"mem-conflict-3",
+		map[string]string{"pool1": "true", "pool2": "true"},
+	)
 	for _, n := range []*corev1.Node{node1, node2, node3} {
 		g.Expect(k8sClient.Create(ctx, n)).To(Succeed())
 		t.Cleanup(func() {

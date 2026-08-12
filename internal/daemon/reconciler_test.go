@@ -41,7 +41,10 @@ func TestReconcilePopulatesStatus(t *testing.T) {
 	fake.status.Status.Booted.Image.Version = &v1
 	fake.status.Status.Staged = &bootc.BootEntry{
 		Image: &bootc.ImageStatus{
-			Image:        bootc.ImageReference{Image: testutil.ImageTaggedRef, Transport: "registry"},
+			Image: bootc.ImageReference{
+				Image:     testutil.ImageTaggedRef,
+				Transport: "registry",
+			},
 			ImageDigest:  testutil.DigestB,
 			Version:      &v2,
 			Architecture: "amd64",
@@ -50,7 +53,10 @@ func TestReconcilePopulatesStatus(t *testing.T) {
 	}
 	fake.status.Status.Rollback = &bootc.BootEntry{
 		Image: &bootc.ImageStatus{
-			Image:        bootc.ImageReference{Image: testutil.ImageTaggedRef, Transport: "registry"},
+			Image: bootc.ImageReference{
+				Image:     testutil.ImageTaggedRef,
+				Transport: "registry",
+			},
 			ImageDigest:  testutil.DigestC,
 			Version:      &v3,
 			Architecture: "amd64",
@@ -124,7 +130,12 @@ func TestReconcileBootcStatusError(t *testing.T) {
 		HaveField("Type", bootcv1alpha1.NodeDegraded),
 		HaveField("Status", metav1.ConditionTrue),
 		HaveField("Reason", bootcv1alpha1.NodeReasonError),
-		HaveField("Message", Equal(fmt.Sprintf("populating bootc fields: getting bootc status: %s", bootcStatusErrMsg))),
+		HaveField(
+			"Message",
+			Equal(
+				fmt.Sprintf("populating bootc fields: getting bootc status: %s", bootcStatusErrMsg),
+			),
+		),
 	)))
 }
 
@@ -243,7 +254,11 @@ func TestRebootingSet(t *testing.T) {
 	fake.status = newBootcStatus(testutil.DigestA)
 	fake.status.Status.Staged = newBootEntry(testutil.ImageDigestRefB, testutil.DigestB)
 
-	bn := testutil.NewNode(testNodeName, testutil.ImageDigestRefB, testutil.WithDesiredImageState(bootcv1alpha1.DesiredImageStateBooted))
+	bn := testutil.NewNode(
+		testNodeName,
+		testutil.ImageDigestRefB,
+		testutil.WithDesiredImageState(bootcv1alpha1.DesiredImageStateBooted),
+	)
 	g.Expect(k8sClient.Create(ctx, bn)).To(Succeed())
 	t.Cleanup(func() {
 		_ = k8sClient.Delete(ctx, bn)

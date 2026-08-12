@@ -95,7 +95,8 @@ func TestControllerMembership(t *testing.T) {
 	))
 
 	// Verify pool status reflects steady state.
-	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).Should(poolAllUpdated(1, env.NodeImageDigest()))
+	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).
+		Should(poolAllUpdated(1, env.NodeImageDigest()))
 }
 
 // TestUpdateReboot provisions a worker node, creates a pool with the
@@ -188,7 +189,8 @@ func TestUpdateReboot(t *testing.T) {
 	t.Logf("Node %q is Idle with update image", nodeName)
 
 	// Verify pool status after rollout completes.
-	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).Should(poolAllUpdated(1, env.NodeImageUpdateDigest()))
+	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).
+		Should(poolAllUpdated(1, env.NodeImageUpdateDigest()))
 
 	// Phase 5: Verify node is schedulable (uncordoned after reboot).
 	g.Eventually(func() (bool, error) {
@@ -244,7 +246,8 @@ func TestUpdateReboot(t *testing.T) {
 		"stat", "/proc/1/root/usr/share/update-marker")
 	out, err := cmd.CombinedOutput()
 	g.Expect(err).NotTo(HaveOccurred(),
-		fmt.Sprintf("expected update-marker to exist on host, kubectl exec output: %s", string(out)))
+		fmt.Sprintf("expected update-marker to exist on host, kubectl exec output: %s", string(out)),
+	)
 
 	t.Logf("Verified update-marker exists on host via daemon pod")
 
@@ -278,7 +281,8 @@ func TestUpdateReboot(t *testing.T) {
 	t.Logf("Node %q successfully rolled back to original image", nodeName)
 
 	// Verify pool status after rollback completes.
-	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).Should(poolAllUpdated(1, env.NodeImageDigest()))
+	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).
+		Should(poolAllUpdated(1, env.NodeImageDigest()))
 }
 
 // TestTagResolution creates a pool with a tag-based image ref, verifies
@@ -490,7 +494,8 @@ func TestPauseResume(t *testing.T) {
 	t.Logf("Node %q completed update after resume", nodeName)
 
 	// Verify pool status after resume completes.
-	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).Should(poolAllUpdated(1, env.NodeImageUpdateDigest()))
+	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).
+		Should(poolAllUpdated(1, env.NodeImageUpdateDigest()))
 }
 
 // TestNonExistingImage provisions a worker node, creates a pool with the
@@ -577,7 +582,11 @@ func TestNonExistingImage(t *testing.T) {
 	t.Logf("Verified node %q did not stage non-existing image", nodeName)
 }
 
-func fetchPoolStatus(ctx context.Context, c client.Client, pool *bootcv1alpha1.BootcNodePool) func() (bootcv1alpha1.BootcNodePoolStatus, error) {
+func fetchPoolStatus(
+	ctx context.Context,
+	c client.Client,
+	pool *bootcv1alpha1.BootcNodePool,
+) func() (bootcv1alpha1.BootcNodePoolStatus, error) {
 	return func() (bootcv1alpha1.BootcNodePoolStatus, error) {
 		var p bootcv1alpha1.BootcNodePool
 		err := c.Get(ctx, client.ObjectKeyFromObject(pool), &p)
