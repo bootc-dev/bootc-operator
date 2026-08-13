@@ -2,6 +2,11 @@
 
 package v1alpha1
 
+// FinalizerPoolCleanup is added to every BootcNodePool so the controller
+// can remove the bootc.dev/managed label from member nodes before the
+// pool object is fully deleted.
+const FinalizerPoolCleanup = "bootc.dev/pool-cleanup"
+
 // Well-known labels and annotations applied to Nodes by the controller.
 const (
 	// LabelManaged is set on Nodes that are managed by a BootcNodePool.

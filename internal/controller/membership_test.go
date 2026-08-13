@@ -211,6 +211,99 @@ func TestMembershipSyncsDesiredImage(t *testing.T) {
 	))
 }
 
+// TestPoolDeletionRemovesManagedLabel verifies that when a BootcNodePool is
+// deleted, the controller removes the bootc.dev/managed label from all member
+// nodes and deletes all owned BootcNode objects. It also verifies that
+// control-plane nodes belonging to a separate pool are unaffected.
+func TestPoolDeletionRemovesManagedLabel(t *testing.T) {
+	g := NewWithT(t)
+	g.SetDefaultEventuallyTimeout(pollTimeout)
+	g.SetDefaultEventuallyPollingInterval(pollInterval)
+	ctx := context.Background()
+
+	workerNodes := []*corev1.Node{
+		testutil.NewK8sNode("del-worker-1", testutil.WorkerLabels()),
+		testutil.NewK8sNode("del-worker-2", testutil.WorkerLabels()),
+	}
+
+	controlPlaneNodes := []*corev1.Node{
+		testutil.NewK8sNode("del-control-plane-1", testutil.ControlPlaneLabels()),
+		testutil.NewK8sNode("del-control-plane-2", testutil.ControlPlaneLabels()),
+	}
+
+	allNodes := append(workerNodes, controlPlaneNodes...)
+
+	// Create nodes.
+	for _, node := range allNodes {
+		g.Expect(k8sClient.Create(ctx, node)).To(Succeed())
+		t.Cleanup(func() {
+			_ = k8sClient.Delete(ctx, node)
+		})
+	}
+
+	// Create a worker pool and a separate control-plane pool.
+	workerPool := testutil.NewPool("del-workers", testImageDigestRefA, testutil.WithWorkerSelector())
+	g.Expect(k8sClient.Create(ctx, workerPool)).To(Succeed())
+
+	cpPool := testutil.NewPool("del-control-plane", testImageDigestRefA,
+		testutil.WithNodeSelector(testutil.ControlPlaneLabels()))
+	g.Expect(k8sClient.Create(ctx, cpPool)).To(Succeed())
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, cpPool)
+	})
+
+	// Wait for BootcNodes to appear and managed labels to be applied on all nodes.
+	for _, node := range allNodes {
+		g.Eventually(func() error {
+			return k8sClient.Get(ctx, client.ObjectKey{Name: node.Name}, &bootcv1alpha1.BootcNode{})
+		}).Should(Succeed(), "BootcNode %s should exist", node.Name)
+
+		g.Eventually(func() (map[string]string, error) {
+			var n corev1.Node
+			err := k8sClient.Get(ctx, client.ObjectKey{Name: node.Name}, &n)
+			return n.Labels, err
+		}).Should(HaveKey(bootcv1alpha1.LabelManaged), "node %s should have managed label", node.Name)
+	}
+
+	// Delete only the worker pool.
+	g.Expect(k8sClient.Delete(ctx, workerPool)).To(Succeed())
+
+	// The worker pool's finalizer must remove the managed label from worker nodes.
+	for _, node := range workerNodes {
+		g.Eventually(func() (map[string]string, error) {
+			var n corev1.Node
+			err := k8sClient.Get(ctx, client.ObjectKey{Name: node.Name}, &n)
+			return n.Labels, err
+		}).ShouldNot(HaveKey(bootcv1alpha1.LabelManaged), "worker node %s should not have managed label after pool deletion", node.Name)
+	}
+
+	// Worker BootcNodes should be deleted.
+	for _, node := range workerNodes {
+		g.Eventually(func() error {
+			return k8sClient.Get(ctx, client.ObjectKey{Name: node.Name}, &bootcv1alpha1.BootcNode{})
+		}).Should(MatchError(apierrors.IsNotFound, "IsNotFound"), "BootcNode %s should be deleted", node.Name)
+	}
+
+	// The worker pool itself should be fully deleted (finalizer removed).
+	g.Eventually(func() error {
+		return k8sClient.Get(ctx, client.ObjectKeyFromObject(workerPool), &bootcv1alpha1.BootcNodePool{})
+	}).Should(MatchError(apierrors.IsNotFound, "IsNotFound"), "worker pool should be fully deleted")
+
+	// Control-plane nodes must still carry the managed label — their pool was not deleted.
+	for _, node := range controlPlaneNodes {
+		var n corev1.Node
+		g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: node.Name}, &n)).To(Succeed())
+		g.Expect(n.Labels).To(HaveKey(bootcv1alpha1.LabelManaged),
+			"control-plane node %s should still have managed label", node.Name)
+	}
+
+	// Control-plane BootcNodes must still exist.
+	for _, node := range controlPlaneNodes {
+		g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: node.Name}, &bootcv1alpha1.BootcNode{})).To(Succeed(),
+			"BootcNode %s should still exist", node.Name)
+	}
+}
+
 // TestMembershipConflictDetection verifies that when a node matches two
 // pools, the conflicting pool is marked Degraded with reason
 // NodeConflict for the contested node, but non-contested nodes in

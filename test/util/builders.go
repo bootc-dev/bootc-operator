@@ -37,6 +37,11 @@ func WorkerLabels() map[string]string {
 	return map[string]string{"node-role.kubernetes.io/worker": ""}
 }
 
+// ControlPlaneLabels returns the conventional control-plane node label map.
+func ControlPlaneLabels() map[string]string {
+	return map[string]string{"node-role.kubernetes.io/control-plane": ""}
+}
+
 // NewPool creates a BootcNodePool with the given name and image ref.
 // A nodeSelector must be provided via WithNodeSelector or
 // WithWorkerSelector. Override fields via functional options.
