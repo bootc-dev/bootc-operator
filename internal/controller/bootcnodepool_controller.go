@@ -231,6 +231,22 @@ func (r *BootcNodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, fmt.Errorf("fetching pool: %w", err)
 	}
 
+	// If the pool is being deleted, clean up managed nodes before allowing
+	// Kubernetes to remove the object.
+	if pool.DeletionTimestamp != nil {
+		return r.handlePoolDeletion(ctx, &pool)
+	}
+
+	// Ensure the cleanup finalizer is present so we can react to deletion.
+	if !controllerutil.ContainsFinalizer(&pool, bootcv1alpha1.FinalizerPoolCleanup) {
+		controllerutil.AddFinalizer(&pool, bootcv1alpha1.FinalizerPoolCleanup)
+		if err := r.Update(ctx, &pool); err != nil {
+			return ctrl.Result{}, fmt.Errorf("adding finalizer: %w", err)
+		}
+		// Re-fetch will be triggered by the update event; return early.
+		return ctrl.Result{}, nil
+	}
+
 	// Snapshot status so we can detect changes and write once at the end.
 	statusOrig := pool.Status.DeepCopy()
 
@@ -301,6 +317,48 @@ func (r *BootcNodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	syncPoolStatus(&pool, rs)
 
 	return complete(resolveResult)
+}
+
+// handlePoolDeletion is called when a pool's DeletionTimestamp is set.
+// It removes the bootc.dev/managed label from all member nodes and deletes
+// the owned BootcNode objects, then removes the cleanup finalizer so
+// Kubernetes can complete the deletion.
+func (r *BootcNodePoolReconciler) handlePoolDeletion(ctx context.Context, pool *bootcv1alpha1.BootcNodePool) (ctrl.Result, error) {
+	log := logf.FromContext(ctx).WithValues("pool", pool.Name)
+
+	if !controllerutil.ContainsFinalizer(pool, bootcv1alpha1.FinalizerPoolCleanup) {
+		// Finalizer already removed; nothing left to do.
+		return ctrl.Result{}, nil
+	}
+
+	log.Info("Pool is being deleted; cleaning up managed nodes")
+
+	// List all BootcNodes owned by this pool.
+	allBootcNodes, err := r.listAllBootcNodes(ctx)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("listing BootcNodes for deletion cleanup: %w", err)
+	}
+
+	for _, bn := range allBootcNodes {
+		if !metav1.IsControlledBy(bn, pool) {
+			continue
+		}
+		log.Info("Removing BootcNode for pool deletion", "node", bn.Name)
+		if err := r.removeBootcNode(ctx, bn); err != nil {
+			return ctrl.Result{}, fmt.Errorf("removing BootcNode %s during pool deletion: %w", bn.Name, err)
+		}
+	}
+
+	// All nodes cleaned up — remove the finalizer to unblock deletion.
+	controllerutil.RemoveFinalizer(pool, bootcv1alpha1.FinalizerPoolCleanup)
+	if err := r.Update(ctx, pool); err != nil {
+		if apierrors.IsNotFound(err) {
+			// Pool was already fully deleted (e.g. race with another reconcile).
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
+	}
+	return ctrl.Result{}, nil
 }
 
 // resolveTargetDigest resolves the target digest from the pool's image
