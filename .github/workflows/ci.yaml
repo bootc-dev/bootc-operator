@@ -165,11 +165,15 @@ jobs:
 
       - name: Configure kernel
         run: |
-          # Unload AppArmor profiles — the host-loaded passt profile
-          # blocks passt's self-sandboxing inside bink node containers.
+          # Disable AppArmor service and unload all profiles.
+          # The host-loaded passt profile blocks passt's self-sandboxing
+          # inside bink node containers.
           # Must run AFTER installing podman, whose passt dependency
           # loads the profile during package installation.
+          sudo systemctl disable --now apparmor 2>/dev/null || true
           sudo aa-teardown 2>/dev/null || true
+          echo "AppArmor status after teardown:"
+          sudo aa-status 2>/dev/null || echo "(aa-status failed)"
           # Allow unprivileged user namespace creation (needed by passt
           # inside containers).
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
