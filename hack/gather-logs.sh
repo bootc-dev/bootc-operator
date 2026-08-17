@@ -32,6 +32,10 @@ run() {
     "$@" > "${output_dir}/${filename}" 2>&1 || true
 }
 
+# Host diagnostics
+run "host-journal.txt"            journalctl --no-pager
+run "host-dmesg.txt"              dmesg
+
 # Cluster-wide commands
 run "k-get-pods.txt"              kubectl get pods -n bootc-operator -o wide
 run "k-describe-pods.txt"         kubectl describe pods -n bootc-operator
