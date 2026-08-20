@@ -78,10 +78,25 @@ make deploy-bink BINK_CLUSTER_NAME=dev
 ```shell
 make build           # Build all binaries (manager + daemon) to ./bin/
 make buildimg        # Build the container image (default: bootc-operator:dev)
+make buildimg-all    # Build a multi-arch manifest list (linux/amd64, linux/arm64)
 ```
 
 The `bootc-operator` container image contains both the controller and daemon
 binaries.
+
+Released images are manifest lists covering `linux/amd64` and `linux/arm64`.
+Both binaries are pure Go, so the Containerfile cross-compiles them for the
+target architecture instead of emulating the toolchain; building for a
+non-native architecture therefore costs about the same as a native build and
+needs no qemu setup. To build a single non-native image, pass `PLATFORM`:
+
+```shell
+make buildimg PLATFORM=linux/arm64
+```
+
+Note that the e2e suite remains amd64-only, because the
+[bink](https://github.com/bootc-dev/bink) node images it boots are published
+for amd64 alone.
 
 After modifying API types in `api/`, regenerate CRDs and code:
 

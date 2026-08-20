@@ -1,6 +1,9 @@
 # Image URL to use all building/pushing image targets
 IMG ?= bootc-operator:dev
 CONTAINER_TOOL ?= podman
+# Architectures published by buildimg-all. Both binaries are pure Go, so the
+# Containerfile cross-compiles rather than emulating the toolchain.
+PLATFORMS ?= linux/amd64,linux/arm64
 # Bink cluster settings. deploy-bink and e2e share the same cluster by default.
 # To use a separate dev cluster: make deploy-bink BINK_CLUSTER_NAME=dev
 BINK_CLUSTER_NAME ?= e2e
@@ -89,8 +92,12 @@ build-daemon: ## Build daemon binary.
 	go build -o bin/daemon ./cmd/daemon/
 
 .PHONY: buildimg
-buildimg: ## Build container image.
-	$(CONTAINER_TOOL) build -t $(IMG) .
+buildimg: ## Build container image. PLATFORM=linux/arm64 cross-builds for another arch.
+	$(CONTAINER_TOOL) build $(if $(PLATFORM),--platform $(PLATFORM)) -t $(IMG) .
+
+.PHONY: buildimg-all
+buildimg-all: ## Build a multi-arch manifest list image (override PLATFORMS to change).
+	$(CONTAINER_TOOL) build --platform $(PLATFORMS) --manifest $(IMG) .
 
 .PHONY: build-update-image
 build-update-image: ## Build a derived node image for update testing and push to bink registry.
