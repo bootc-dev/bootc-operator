@@ -17,18 +17,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  supported-versions:
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
-    steps:
-      - name: Get supported Kubernetes versions
-        id: set-matrix
-        run: |
-          MATRIX=$(curl -s https://endoflife.date/api/kubernetes.json | \
-            jq -c '[.[] | select(.eol > (now | strftime("%Y-%m-%d"))) | .cycle][:3]')
-          echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
-
   unit:
     runs-on: ubuntu-latest
     permissions:
@@ -119,16 +107,24 @@ jobs:
 
   e2e:
     runs-on: ubuntu-latest
-    needs: [build-bink, build-operator, supported-versions]
+    needs: [build-bink, build-operator]
     timeout-minutes: 30
     permissions:
       contents: read
     strategy:
       fail-fast: false
+      # TODO: set up Renovate to keep these digests fresh and
+      # to help discover new Kubernetes minor versions to add here.
       matrix:
-        kube-minor: ${{ fromJson(needs.supported-versions.outputs.matrix) }}
+        include:
+          - kube-minor: "1.34"
+            digest: sha256:f7f487ea2a4722163b44bba184ba6814fed657bd08355e60f9a9e7c546be2bcb
+          - kube-minor: "1.35"
+            digest: sha256:d3077c99027db0c196d5c6531ef07b8955be827651b9e3d2bc4b8e7c6ebf5612
+          - kube-minor: "1.36"
+            digest: sha256:0db6e56357ffd238a44a17d5e1d5b8cd75e9e54448fd466e568042077796a14b
     env:
-      BINK_NODE_DISK_IMAGE: ghcr.io/bootc-dev/bink/node:v${{ matrix.kube-minor }}-fedora-44-disk
+      BINK_NODE_DISK_IMAGE: ghcr.io/bootc-dev/bink/node@${{ matrix.digest }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
