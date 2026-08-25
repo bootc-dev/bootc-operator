@@ -5,10 +5,11 @@ package daemon
 import (
 	"context"
 	"fmt"
-	"github.com/distribution/reference"
 	"reflect"
 	"sync"
 	"time"
+
+	"github.com/distribution/reference"
 
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"

@@ -329,7 +329,10 @@ func (r *BootcNodePoolReconciler) Reconcile(
 // It removes the bootc.dev/managed label from all member nodes and deletes
 // the owned BootcNode objects, then removes the cleanup finalizer so
 // Kubernetes can complete the deletion.
-func (r *BootcNodePoolReconciler) handlePoolDeletion(ctx context.Context, pool *bootcv1alpha1.BootcNodePool) (ctrl.Result, error) {
+func (r *BootcNodePoolReconciler) handlePoolDeletion(
+	ctx context.Context,
+	pool *bootcv1alpha1.BootcNodePool,
+) (ctrl.Result, error) {
 	log := logf.FromContext(ctx).WithValues("pool", pool.Name)
 
 	if !controllerutil.ContainsFinalizer(pool, bootcv1alpha1.FinalizerPoolCleanup) {
@@ -351,7 +354,11 @@ func (r *BootcNodePoolReconciler) handlePoolDeletion(ctx context.Context, pool *
 		}
 		log.Info("Removing BootcNode for pool deletion", "node", bn.Name)
 		if err := r.removeBootcNode(ctx, bn); err != nil {
-			return ctrl.Result{}, fmt.Errorf("removing BootcNode %s during pool deletion: %w", bn.Name, err)
+			return ctrl.Result{}, fmt.Errorf(
+				"removing BootcNode %s during pool deletion: %w",
+				bn.Name,
+				err,
+			)
 		}
 	}
 
