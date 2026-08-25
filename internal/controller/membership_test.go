@@ -242,7 +242,11 @@ func TestPoolDeletionRemovesManagedLabel(t *testing.T) {
 	}
 
 	// Create a worker pool and a separate control-plane pool.
-	workerPool := testutil.NewPool("del-workers", testImageDigestRefA, testutil.WithWorkerSelector())
+	workerPool := testutil.NewPool(
+		"del-workers",
+		testImageDigestRefA,
+		testutil.WithWorkerSelector(),
+	)
 	g.Expect(k8sClient.Create(ctx, workerPool)).To(Succeed())
 
 	cpPool := testutil.NewPool("del-control-plane", testImageDigestRefA,
@@ -286,7 +290,11 @@ func TestPoolDeletionRemovesManagedLabel(t *testing.T) {
 
 	// The worker pool itself should be fully deleted (finalizer removed).
 	g.Eventually(func() error {
-		return k8sClient.Get(ctx, client.ObjectKeyFromObject(workerPool), &bootcv1alpha1.BootcNodePool{})
+		return k8sClient.Get(
+			ctx,
+			client.ObjectKeyFromObject(workerPool),
+			&bootcv1alpha1.BootcNodePool{},
+		)
 	}).Should(MatchError(apierrors.IsNotFound, "IsNotFound"), "worker pool should be fully deleted")
 
 	// Control-plane nodes must still carry the managed label — their pool was not deleted.
@@ -299,8 +307,9 @@ func TestPoolDeletionRemovesManagedLabel(t *testing.T) {
 
 	// Control-plane BootcNodes must still exist.
 	for _, node := range controlPlaneNodes {
-		g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: node.Name}, &bootcv1alpha1.BootcNode{})).To(Succeed(),
-			"BootcNode %s should still exist", node.Name)
+		g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: node.Name}, &bootcv1alpha1.BootcNode{})).
+			To(Succeed(),
+				"BootcNode %s should still exist", node.Name)
 	}
 }
 
