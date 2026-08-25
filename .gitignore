@@ -3,3 +3,4 @@ bin/
 *.out
 kubeconfig-*
 docs/book/
+user-docs
