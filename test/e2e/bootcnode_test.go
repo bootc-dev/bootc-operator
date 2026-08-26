@@ -703,6 +703,97 @@ func TestNonExistingImage(t *testing.T) {
 	t.Logf("Verified node %q did not stage non-existing image", nodeName)
 }
 
+func TestSoftReboot(t *testing.T) {
+	g := NewWithT(t)
+	g.SetDefaultEventuallyTimeout(pollTimeout)
+	g.SetDefaultEventuallyPollingInterval(pollInterval)
+
+	env := e2eutil.New(t)
+	nodeName := env.AddNode(t)
+
+	ctx := context.Background()
+
+	pool := env.NewPool("soft-reboot", env.NodeImageDigestedPullSpec(),
+		testutil.WithRebootPolicy(bootcv1alpha1.RebootPolicyAllowSoftReboot),
+	)
+	g.Expect(env.Client.Create(ctx, pool)).To(Succeed())
+
+	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
+		var bn bootcv1alpha1.BootcNode
+		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
+		return bn.Status, err
+	}).WithTimeout(3 * time.Minute).Should(And(
+		HaveField("Booted", Not(BeNil())),
+		HaveField("Conditions", ContainElement(And(
+			HaveField("Type", bootcv1alpha1.NodeIdle),
+			HaveField("Status", metav1.ConditionTrue),
+			HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
+		))),
+	))
+
+	t.Logf("Node %q is Idle with original image", nodeName)
+
+	var bn bootcv1alpha1.BootcNode
+	g.Expect(env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)).To(Succeed())
+	g.Expect(bn.Spec.RebootPolicy).To(Equal(bootcv1alpha1.RebootPolicyAllowSoftReboot),
+		"expected rebootPolicy to be propagated to BootcNode")
+
+	bootIDBefore := readBootID(t, ctx, env, nodeName)
+	t.Logf("Boot ID before update: %s", bootIDBefore)
+
+	updateRef := env.NodeImageUpdateDigestedPullSpec()
+	modified := pool.DeepCopy()
+	modified.Spec.Image.Ref = updateRef
+	g.Expect(env.Client.Patch(ctx, modified, client.MergeFrom(pool))).To(Succeed())
+	*pool = *modified
+
+	t.Logf("Patched pool to update image %s", updateRef)
+
+	g.Eventually(func() ([]metav1.Condition, error) {
+		var bn bootcv1alpha1.BootcNode
+		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
+		return bn.Status.Conditions, err
+	}).WithTimeout(5*time.Minute).Should(ContainElement(And(
+		HaveField("Type", bootcv1alpha1.NodeIdle),
+		HaveField("Status", metav1.ConditionFalse),
+		HaveField("Reason", bootcv1alpha1.NodeReasonRebooting),
+	)), "expected node to reach Rebooting state")
+
+	t.Logf("Node %q is Rebooting", nodeName)
+
+	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
+		var bn bootcv1alpha1.BootcNode
+		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
+		return bn.Status, err
+	}).WithTimeout(5*time.Minute).Should(And(
+		HaveField("Booted", And(
+			Not(BeNil()),
+			HaveField("ImageDigest", env.NodeImageUpdateDigest()),
+		)),
+		HaveField("Conditions", ContainElement(And(
+			HaveField("Type", bootcv1alpha1.NodeIdle),
+			HaveField("Status", metav1.ConditionTrue),
+			HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
+		))),
+	), "expected node to reach Idle with update image after soft reboot")
+
+	t.Logf("Node %q is Idle with update image", nodeName)
+
+	bootIDAfter := readBootID(t, ctx, env, nodeName)
+	t.Logf("Boot ID after update: %s", bootIDAfter)
+	g.Expect(bootIDAfter).To(Equal(bootIDBefore),
+		"boot ID should be preserved after soft reboot (no kernel change)")
+
+	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).
+		Should(poolAllUpdated(1, env.NodeImageUpdateDigest()))
+
+	g.Eventually(func() (bool, error) {
+		var node corev1.Node
+		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &node)
+		return node.Spec.Unschedulable, err
+	}).WithTimeout(3*time.Minute).Should(BeFalse(), "expected node to be schedulable after update")
+}
+
 // TestPullSecretAuth provisions a worker node, creates a
 // dockerconfigjson Secret with credentials, and verifies that the
 // daemon can stage from the auth-protected registry. The auth
@@ -891,6 +982,40 @@ func scaleController(t *testing.T, env *e2eutil.Env, ctx context.Context, replic
 		return d.Status.AvailableReplicas, err
 	}).WithTimeout(2*time.Minute).Should(Equal(replicas),
 		"expected controller to scale to %d replica(s)", replicas)
+}
+
+func readBootID(t *testing.T, ctx context.Context, env *e2eutil.Env, nodeName string) string {
+	t.Helper()
+	g := NewWithT(t)
+	var podName string
+	g.Eventually(func() string {
+		var daemonPods corev1.PodList
+		if err := env.Client.List(ctx, &daemonPods,
+			client.InNamespace("bootc-operator"),
+			client.MatchingLabels{
+				"app.kubernetes.io/name":      "bootc-operator",
+				"app.kubernetes.io/component": "daemon",
+			},
+		); err != nil {
+			return ""
+		}
+		for _, p := range daemonPods.Items {
+			if p.Spec.NodeName == nodeName && p.Status.Phase == corev1.PodRunning {
+				podName = p.Name
+				return podName
+			}
+		}
+		return ""
+	}).WithTimeout(2*time.Minute).WithPolling(2*time.Second).ShouldNot(BeEmpty(),
+		"running daemon pod not found on %s", nodeName)
+
+	kubeconfigPath := os.Getenv("KUBECONFIG")
+	cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath,
+		"-n", "bootc-operator", "exec", podName, "--",
+		"cat", "/proc/sys/kernel/random/boot_id")
+	out, err := cmd.CombinedOutput()
+	g.Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("failed to read boot_id: %s", string(out)))
+	return strings.TrimSpace(string(out))
 }
 
 func fetchPoolStatus(
