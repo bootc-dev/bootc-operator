@@ -211,6 +211,50 @@ func TestMembershipSyncsDesiredImage(t *testing.T) {
 	))
 }
 
+func TestMembershipSyncsRebootPolicy(t *testing.T) {
+	g := NewWithT(t)
+	g.SetDefaultEventuallyTimeout(pollTimeout)
+	g.SetDefaultEventuallyPollingInterval(pollInterval)
+	ctx := context.Background()
+
+	node := testutil.NewK8sNode("mem-reboot-1", testutil.WorkerLabels())
+	g.Expect(k8sClient.Create(ctx, node)).To(Succeed())
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, node)
+	})
+
+	pool := testutil.NewPool("mem-reboot-pool", testImageDigestRefA,
+		testutil.WithWorkerSelector(),
+		testutil.WithRebootPolicy(bootcv1alpha1.RebootPolicyAllowSoftReboot),
+	)
+	g.Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, pool)
+	})
+
+	// Wait for BootcNode to be created with AllowSoftReboot.
+	g.Eventually(func() (bootcv1alpha1.RebootPolicy, error) {
+		var bn bootcv1alpha1.BootcNode
+		err := k8sClient.Get(ctx, client.ObjectKeyFromObject(node), &bn)
+		return bn.Spec.RebootPolicy, err
+	}).Should(Equal(bootcv1alpha1.RebootPolicyAllowSoftReboot))
+
+	// Update pool to RebootOnly.
+	var freshPool bootcv1alpha1.BootcNodePool
+	g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(pool), &freshPool)).To(Succeed())
+	freshPool.Spec.Disruption = &bootcv1alpha1.DisruptionSpec{
+		RebootPolicy: bootcv1alpha1.RebootPolicyRebootOnly,
+	}
+	g.Expect(k8sClient.Update(ctx, &freshPool)).To(Succeed())
+
+	// Wait for BootcNode to be updated to RebootOnly.
+	g.Eventually(func() (bootcv1alpha1.RebootPolicy, error) {
+		var bn bootcv1alpha1.BootcNode
+		err := k8sClient.Get(ctx, client.ObjectKeyFromObject(node), &bn)
+		return bn.Spec.RebootPolicy, err
+	}).Should(Equal(bootcv1alpha1.RebootPolicyRebootOnly))
+}
+
 // TestPoolDeletionRemovesManagedLabel verifies that when a BootcNodePool is
 // deleted, the controller removes the bootc.dev/managed label from all member
 // nodes and deletes all owned BootcNode objects. It also verifies that
