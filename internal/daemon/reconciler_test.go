@@ -309,7 +309,7 @@ func TestSoftReboot(t *testing.T) {
 	)))
 
 	g.Expect(fake.getRebooted()).To(BeFalse(), "should not use systemctl reboot")
-	g.Expect(fake.getApplied()).To(BeTrue(), "should use Apply")
+	g.Expect(fake.getApplied()).To(BeTrue(), "should use ApplyUpdate")
 	g.Expect(fake.getAppliedSoft()).To(BeTrue(), "should pass softReboot=true")
 }
 
@@ -345,7 +345,7 @@ func TestRebootOnlyPolicy(t *testing.T) {
 	)))
 
 	g.Expect(fake.getRebooted()).To(BeTrue(), "should use systemctl reboot")
-	g.Expect(fake.getApplied()).To(BeFalse(), "should not use Apply")
+	g.Expect(fake.getApplied()).To(BeFalse(), "should not use ApplyUpdate")
 }
 
 func TestRollback(t *testing.T) {
