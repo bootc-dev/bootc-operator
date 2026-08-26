@@ -138,7 +138,7 @@ func (r *BootcNodeReconciler) Reconcile(
 	if res.needsReboot {
 		if res.softReboot {
 			log.Info("Applying update with soft reboot")
-			if err := r.Executor.Apply(ctx, true); err != nil {
+			if err := r.Executor.ApplyUpdate(ctx, true); err != nil {
 				return ctrl.Result{}, fmt.Errorf("apply with soft reboot: %w", err)
 			}
 		} else {

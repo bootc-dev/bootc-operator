@@ -66,7 +66,7 @@ func (f *fakeExecutor) Reboot(_ context.Context) error {
 	return nil
 }
 
-func (f *fakeExecutor) Apply(_ context.Context, softReboot bool) error {
+func (f *fakeExecutor) ApplyUpdate(_ context.Context, softReboot bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.applied = true
