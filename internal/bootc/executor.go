@@ -20,6 +20,7 @@ type Executor interface {
 	Status(ctx context.Context) ([]byte, error)
 	Stage(ctx context.Context, image string) error
 	Reboot(ctx context.Context) error
+	Apply(ctx context.Context, softReboot bool) error
 }
 
 // HostExecutor runs bootc commands on the host via nsenter.
@@ -149,6 +150,23 @@ func (e *HostExecutor) Reboot(ctx context.Context) error {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("running systemctl reboot: %s: %w", out, err)
+	}
+	return nil
+}
+
+func (e *HostExecutor) Apply(ctx context.Context, softReboot bool) error {
+	log := logf.FromContext(ctx)
+
+	args := []string{"bootc", "upgrade", "--from-downloaded", "--apply"}
+	if softReboot {
+		args = append(args, "--soft-reboot=auto")
+	}
+
+	cmd := e.nsenterCmd(ctx, args...)
+	log.Info("Executing", "cmd", strings.Join(cmd.Args, " "))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("running bootc apply: %s: %w", out, err)
 	}
 	return nil
 }
