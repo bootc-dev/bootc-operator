@@ -85,6 +85,14 @@ spec:
                 - name
                 - namespace
                 type: object
+              rebootPolicy:
+                description: |-
+                  rebootPolicy defines how the node should be rebooted during
+                  updates. Copied from the owning pool's disruption.rebootPolicy.
+                enum:
+                - RebootOnly
+                - AllowSoftReboot
+                type: string
             required:
             - desiredImage
             - desiredImageState

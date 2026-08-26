@@ -64,6 +64,7 @@ func TestBootcNodeCRD(t *testing.T) {
 
 	node := testutil.NewNode("worker-1", testImageDigestRefA,
 		testutil.WithNodePullSecret(testSecretName, testSecretNS, testSecretHash),
+		testutil.WithNodeRebootPolicy(bootcv1alpha1.RebootPolicyAllowSoftReboot),
 	)
 
 	// Save the spec before Create, which mutates node in-place.
@@ -152,6 +153,20 @@ func TestBootcNodeEnumValidation(t *testing.T) {
 
 	node := testutil.NewNode("invalid-image-state", testImageDigestRefA)
 	node.Spec.DesiredImageState = "Invalid"
+	err := k8sClient.Create(ctx, node)
+	if err == nil {
+		_ = k8sClient.Delete(ctx, node)
+	}
+	g.Expect(err).To(MatchError(apierrors.IsInvalid, "IsInvalid"))
+}
+
+func TestBootcNodeRebootPolicyEnumValidation(t *testing.T) {
+	g := NewWithT(t)
+	ctx := context.Background()
+
+	node := testutil.NewNode("invalid-reboot-policy", testImageDigestRefA,
+		testutil.WithNodeRebootPolicy("Invalid"),
+	)
 	err := k8sClient.Create(ctx, node)
 	if err == nil {
 		_ = k8sClient.Delete(ctx, node)
