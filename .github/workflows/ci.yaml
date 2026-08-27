@@ -109,7 +109,7 @@ jobs:
     name: e2e (${{ matrix.kube-minor }})
     runs-on: ubuntu-latest
     needs: [build-bink, build-operator]
-    timeout-minutes: 45
+    timeout-minutes: 50
     permissions:
       contents: read
     strategy:

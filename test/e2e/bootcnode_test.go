@@ -14,7 +14,8 @@ import (
 	"time"
 
 	. "github.com/onsi/gomega"
-	gtypes "github.com/onsi/gomega/types"
+	"github.com/onsi/gomega/types"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	eventsv1 "k8s.io/api/events/v1"
 	meta "k8s.io/apimachinery/pkg/api/meta"
@@ -899,6 +900,170 @@ func TestPullSecretAuth(t *testing.T) {
 		Should(poolAllUpdated(1, digest))
 }
 
+// TestControllerRecovery provisions a worker node, starts a rollout, and
+// scales the controller deployment to zero while that rollout is actively in
+// progress (the node is staging and cannot reboot until the controller drains
+// it and flips the desired state). It then scales the controller back up and
+// verifies it resumes and completes the interrupted rollout. Covers scenario 5
+// of #69 (kill the controller during a roll-out).
+func TestControllerRecovery(t *testing.T) {
+	g := NewWithT(t)
+	g.SetDefaultEventuallyTimeout(pollTimeout)
+	g.SetDefaultEventuallyPollingInterval(pollInterval)
+
+	env := e2eutil.New(t)
+	nodeName := env.AddNode(t)
+
+	ctx := context.Background()
+
+	// Phase 1: Create pool with original image and wait for Idle.
+	pool := env.NewPool("bnp-recovery", env.NodeImageDigestedPullSpec())
+	g.Expect(env.Client.Create(ctx, pool)).To(Succeed())
+
+	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
+		var bn bootcv1alpha1.BootcNode
+		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
+		return bn.Status, err
+	}).WithTimeout(3 * time.Minute).Should(And(
+		HaveField("Booted", Not(BeNil())),
+		HaveField("Conditions", ContainElement(And(
+			HaveField("Type", bootcv1alpha1.NodeIdle),
+			HaveField("Status", metav1.ConditionTrue),
+			HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
+		))),
+	))
+
+	t.Logf("Node %q is Idle with original image", nodeName)
+
+	// Phase 2: Patch the pool to the update image with the rollout paused.
+	// Pausing makes the pre-reboot window deterministic: the controller still
+	// propagates the target to the node spec and the daemon stages it, but a
+	// paused pool exposes zero reboot slots, so the node parks at Staged and
+	// cannot reboot on its own. Without pausing, a fast image pull could let
+	// the controller drain and reboot the node before we scale it down, racing
+	// the stall assertion below.
+	updateRef := env.NodeImageUpdateDigestedPullSpec()
+
+	patched := pool.DeepCopy()
+	patched.Spec.Image.Ref = updateRef
+	if patched.Spec.Rollout == nil {
+		patched.Spec.Rollout = &bootcv1alpha1.RolloutSpec{}
+	}
+	patched.Spec.Rollout.Paused = true
+	g.Expect(env.Client.Patch(ctx, patched, client.MergeFrom(pool))).To(Succeed())
+	*pool = *patched
+
+	t.Logf("Patched pool to update image %s (paused)", updateRef)
+
+	// Phase 3: Wait until the node has staged the update but has not rebooted.
+	// The booted image must still be the original digest — the rollout is now
+	// genuinely in progress but parked pre-reboot.
+	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
+		var bn bootcv1alpha1.BootcNode
+		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
+		return bn.Status, err
+	}).WithTimeout(5*time.Minute).Should(And(
+		HaveField("Staged", And(
+			Not(BeNil()),
+			HaveField("ImageDigest", Equal(env.NodeImageUpdateDigest())),
+		)),
+		HaveField("Booted", And(
+			Not(BeNil()),
+			HaveField("ImageDigest", Equal(env.NodeImageDigest())),
+		)),
+		HaveField("Conditions", ContainElement(And(
+			HaveField("Type", bootcv1alpha1.NodeIdle),
+			HaveField("Status", metav1.ConditionFalse),
+			HaveField("Reason", bootcv1alpha1.NodeReasonStaged),
+		))),
+	), "expected node to stage the update but stay pre-reboot before killing controller")
+
+	t.Logf("Rollout staged and parked pre-reboot; interrupting the controller")
+
+	// Phase 4: Scale the controller to zero, interrupting the rollout. Restore
+	// it on cleanup in case the test fails while scaled down.
+	t.Cleanup(func() { scaleController(t, env, ctx, 1) })
+	scaleController(t, env, ctx, 0)
+	t.Logf("Controller scaled to zero mid-rollout")
+
+	// Phase 5: Unpause the pool while the controller is down. The rollout is
+	// now free to proceed, but nothing can drive it: the node cannot reboot
+	// into the update until the controller drains it and flips
+	// DesiredImageState to Booted. The booted image must stay on the original
+	// digest, proving the interrupted rollout cannot complete on its own and
+	// that recovery is genuinely driven by the controller coming back.
+	unpaused := pool.DeepCopy()
+	unpaused.Spec.Rollout.Paused = false
+	g.Expect(env.Client.Patch(ctx, unpaused, client.MergeFrom(pool))).To(Succeed())
+	*pool = *unpaused
+
+	g.Consistently(func() (string, error) {
+		var bn bootcv1alpha1.BootcNode
+		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
+		if bn.Status.Booted == nil {
+			return "", err
+		}
+		return bn.Status.Booted.ImageDigest, err
+	}).WithTimeout(20*time.Second).WithPolling(2*time.Second).Should(
+		Equal(env.NodeImageDigest()),
+		"rollout should stall on the original image while the controller is down",
+	)
+
+	// Phase 6: Restore the controller. The recovered controller must resume and
+	// complete the interrupted rollout.
+	scaleController(t, env, ctx, 1)
+	t.Logf("Controller restored; waiting for the interrupted rollout to finish")
+
+	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
+		var bn bootcv1alpha1.BootcNode
+		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
+		return bn.Status, err
+	}).WithTimeout(5*time.Minute).Should(And(
+		HaveField("Booted", And(
+			Not(BeNil()),
+			HaveField("ImageDigest", Equal(env.NodeImageUpdateDigest())),
+		)),
+		HaveField("Conditions", ContainElement(And(
+			HaveField("Type", bootcv1alpha1.NodeIdle),
+			HaveField("Status", metav1.ConditionTrue),
+			HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
+		))),
+	), "expected node to reach Idle with update image after controller recovery")
+
+	t.Logf("Node %q completed the interrupted rollout after controller recovery", nodeName)
+
+	// Verify pool status after recovery.
+	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).
+		Should(poolAllUpdated(1, env.NodeImageUpdateDigest()))
+}
+
+// scaleController scales the operator's controller-manager Deployment to the
+// given replica count and waits until its available replicas match. It is used
+// to simulate controller outages in recovery tests.
+func scaleController(t *testing.T, env *e2eutil.Env, ctx context.Context, replicas int32) {
+	t.Helper()
+
+	g := NewWithT(t)
+	deployKey := client.ObjectKey{
+		Namespace: testutil.OperatorNamespaceName,
+		Name:      "bootc-operator-controller-manager",
+	}
+
+	var deploy appsv1.Deployment
+	g.Expect(env.Client.Get(ctx, deployKey, &deploy)).To(Succeed())
+
+	scaled := deploy.DeepCopy()
+	scaled.Spec.Replicas = &replicas
+	g.Expect(env.Client.Patch(ctx, scaled, client.MergeFrom(&deploy))).To(Succeed())
+
+	g.Eventually(func() (int32, error) {
+		var d appsv1.Deployment
+		err := env.Client.Get(ctx, deployKey, &d)
+		return d.Status.AvailableReplicas, err
+	}).WithTimeout(2*time.Minute).Should(Equal(replicas),
+		"expected controller to scale to %d replica(s)", replicas)
+}
+
 func fetchPoolStatus(
 	ctx context.Context,
 	c client.Client,
@@ -927,7 +1092,7 @@ func fetchEvents(
 	}
 }
 
-func poolAllUpdated(nodeCount int32, deployedDigest string) gtypes.GomegaMatcher {
+func poolAllUpdated(nodeCount int32, deployedDigest string) types.GomegaMatcher {
 	return And(
 		HaveField("NodeCount", BeEquivalentTo(nodeCount)),
 		HaveField("UpdatedCount", BeEquivalentTo(nodeCount)),
