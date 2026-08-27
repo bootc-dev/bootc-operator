@@ -50,7 +50,7 @@ systemctl --user start podman.socket
 
 Before diving into the code, familiarize yourself with the project from a user
 perspective by reading the [README](README.md) and the
-[Architecture](docs/ARCHITECTURE.md) document. We also recommend getting
+[Architecture](docs/design/ARCHITECTURE.md) document. We also recommend getting
 familiar with [bink](https://github.com/bootc-dev/bink), which is used to
 create lightweight Kubernetes clusters backed by bootc nodes for development
 and testing.
