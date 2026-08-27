@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
 	"github.com/bootc-dev/bootc-operator/test/e2e/e2eutil"
+	testutil "github.com/bootc-dev/bootc-operator/test/util"
 )
 
 const (
@@ -65,7 +67,7 @@ func TestControllerMembership(t *testing.T) {
 	g.Eventually(func() ([]corev1.Pod, error) {
 		var pods corev1.PodList
 		err := env.Client.List(ctx, &pods,
-			client.InNamespace("bootc-operator"),
+			client.InNamespace(testutil.OperatorNamespaceName),
 			client.MatchingLabels{
 				"app.kubernetes.io/name":      "bootc-operator",
 				"app.kubernetes.io/component": "daemon",
@@ -200,54 +202,8 @@ func TestUpdateReboot(t *testing.T) {
 	}).WithTimeout(3*time.Minute).Should(BeFalse(), "expected node to be schedulable after update")
 
 	// Phase 6: Verify update marker exists on the host via daemon pod exec.
-	g.Eventually(func() ([]corev1.Pod, error) {
-		var pods corev1.PodList
-		err := env.Client.List(ctx, &pods,
-			client.InNamespace("bootc-operator"),
-			client.MatchingLabels{
-				"app.kubernetes.io/name":      "bootc-operator",
-				"app.kubernetes.io/component": "daemon",
-			},
-		)
-		if err != nil {
-			return nil, err
-		}
-		var matched []corev1.Pod
-		for _, p := range pods.Items {
-			if p.Spec.NodeName == nodeName {
-				matched = append(matched, p)
-			}
-		}
-		return matched, nil
-	}).WithTimeout(1*time.Minute).Should(ConsistOf(
-		HaveField("Status.Phase", corev1.PodRunning),
-	), "expected running daemon pod on %s", nodeName)
-
-	// Retrieve the daemon pod for exec.
-	var daemonPods corev1.PodList
-	g.Expect(env.Client.List(ctx, &daemonPods,
-		client.InNamespace("bootc-operator"),
-		client.MatchingLabels{
-			"app.kubernetes.io/name":      "bootc-operator",
-			"app.kubernetes.io/component": "daemon",
-		},
-	)).To(Succeed())
-	var daemonPod corev1.Pod
-	for _, p := range daemonPods.Items {
-		if p.Spec.NodeName == nodeName {
-			daemonPod = p
-			break
-		}
-	}
-
-	kubeconfigPath := os.Getenv("KUBECONFIG")
-	cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath,
-		"-n", "bootc-operator", "exec", daemonPod.Name, "--",
+	execOnNode(t, g, env, ctx, nodeName,
 		"stat", "/proc/1/root/usr/share/update-marker")
-	out, err := cmd.CombinedOutput()
-	g.Expect(err).NotTo(HaveOccurred(),
-		fmt.Sprintf("expected update-marker to exist on host, kubectl exec output: %s", string(out)),
-	)
 
 	t.Logf("Verified update-marker exists on host via daemon pod")
 
@@ -372,6 +328,49 @@ func TestTagResolution(t *testing.T) {
 	))
 
 	t.Logf("Node %q is Idle with update image", nodeName)
+}
+
+// execOnNode finds the running daemon pod on the given node and executes
+// a command inside it via kubectl exec. It returns the command output.
+func execOnNode(
+	t *testing.T,
+	g Gomega,
+	env *e2eutil.Env,
+	ctx context.Context,
+	nodeName string,
+	command ...string,
+) string {
+	t.Helper()
+
+	var daemonPod corev1.Pod
+	g.Eventually(func(g Gomega) string {
+		var pods corev1.PodList
+		g.Expect(env.Client.List(ctx, &pods,
+			client.InNamespace(testutil.OperatorNamespaceName),
+			client.MatchingLabels{
+				"app.kubernetes.io/name":      "bootc-operator",
+				"app.kubernetes.io/component": "daemon",
+			},
+		)).To(Succeed())
+		for _, p := range pods.Items {
+			if p.Spec.NodeName == nodeName && p.Status.Phase == corev1.PodRunning {
+				daemonPod = p
+				return p.Name
+			}
+		}
+		return ""
+	}).WithTimeout(1*time.Minute).ShouldNot(BeEmpty(),
+		"expected running daemon pod on %s", nodeName)
+
+	kubeconfigPath := os.Getenv("KUBECONFIG")
+	args := append([]string{"--kubeconfig", kubeconfigPath,
+		"-n", testutil.OperatorNamespaceName, "exec", daemonPod.Name, "--"}, command...)
+	cmd := exec.CommandContext(ctx, "kubectl", args...)
+	out, err := cmd.CombinedOutput()
+	g.Expect(err).NotTo(HaveOccurred(),
+		fmt.Sprintf("kubectl exec on %s failed: %s", nodeName, string(out)))
+
+	return strings.TrimSpace(string(out))
 }
 
 // TestPauseResume provisions a worker node, starts an update with the
