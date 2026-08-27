@@ -85,6 +85,7 @@ e2e: ## Run e2e tests (requires: make deploy-bink). V=1 for verbose. RUN=<regex>
 		ARTIFACTS=$(ARTIFACTS) \
 		BINK_NODE_IMAGE_DIGEST=$$(skopeo inspect --tls-verify=false --format '{{.Digest}}' docker://localhost:5000/node:latest) \
 		BINK_NODE_IMAGE_UPDATE_DIGEST=$$(skopeo inspect --tls-verify=false docker://localhost:5000/node:update | jq -r '.Digest') \
+		BINK_NODE_IMAGE_UPDATE2_DIGEST=$$(skopeo inspect --tls-verify=false docker://localhost:5000/node:update2 | jq -r '.Digest') \
 		go test -timeout 30m -count=1 $(if $(V),-v) $(if $(RUN),-run $(RUN)) .
 
 ##@ Build
@@ -105,10 +106,13 @@ buildimg: ## Build container image.
 	$(CONTAINER_TOOL) build -t $(IMG) .
 
 .PHONY: build-update-image
-build-update-image: ## Build a derived node image for update testing and push to bink registry.
+build-update-image: ## Build derived node images for update testing and push to bink registry.
 	@printf 'FROM localhost:5000/node:latest\nRUN touch /usr/share/update-marker\n' | \
 		podman build -t localhost:5000/node:update -f - .
 	podman push --tls-verify=false localhost:5000/node:update
+	@printf 'FROM localhost:5000/node:latest\nRUN touch /usr/share/update-marker-2\n' | \
+		podman build -t localhost:5000/node:update2 -f - .
+	podman push --tls-verify=false localhost:5000/node:update2
 
 ##@ Deployment
 
