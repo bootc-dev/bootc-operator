@@ -20,6 +20,29 @@ type Executor interface {
 	Status(ctx context.Context) ([]byte, error)
 	Stage(ctx context.Context, image string) error
 	Reboot(ctx context.Context) error
+	ApplyUpdate(ctx context.Context, softReboot bool) error
+}
+
+// Centralized bootc command builders.
+
+func bootcStatusArgs() []string {
+	return []string{"bootc", "status", "--json", "--format-version", "1"}
+}
+
+func bootcSwitchArgs(image string) []string {
+	return []string{"bootc", "switch", image}
+}
+
+func bootcApplyUpdateArgs(softReboot bool) []string {
+	args := []string{"bootc", "upgrade", "--from-downloaded", "--apply"}
+	if softReboot {
+		args = append(args, "--soft-reboot=auto")
+	}
+	return args
+}
+
+func systemctlRebootArgs() []string {
+	return []string{"systemctl", "reboot"}
 }
 
 // HostExecutor runs bootc commands on the host via nsenter.
@@ -41,7 +64,7 @@ func (e *HostExecutor) nsenterCmd(ctx context.Context, args ...string) *exec.Cmd
 }
 
 func (e *HostExecutor) Status(ctx context.Context) ([]byte, error) {
-	cmd := e.nsenterCmd(ctx, "bootc", "status", "--json", "--format-version", "1")
+	cmd := e.nsenterCmd(ctx, bootcStatusArgs()...)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("running bootc status: %w", err)
@@ -67,13 +90,13 @@ func (e *HostExecutor) Stage(ctx context.Context, image string) error {
 	// Ideally we'd use systemd-run's `--pipe` here, which would avoid
 	// having to fetch the unit journal down below, but SELinux blocks it
 	// (dbus-broker can't access container-labeled fds).
-	cmd := e.nsenterCmd(ctx,
-		"systemd-run", "--wait", "--collect",
-		"--unit", stageUnitName,
-		// TODO: use --download-only once available
-		// (https://github.com/bootc-dev/bootc/issues/2137)
-		"bootc", "switch", image,
+	// TODO: use --download-only once available
+	// (https://github.com/bootc-dev/bootc/issues/2137)
+	stageArgs := append(
+		[]string{"systemd-run", "--wait", "--collect", "--unit", stageUnitName},
+		bootcSwitchArgs(image)...,
 	)
+	cmd := e.nsenterCmd(ctx, stageArgs...)
 	cmd.Cancel = func() error {
 		e.stopStageUnit()
 		return nil
@@ -152,11 +175,23 @@ func (e *HostExecutor) copyJournalUnitLogs(log logr.Logger, unit string, cursor 
 func (e *HostExecutor) Reboot(ctx context.Context) error {
 	log := logf.FromContext(ctx)
 
-	cmd := e.nsenterCmd(ctx, "systemctl", "reboot")
+	cmd := e.nsenterCmd(ctx, systemctlRebootArgs()...)
 	log.Info("Executing", "cmd", strings.Join(cmd.Args, " "))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("running systemctl reboot: %s: %w", out, err)
+	}
+	return nil
+}
+
+func (e *HostExecutor) ApplyUpdate(ctx context.Context, softReboot bool) error {
+	log := logf.FromContext(ctx)
+
+	cmd := e.nsenterCmd(ctx, bootcApplyUpdateArgs(softReboot)...)
+	log.Info("Executing", "cmd", strings.Join(cmd.Args, " "))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("running bootc apply: %s: %w", out, err)
 	}
 	return nil
 }

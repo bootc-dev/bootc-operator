@@ -617,6 +617,12 @@ func (r *BootcNodePoolReconciler) syncBootcNodeSpec(
 		needPatch = true
 	}
 
+	newRebootPolicy := effectiveRebootPolicy(pool)
+	if modified.Spec.RebootPolicy != newRebootPolicy {
+		modified.Spec.RebootPolicy = newRebootPolicy
+		needPatch = true
+	}
+
 	if needPatch {
 		if err := r.Patch(ctx, modified, client.MergeFrom(bn)); err != nil {
 			return fmt.Errorf("patching BootcNode: %w", err)
@@ -625,6 +631,13 @@ func (r *BootcNodePoolReconciler) syncBootcNodeSpec(
 	}
 
 	return nil
+}
+
+func effectiveRebootPolicy(pool *bootcv1alpha1.BootcNodePool) bootcv1alpha1.RebootPolicy {
+	if pool.Spec.Disruption != nil && pool.Spec.Disruption.RebootPolicy != "" {
+		return pool.Spec.Disruption.RebootPolicy
+	}
+	return bootcv1alpha1.RebootPolicyRebootOnly
 }
 
 // desiredImageFromPool constructs the desiredImage pullspec from the
@@ -656,6 +669,8 @@ func (r *BootcNodePoolReconciler) createBootcNode(
 	if pool.Spec.PullSecretRef != nil {
 		bn.Spec.PullSecretRef = pool.Spec.PullSecretRef.DeepCopy()
 	}
+
+	bn.Spec.RebootPolicy = effectiveRebootPolicy(pool)
 
 	// Set ownerReference so the BootcNode is cleaned up if the pool is
 	// deleted and so the Owns() watch routes BootcNode events to this pool.

@@ -206,6 +206,13 @@ func WithNodePullSecret(name, namespace, hash string) NodeOption {
 	}
 }
 
+// WithNodeRebootPolicy sets the reboot policy on a BootcNode.
+func WithNodeRebootPolicy(p bootcv1alpha1.RebootPolicy) NodeOption {
+	return func(node *bootcv1alpha1.BootcNode) {
+		node.Spec.RebootPolicy = p
+	}
+}
+
 // K8sNodeOption configures a corev1.Node.
 type K8sNodeOption func(*corev1.Node)
 

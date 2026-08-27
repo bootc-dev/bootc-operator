@@ -124,6 +124,11 @@ type BootcNodeSpec struct {
 	// the secret and updates the host filesystem.
 	// +optional
 	PullSecretHash string `json:"pullSecretHash,omitempty"`
+
+	// rebootPolicy defines how the node should be rebooted during
+	// updates. Copied from the owning pool's disruption.rebootPolicy.
+	// +optional
+	RebootPolicy RebootPolicy `json:"rebootPolicy,omitempty"`
 }
 
 // BootcNodeStatus defines the observed state of a BootcNode.
