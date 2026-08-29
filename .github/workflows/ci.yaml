@@ -99,6 +99,14 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # The Containerfile cross-compiles, so a non-native architecture still
+        # builds on this amd64 runner without emulation.
+        arch: [amd64, arm64]
+    env:
+      ARCH: ${{ matrix.arch }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -106,16 +114,16 @@ jobs:
           persist-credentials: false
 
       - name: Build operator image
-        run: make buildimg
+        run: make buildimg IMG="bootc-operator:dev-${ARCH}" PLATFORM="linux/${ARCH}"
 
       - name: Save operator image
-        run: podman save -o operator-image.tar bootc-operator:dev
+        run: podman save -o "operator-image-${ARCH}.tar" "bootc-operator:dev-${ARCH}"
 
       - name: Upload operator image
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: operator-image
-          path: operator-image.tar
+          name: operator-image-${{ matrix.arch }}
+          path: operator-image-${{ matrix.arch }}.tar
 
   e2e:
     runs-on: ubuntu-latest
@@ -184,10 +192,10 @@ jobs:
       - name: Download operator image
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: operator-image
+          name: operator-image-amd64
 
       - name: Load operator image
-        run: podman load -i operator-image.tar
+        run: podman load -i operator-image-amd64.tar
 
       - name: Fix registries configuration
         run: |
@@ -199,7 +207,7 @@ jobs:
         run: make start-bink
 
       - name: Deploy to bink cluster
-        run: make deploy-bink
+        run: make deploy-bink IMG=bootc-operator:dev-amd64
 
       - name: Gather deploy logs
         if: failure()
@@ -226,13 +234,29 @@ jobs:
     env:
       IMAGE: ghcr.io/${{ github.repository }}
     steps:
-      - name: Download operator image
+      - name: Download operator images
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: operator-image
+          pattern: operator-image-*
+          merge-multiple: true
 
-      - name: Load operator image
-        run: podman load -i operator-image.tar
+      - name: Assemble manifest list
+        run: |
+          shopt -s failglob
+          refs=()
+          for tar in operator-image-*.tar; do
+            arch="${tar#operator-image-}"
+            arch="${arch%.tar}"
+            podman load -i "$tar"
+            refs+=("containers-storage:localhost/bootc-operator:dev-$arch")
+          done
+          # Guard against a missing artifact silently publishing a partial
+          # manifest list, which would leave some nodes unable to pull.
+          if [[ "${#refs[@]}" -lt 2 ]]; then
+            echo "expected at least 2 architectures, got ${#refs[@]}" >&2
+            exit 1
+          fi
+          podman manifest create bootc-operator:dev "${refs[@]}"
 
       - name: Push to GHCR
         env:
@@ -243,13 +267,20 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: |
           podman login -u "${ACTOR}" -p "${GH_TOKEN}" ghcr.io
-          podman push bootc-operator:dev "${IMAGE}":dev
-          podman push bootc-operator:dev "${IMAGE}":"${SHA}"
+          tags=(dev "${SHA}")
 
           if [[ "${REF}" == refs/tags/v* ]]; then
-            podman push bootc-operator:dev "${IMAGE}":"${REF_NAME}"
+            tags+=("${REF_NAME}")
           fi
 
           if [[ "${REF}" == refs/heads/main ]]; then
-            podman push bootc-operator:dev "${IMAGE}":latest
+            tags+=(latest)
           fi
+
+          # v2s2 keeps the per-architecture manifests in the same format as
+          # the images published before this became a manifest list, so the
+          # only change downstream sees is the added list layer.
+          for tag in "${tags[@]}"; do
+            podman manifest push --all --format v2s2 \
+              bootc-operator:dev "docker://${IMAGE}:${tag}"
+          done
