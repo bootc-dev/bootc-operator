@@ -7,17 +7,21 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/types"
 	corev1 "k8s.io/api/core/v1"
+	meta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
 	"github.com/bootc-dev/bootc-operator/test/e2e/e2eutil"
+	testutil "github.com/bootc-dev/bootc-operator/test/util"
 )
 
 const (
@@ -65,7 +69,7 @@ func TestControllerMembership(t *testing.T) {
 	g.Eventually(func() ([]corev1.Pod, error) {
 		var pods corev1.PodList
 		err := env.Client.List(ctx, &pods,
-			client.InNamespace("bootc-operator"),
+			client.InNamespace(testutil.OperatorNamespaceName),
 			client.MatchingLabels{
 				"app.kubernetes.io/name":      "bootc-operator",
 				"app.kubernetes.io/component": "daemon",
@@ -200,54 +204,8 @@ func TestUpdateReboot(t *testing.T) {
 	}).WithTimeout(3*time.Minute).Should(BeFalse(), "expected node to be schedulable after update")
 
 	// Phase 6: Verify update marker exists on the host via daemon pod exec.
-	g.Eventually(func() ([]corev1.Pod, error) {
-		var pods corev1.PodList
-		err := env.Client.List(ctx, &pods,
-			client.InNamespace("bootc-operator"),
-			client.MatchingLabels{
-				"app.kubernetes.io/name":      "bootc-operator",
-				"app.kubernetes.io/component": "daemon",
-			},
-		)
-		if err != nil {
-			return nil, err
-		}
-		var matched []corev1.Pod
-		for _, p := range pods.Items {
-			if p.Spec.NodeName == nodeName {
-				matched = append(matched, p)
-			}
-		}
-		return matched, nil
-	}).WithTimeout(1*time.Minute).Should(ConsistOf(
-		HaveField("Status.Phase", corev1.PodRunning),
-	), "expected running daemon pod on %s", nodeName)
-
-	// Retrieve the daemon pod for exec.
-	var daemonPods corev1.PodList
-	g.Expect(env.Client.List(ctx, &daemonPods,
-		client.InNamespace("bootc-operator"),
-		client.MatchingLabels{
-			"app.kubernetes.io/name":      "bootc-operator",
-			"app.kubernetes.io/component": "daemon",
-		},
-	)).To(Succeed())
-	var daemonPod corev1.Pod
-	for _, p := range daemonPods.Items {
-		if p.Spec.NodeName == nodeName {
-			daemonPod = p
-			break
-		}
-	}
-
-	kubeconfigPath := os.Getenv("KUBECONFIG")
-	cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath,
-		"-n", "bootc-operator", "exec", daemonPod.Name, "--",
+	execOnNode(t, g, env, ctx, nodeName,
 		"stat", "/proc/1/root/usr/share/update-marker")
-	out, err := cmd.CombinedOutput()
-	g.Expect(err).NotTo(HaveOccurred(),
-		fmt.Sprintf("expected update-marker to exist on host, kubectl exec output: %s", string(out)),
-	)
 
 	t.Logf("Verified update-marker exists on host via daemon pod")
 
@@ -372,6 +330,205 @@ func TestTagResolution(t *testing.T) {
 	))
 
 	t.Logf("Node %q is Idle with update image", nodeName)
+}
+
+// TestMidRolloutImageChange provisions two worker nodes, starts a rollout
+// to one update image, then switches the target to a different update image
+// while one node is rebooting. It verifies both nodes converge to the final
+// image and that the non-rebooting node does not wastefully reboot into the
+// first update image.
+func TestMidRolloutImageChange(t *testing.T) {
+	g := NewWithT(t)
+	g.SetDefaultEventuallyTimeout(pollTimeout)
+	g.SetDefaultEventuallyPollingInterval(pollInterval)
+
+	env := e2eutil.New(t)
+	nodeA := env.AddNode(t)
+	nodeB := env.AddNode(t)
+
+	ctx := context.Background()
+
+	// Phase 1: Create pool with original image and wait for both nodes Idle.
+	pool := env.NewPool("mid-rollout", env.NodeImageDigestedPullSpec())
+	g.Expect(env.Client.Create(ctx, pool)).To(Succeed())
+
+	for _, nodeName := range []string{nodeA, nodeB} {
+		g.Eventually(func() (bootcv1alpha1.BootcNode, error) {
+			var bn bootcv1alpha1.BootcNode
+			err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
+			return bn, err
+		}).WithTimeout(3 * time.Minute).Should(SatisfyAll(
+			HaveField("Status.Booted", Not(BeNil())),
+			HaveField("Status.Conditions", ContainElement(And(
+				HaveField("Type", bootcv1alpha1.NodeIdle),
+				HaveField("Status", metav1.ConditionTrue),
+				HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
+			))),
+		))
+	}
+
+	t.Logf("Both nodes are Idle with original image")
+
+	// Phase 2: Record boot count for both nodes before the rollout.
+	bootCountBefore := make(map[string]string)
+	for _, nodeName := range []string{nodeA, nodeB} {
+		bootCountBefore[nodeName] = getBootCount(t, env, ctx, nodeName)
+		t.Logf("Node %q boot count before: %s", nodeName, bootCountBefore[nodeName])
+	}
+
+	// Phase 3: Patch pool to first update image.
+	updateRef1 := env.NodeImageUpdateDigestedPullSpec()
+
+	modified := pool.DeepCopy()
+	modified.Spec.Image.Ref = updateRef1
+	g.Expect(env.Client.Patch(ctx, modified, client.MergeFrom(pool))).To(Succeed())
+	*pool = *modified
+
+	t.Logf("Patched pool to first update image %s", updateRef1)
+
+	// Phase 4: Wait for any node to reach Rebooting.
+	var rebootingNode string
+	g.Eventually(func(g Gomega) string {
+		for _, name := range []string{nodeA, nodeB} {
+			var bn bootcv1alpha1.BootcNode
+			g.Expect(env.Client.Get(ctx, client.ObjectKey{Name: name}, &bn)).To(Succeed())
+
+			cond := meta.FindStatusCondition(bn.Status.Conditions, bootcv1alpha1.NodeIdle)
+			if cond != nil &&
+				cond.Status == metav1.ConditionFalse &&
+				cond.Reason == bootcv1alpha1.NodeReasonRebooting {
+				rebootingNode = name
+				return name
+			}
+		}
+		return ""
+	}).WithTimeout(5 * time.Minute).ShouldNot(BeEmpty())
+
+	var otherNode string
+	if rebootingNode == nodeA {
+		otherNode = nodeB
+	} else {
+		otherNode = nodeA
+	}
+
+	t.Logf("Node %q is Rebooting, node %q is the other node", rebootingNode, otherNode)
+
+	// Phase 5: Immediately switch target to second update image.
+	updateRef2 := env.NodeImageUpdate2DigestedPullSpec()
+
+	modified = pool.DeepCopy()
+	modified.Spec.Image.Ref = updateRef2
+	g.Expect(env.Client.Patch(ctx, modified, client.MergeFrom(pool))).To(Succeed())
+	*pool = *modified
+
+	t.Logf("Switched pool to second update image %s", updateRef2)
+
+	// Phase 6: Wait for both nodes to be Idle with the second update image.
+	for _, nodeName := range []string{nodeA, nodeB} {
+		g.Eventually(func() (bootcv1alpha1.BootcNode, error) {
+			var bn bootcv1alpha1.BootcNode
+			err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
+			return bn, err
+		}).WithTimeout(8*time.Minute).Should(SatisfyAll(
+			HaveField("Status.Booted", Not(BeNil())),
+			HaveField("Status.Booted.ImageDigest", Equal(env.NodeImageUpdate2Digest())),
+			HaveField("Status.Conditions", ContainElement(And(
+				HaveField("Type", bootcv1alpha1.NodeIdle),
+				HaveField("Status", metav1.ConditionTrue),
+				HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
+			))),
+		), "expected node %s to reach Idle with second update image", nodeName)
+	}
+
+	t.Logf("Both nodes are Idle with second update image")
+
+	// Phase 7: Verify the other node (the one that was NOT rebooting when
+	// we switched images) did not wastefully reboot into the first update
+	// image. It should have rebooted exactly once (into the second image).
+	bootCountAfter := getBootCount(t, env, ctx, otherNode)
+	t.Logf(
+		"Node %q boot count after: %s (before: %s)",
+		otherNode,
+		bootCountAfter,
+		bootCountBefore[otherNode],
+	)
+
+	beforeCount, err := strconv.Atoi(bootCountBefore[otherNode])
+	g.Expect(err).NotTo(HaveOccurred(), "parsing before boot count")
+	afterCount, err := strconv.Atoi(bootCountAfter)
+	g.Expect(err).NotTo(HaveOccurred(), "parsing after boot count")
+
+	g.Expect(afterCount-beforeCount).To(Equal(1),
+		"expected other node %s to reboot exactly once (from %d to %d), "+
+			"an extra reboot means it wastefully booted into the first update image",
+		otherNode, beforeCount, afterCount)
+
+	t.Logf(
+		"Verified node %q rebooted exactly once (no wasteful reboot into first image)",
+		otherNode,
+	)
+}
+
+// execOnNode finds the running daemon pod on the given node and executes
+// a command inside it via kubectl exec. It returns the command output.
+func execOnNode(
+	t *testing.T,
+	g Gomega,
+	env *e2eutil.Env,
+	ctx context.Context,
+	nodeName string,
+	command ...string,
+) string {
+	t.Helper()
+
+	var daemonPod corev1.Pod
+	g.Eventually(func(g Gomega) string {
+		var pods corev1.PodList
+		g.Expect(env.Client.List(ctx, &pods,
+			client.InNamespace(testutil.OperatorNamespaceName),
+			client.MatchingLabels{
+				"app.kubernetes.io/name":      "bootc-operator",
+				"app.kubernetes.io/component": "daemon",
+			},
+		)).To(Succeed())
+		for _, p := range pods.Items {
+			if p.Spec.NodeName == nodeName && p.Status.Phase == corev1.PodRunning {
+				daemonPod = p
+				return p.Name
+			}
+		}
+		return ""
+	}).WithTimeout(1*time.Minute).ShouldNot(BeEmpty(),
+		"expected running daemon pod on %s", nodeName)
+
+	kubeconfigPath := os.Getenv("KUBECONFIG")
+	args := append([]string{"--kubeconfig", kubeconfigPath,
+		"-n", testutil.OperatorNamespaceName, "exec", daemonPod.Name, "--"}, command...)
+	cmd := exec.CommandContext(ctx, "kubectl", args...)
+	out, err := cmd.CombinedOutput()
+	g.Expect(err).NotTo(HaveOccurred(),
+		fmt.Sprintf("kubectl exec on %s failed: %s", nodeName, string(out)))
+
+	return strings.TrimSpace(string(out))
+}
+
+// getBootCount returns the number of boots on a node by running
+// journalctl --list-boots inside the daemon pod via kubectl exec.
+func getBootCount(t *testing.T, env *e2eutil.Env, ctx context.Context, nodeName string) string {
+	t.Helper()
+
+	g := NewWithT(t)
+
+	out := execOnNode(t, g, env, ctx, nodeName,
+		"nsenter", "-m/proc/1/ns/mnt", "--", "journalctl", "--list-boots")
+
+	count := 0
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) != "" {
+			count++
+		}
+	}
+	return fmt.Sprintf("%d", count)
 }
 
 // TestPauseResume provisions a worker node, starts an update with the

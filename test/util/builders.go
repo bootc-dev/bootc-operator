@@ -27,6 +27,8 @@ const (
 	ImageDigestRefA = ImageRepo + "@" + DigestA
 	ImageDigestRefB = ImageRepo + "@" + DigestB
 	ImageDigestRefC = ImageRepo + "@" + DigestC
+
+	OperatorNamespaceName = "bootc-operator"
 )
 
 // PoolOption configures a BootcNodePool.
