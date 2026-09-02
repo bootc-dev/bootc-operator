@@ -49,7 +49,7 @@ vet: ## Run go vet against code.
 
 .PHONY: unit
 unit: manifests generate setup-envtest ## Run unit tests (envtest). V=1 for verbose. RUN=<regex> to filter.
-	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test $(if $(V),-v) $(if $(RUN),-run $(RUN)) $$(go list ./... | grep -v /test/e2e)
+	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test $(if $(V),-v) $(if $(RUN),-run '$(RUN)') $$(go list ./... | grep -v /test/e2e)
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter and go-lines
@@ -85,7 +85,7 @@ e2e: ## Run e2e tests (requires: make deploy-bink). V=1 for verbose. RUN=<regex>
 		ARTIFACTS=$(ARTIFACTS) \
 		BINK_NODE_IMAGE_DIGEST=$$(skopeo inspect --tls-verify=false --format '{{.Digest}}' docker://localhost:5000/node:latest) \
 		BINK_NODE_IMAGE_UPDATE_DIGEST=$$(skopeo inspect --tls-verify=false docker://localhost:5000/node:update | jq -r '.Digest') \
-		go test -timeout 30m -count=1 $(if $(V),-v) $(if $(RUN),-run $(RUN)) .
+		go test -timeout 30m -count=1 $(if $(V),-v) $(if $(RUN),-run '$(RUN)') .
 
 ##@ Build
 
