@@ -11,13 +11,16 @@ import (
 	"time"
 
 	. "github.com/onsi/gomega"
-	"github.com/onsi/gomega/types"
+	gtypes "github.com/onsi/gomega/types"
 	corev1 "k8s.io/api/core/v1"
+	eventsv1 "k8s.io/api/events/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
 	"github.com/bootc-dev/bootc-operator/test/e2e/e2eutil"
+	testutil "github.com/bootc-dev/bootc-operator/test/util"
 )
 
 const (
@@ -131,6 +134,9 @@ func TestUpdateReboot(t *testing.T) {
 
 	t.Logf("Node %q is Idle with original image", nodeName)
 
+	var bootcNode bootcv1alpha1.BootcNode
+	g.Expect(env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bootcNode)).To(Succeed())
+
 	// Phase 2: Patch pool to update image.
 	updateRef := env.NodeImageUpdateDigestedPullSpec()
 
@@ -154,6 +160,44 @@ func TestUpdateReboot(t *testing.T) {
 	)), "expected node to reach Rebooting state")
 
 	t.Logf("Node %q is Rebooting", nodeName)
+
+	nodeEvents := []struct {
+		reason string
+		note   string
+	}{
+		{
+			reason: bootcv1alpha1.NodeReasonStaging,
+			note:   "Staging image " + updateRef,
+		},
+		{
+			reason: bootcv1alpha1.NodeReasonStaged,
+			note:   "Image " + updateRef + " is staged and awaiting reboot",
+		},
+		{
+			reason: bootcv1alpha1.NodeReasonRebooting,
+			note:   "Rebooting into image " + updateRef,
+		},
+	}
+	for _, expected := range nodeEvents {
+		g.Eventually(fetchEvents(ctx, env.Client, "BootcNode", nodeName, bootcNode.UID)).
+			Should(ContainElement(And(
+				HaveField("Type", corev1.EventTypeNormal),
+				HaveField("Reason", expected.reason),
+				HaveField("Action", "NodeUpdate"),
+				HaveField("Note", expected.note),
+				HaveField("Related", And(
+					Not(BeNil()),
+					HaveField("UID", pool.UID),
+				)),
+			)))
+	}
+	g.Eventually(fetchEvents(ctx, env.Client, "BootcNodePool", pool.Name, pool.UID)).
+		Should(ContainElement(And(
+			HaveField("Type", corev1.EventTypeNormal),
+			HaveField("Reason", "RolloutStarted"),
+			HaveField("Action", "Rollout"),
+			HaveField("Note", "Rollout started toward digest "+env.NodeImageUpdateDigest()),
+		)))
 
 	// Verify pool status during rollout.
 	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).Should(And(
@@ -191,6 +235,13 @@ func TestUpdateReboot(t *testing.T) {
 	// Verify pool status after rollout completes.
 	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).
 		Should(poolAllUpdated(1, env.NodeImageUpdateDigest()))
+	g.Eventually(fetchEvents(ctx, env.Client, "BootcNodePool", pool.Name, pool.UID)).
+		Should(ContainElement(And(
+			HaveField("Type", corev1.EventTypeNormal),
+			HaveField("Reason", "RolloutCompleted"),
+			HaveField("Action", "Rollout"),
+			HaveField("Note", "Rollout completed at digest "+env.NodeImageUpdateDigest()),
+		)))
 
 	// Phase 5: Verify node is schedulable (uncordoned after reboot).
 	g.Eventually(func() (bool, error) {
@@ -354,6 +405,22 @@ func TestTagResolution(t *testing.T) {
 	}).WithTimeout(1 * time.Minute).Should(Equal(env.NodeImageUpdateDigest()))
 
 	t.Logf("Tag re-resolved to update digest %s", env.NodeImageUpdateDigest())
+
+	g.Eventually(fetchEvents(ctx, env.Client, "BootcNodePool", pool.Name, pool.UID)).
+		Should(ContainElement(And(
+			HaveField("Type", corev1.EventTypeNormal),
+			HaveField("Reason", "ImageUpdateAvailable"),
+			HaveField("Action", "ResolveImage"),
+			HaveField(
+				"Note",
+				fmt.Sprintf(
+					"Image tag %s resolved to new digest %s (previously %s)",
+					env.NodeImageTagRef(),
+					env.NodeImageUpdateDigest(),
+					env.NodeImageDigest(),
+				),
+			),
+		)))
 
 	// Wait for node to reach Idle with the update image.
 	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
@@ -594,7 +661,23 @@ func fetchPoolStatus(
 	}
 }
 
-func poolAllUpdated(nodeCount int32, deployedDigest string) types.GomegaMatcher {
+func fetchEvents(
+	ctx context.Context,
+	c client.Client,
+	kind, name string,
+	uid k8stypes.UID,
+) func() ([]eventsv1.Event, error) {
+	return func() ([]eventsv1.Event, error) {
+		var eventList eventsv1.EventList
+		if err := c.List(ctx, &eventList); err != nil {
+			return nil, err
+		}
+
+		return testutil.FilterEventsByObject(eventList.Items, kind, name, uid), nil
+	}
+}
+
+func poolAllUpdated(nodeCount int32, deployedDigest string) gtypes.GomegaMatcher {
 	return And(
 		HaveField("NodeCount", BeEquivalentTo(nodeCount)),
 		HaveField("UpdatedCount", BeEquivalentTo(nodeCount)),
