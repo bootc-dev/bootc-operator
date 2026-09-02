@@ -66,7 +66,7 @@ func (r *BootcNodePoolReconciler) driveRollout(
 
 	// Process drain results first. This isn't really ordering dependent,
 	// but it feels natural to do this upfront before classifying.
-	if err := r.collectDrainResults(ctx, ownedBootcNodes); err != nil {
+	if err := r.collectDrainResults(ctx, pool, ownedBootcNodes); err != nil {
 		return nil, fmt.Errorf("collecting drain results: %w", err)
 	}
 
@@ -333,6 +333,7 @@ func (r *BootcNodePoolReconciler) ensureDrain(
 // BootcNode.
 func (r *BootcNodePoolReconciler) collectDrainResults(
 	ctx context.Context,
+	pool *bootcv1alpha1.BootcNodePool,
 	ownedBootcNodes map[string]*bootcv1alpha1.BootcNode,
 ) error {
 	log := logf.FromContext(ctx)
@@ -365,6 +366,9 @@ func (r *BootcNodePoolReconciler) collectDrainResults(
 				// selectDrainCandidates picks the still-slotted Staged
 				// node, and ensureDrain starts a new goroutine.
 				log.Info("Drain failed, will retry", "node", nodeName, "error", drainErr)
+				if bn, ok := ownedBootcNodes[nodeName]; ok {
+					r.recordDrainFailedEvent(pool, bn, drainErr)
+				}
 			}
 			continue
 		}

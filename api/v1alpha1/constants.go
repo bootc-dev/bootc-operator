@@ -25,4 +25,9 @@ const (
 	// the K8s Node was already cordoned before the controller cordoned
 	// it for a reboot. Used to restore prior cordon state after update.
 	AnnotationWasCordoned = "bootc.dev/was-cordoned"
+
+	// AnnotationLastObservedState records the last BootcNode Idle condition
+	// state for which the controller considered emitting an event. It is
+	// observability bookkeeping only and is never used to drive reconciliation.
+	AnnotationLastObservedState = "bootc.dev/last-observed-state"
 )
