@@ -322,6 +322,13 @@ func (r *BootcNodePoolReconciler) Reconcile(
 	// but counts catch up on the next successful reconcile.
 	syncPoolStatus(&pool, rs)
 
+	// Carry a time-based requeue (e.g. reboot timeout) unless something
+	// sooner is already scheduled.
+	if rs.requeueAfter > 0 &&
+		(resolveResult.RequeueAfter == 0 || rs.requeueAfter < resolveResult.RequeueAfter) {
+		resolveResult.RequeueAfter = rs.requeueAfter
+	}
+
 	return complete(resolveResult)
 }
 

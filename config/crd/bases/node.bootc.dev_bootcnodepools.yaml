@@ -179,6 +179,17 @@ spec:
                       are already mid-staging will complete their staging. Tag resolution
                       continues and status.targetDigest is kept current.
                     type: boolean
+                  rebootTimeoutSeconds:
+                    description: |-
+                      rebootTimeoutSeconds is the maximum time in seconds to wait for a
+                      node to boot the desired image after a reboot is issued. If the node
+                      stays in the Rebooting state longer than this (e.g. it failed to
+                      boot the new image or never rejoined the cluster), it is reported as
+                      degraded at the pool level. If not set, the controller waits
+                      indefinitely.
+                    format: int32
+                    minimum: 0
+                    type: integer
                 type: object
             required:
             - image
