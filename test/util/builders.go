@@ -5,6 +5,8 @@
 package testutil
 
 import (
+	"time"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -112,6 +114,16 @@ func WithDrainTimeoutSeconds(seconds int32) PoolOption {
 	}
 }
 
+// WithRebootTimeoutSeconds sets the rollout reboot timeout in seconds.
+func WithRebootTimeoutSeconds(seconds int32) PoolOption {
+	return func(pool *bootcv1alpha1.BootcNodePool) {
+		if pool.Spec.Rollout == nil {
+			pool.Spec.Rollout = &bootcv1alpha1.RolloutSpec{}
+		}
+		pool.Spec.Rollout.RebootTimeoutSeconds = &seconds
+	}
+}
+
 // WithLabel sets a metadata label on the pool.
 func WithLabel(key, value string) PoolOption {
 	return func(pool *bootcv1alpha1.BootcNodePool) {
@@ -174,6 +186,28 @@ func WithNodeCondition(condType string, status metav1.ConditionStatus, reason st
 		node.Status.Conditions = append(
 			node.Status.Conditions,
 			metav1.Condition{Type: condType, Status: status, Reason: reason},
+		)
+	}
+}
+
+// WithNodeConditionAt appends a condition with an explicit
+// LastTransitionTime. Useful for exercising time-based logic such as
+// reboot timeouts.
+func WithNodeConditionAt(
+	condType string,
+	status metav1.ConditionStatus,
+	reason string,
+	at time.Time,
+) NodeOption {
+	return func(node *bootcv1alpha1.BootcNode) {
+		node.Status.Conditions = append(
+			node.Status.Conditions,
+			metav1.Condition{
+				Type:               condType,
+				Status:             status,
+				Reason:             reason,
+				LastTransitionTime: metav1.NewTime(at),
+			},
 		)
 	}
 }

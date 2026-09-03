@@ -4,6 +4,7 @@ package controller
 
 import (
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 	. "github.com/onsi/gomega"
@@ -307,4 +308,217 @@ func TestClassifyNode(t *testing.T) {
 			g.Expect(got).To(Equal(tt.want))
 		})
 	}
+}
+
+func TestResolveRebootTimeout(t *testing.T) {
+	g := NewWithT(t)
+
+	secs := func(v int32) *int32 { return &v }
+
+	// Nil rollout / nil field means the timeout is disabled.
+	g.Expect(resolveRebootTimeout(&bootcv1alpha1.BootcNodePool{})).To(Equal(time.Duration(0)))
+
+	poolNoField := &bootcv1alpha1.BootcNodePool{
+		Spec: bootcv1alpha1.BootcNodePoolSpec{Rollout: &bootcv1alpha1.RolloutSpec{}},
+	}
+	g.Expect(resolveRebootTimeout(poolNoField)).To(Equal(time.Duration(0)))
+
+	pool := &bootcv1alpha1.BootcNodePool{
+		Spec: bootcv1alpha1.BootcNodePoolSpec{
+			Rollout: &bootcv1alpha1.RolloutSpec{RebootTimeoutSeconds: secs(600)},
+		},
+	}
+	g.Expect(resolveRebootTimeout(pool)).To(Equal(10 * time.Minute))
+}
+
+func TestRebootTimedOut(t *testing.T) {
+	const desiredImage = testImageDigestRefA
+	now := time.Now()
+
+	rebootingNode := func(transitioned time.Time) *bootcv1alpha1.BootcNode {
+		return testutil.NewNode(
+			"n", desiredImage,
+			testutil.WithBootedDigest(testDigestB),
+			testutil.WithNodeConditionAt(
+				bootcv1alpha1.NodeIdle,
+				metav1.ConditionFalse,
+				bootcv1alpha1.NodeReasonRebooting,
+				transitioned,
+			),
+		)
+	}
+
+	tests := []struct {
+		name    string
+		node    *bootcv1alpha1.BootcNode
+		timeout time.Duration
+		want    bool
+	}{
+		{
+			name:    "rebooting past timeout",
+			node:    rebootingNode(now.Add(-11 * time.Minute)),
+			timeout: 10 * time.Minute,
+			want:    true,
+		},
+		{
+			name:    "rebooting within timeout",
+			node:    rebootingNode(now.Add(-5 * time.Minute)),
+			timeout: 10 * time.Minute,
+			want:    false,
+		},
+		{
+			name:    "timeout disabled",
+			node:    rebootingNode(now.Add(-1 * time.Hour)),
+			timeout: 0,
+			want:    false,
+		},
+		{
+			name: "not rebooting",
+			node: testutil.NewNode(
+				"n", desiredImage,
+				testutil.WithBootedDigest(testDigestB),
+				testutil.WithNodeConditionAt(
+					bootcv1alpha1.NodeIdle,
+					metav1.ConditionFalse,
+					bootcv1alpha1.NodeReasonStaged,
+					now.Add(-1*time.Hour),
+				),
+			),
+			timeout: 10 * time.Minute,
+			want:    false,
+		},
+		{
+			name:    "no idle condition",
+			node:    testutil.NewNode("n", desiredImage, testutil.WithBootedDigest(testDigestB)),
+			timeout: 10 * time.Minute,
+			want:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewWithT(t)
+			g.Expect(rebootTimedOut(tt.node, tt.timeout, now)).To(Equal(tt.want))
+		})
+	}
+}
+
+func TestApplyRebootTimeouts(t *testing.T) {
+	const desiredImage = testImageDigestRefA
+	now := time.Now()
+
+	rebootingNode := func(name string, transitioned time.Time) *bootcv1alpha1.BootcNode {
+		return testutil.NewNode(
+			name, desiredImage,
+			testutil.WithBootedDigest(testDigestB),
+			testutil.WithNodeConditionAt(
+				bootcv1alpha1.NodeIdle,
+				metav1.ConditionFalse,
+				bootcv1alpha1.NodeReasonRebooting,
+				transitioned,
+			),
+			testutil.WithNodeAnnotation(bootcv1alpha1.AnnotationInRebootSlot, ""),
+		)
+	}
+
+	t.Run("expired node moves to degraded, fresh node requeued", func(t *testing.T) {
+		g := NewWithT(t)
+
+		expired := rebootingNode("expired", now.Add(-11*time.Minute))
+		fresh := rebootingNode("fresh", now.Add(-4*time.Minute))
+		rs := &rolloutState{rebooting: []*bootcv1alpha1.BootcNode{expired, fresh}}
+
+		requeue := applyRebootTimeouts(rs, 10*time.Minute, now)
+
+		g.Expect(rs.degraded).To(HaveLen(1))
+		g.Expect(rs.degraded[0].Name).To(Equal("expired"))
+		g.Expect(rs.rebooting).To(HaveLen(1))
+		g.Expect(rs.rebooting[0].Name).To(Equal("fresh"))
+		// Timed-out nodes are also tracked so findUnhealthySlots can
+		// escalate to a halt regardless of their booted digest.
+		g.Expect(rs.rebootTimedOutNodes).To(HaveLen(1))
+		g.Expect(rs.rebootTimedOutNodes[0].Name).To(Equal("expired"))
+		// fresh transitioned 4m ago with a 10m timeout → 6m remaining.
+		g.Expect(requeue).To(Equal(6 * time.Minute))
+	})
+
+	t.Run("disabled timeout is a no-op", func(t *testing.T) {
+		g := NewWithT(t)
+
+		node := rebootingNode("n", now.Add(-1*time.Hour))
+		rs := &rolloutState{rebooting: []*bootcv1alpha1.BootcNode{node}}
+
+		requeue := applyRebootTimeouts(rs, 0, now)
+
+		g.Expect(rs.degraded).To(BeEmpty())
+		g.Expect(rs.rebooting).To(HaveLen(1))
+		g.Expect(requeue).To(Equal(time.Duration(0)))
+	})
+}
+
+func TestFindUnhealthySlots(t *testing.T) {
+	const (
+		desiredImage = testImageDigestRefA
+		targetDigest = testDigestA
+		oldDigest    = testDigestB
+	)
+
+	slottedNode := func(name, bootedDigest string) *bootcv1alpha1.BootcNode {
+		return testutil.NewNode(
+			name, desiredImage,
+			testutil.WithBootedDigest(bootedDigest),
+			testutil.WithNodeAnnotation(bootcv1alpha1.AnnotationInRebootSlot, ""),
+		)
+	}
+
+	t.Run("degraded on target digest counts, on old digest does not", func(t *testing.T) {
+		g := NewWithT(t)
+		onTarget := slottedNode("on-target", targetDigest)
+		onOld := slottedNode("on-old", oldDigest)
+		rs := &rolloutState{degraded: []*bootcv1alpha1.BootcNode{onTarget, onOld}}
+
+		got := findUnhealthySlots(rs, targetDigest)
+
+		g.Expect(got).To(ConsistOf(unhealthySlot{name: "on-target", reason: "Degraded"}))
+	})
+
+	t.Run("reboot-timed-out node counts regardless of digest", func(t *testing.T) {
+		g := NewWithT(t)
+		// A timed-out node never booted the target; it sits on the old
+		// digest but must still count toward the halt threshold.
+		timedOut := slottedNode("timed-out", oldDigest)
+		rs := &rolloutState{
+			degraded:            []*bootcv1alpha1.BootcNode{timedOut},
+			rebootTimedOutNodes: []*bootcv1alpha1.BootcNode{timedOut},
+		}
+
+		got := findUnhealthySlots(rs, targetDigest)
+
+		g.Expect(got).To(ConsistOf(unhealthySlot{name: "timed-out", reason: "RebootTimeout"}))
+	})
+
+	t.Run("upToDate node still in a slot is NotReady", func(t *testing.T) {
+		g := NewWithT(t)
+		notReady := slottedNode("not-ready", targetDigest)
+		rs := &rolloutState{upToDate: []*bootcv1alpha1.BootcNode{notReady}}
+
+		got := findUnhealthySlots(rs, targetDigest)
+
+		g.Expect(got).To(ConsistOf(unhealthySlot{name: "not-ready", reason: "NotReady"}))
+	})
+
+	t.Run("unslotted timed-out node is ignored", func(t *testing.T) {
+		g := NewWithT(t)
+		unslotted := testutil.NewNode(
+			"unslotted",
+			desiredImage,
+			testutil.WithBootedDigest(oldDigest),
+		)
+		rs := &rolloutState{
+			degraded:            []*bootcv1alpha1.BootcNode{unslotted},
+			rebootTimedOutNodes: []*bootcv1alpha1.BootcNode{unslotted},
+		}
+
+		g.Expect(findUnhealthySlots(rs, targetDigest)).To(BeEmpty())
+	})
 }
