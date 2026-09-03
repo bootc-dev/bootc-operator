@@ -103,6 +103,16 @@ type RolloutSpec struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	DrainTimeoutSeconds *int32 `json:"drainTimeoutSeconds,omitempty"`
+
+	// rebootTimeoutSeconds is the maximum time in seconds to wait for a
+	// node to boot the desired image after a reboot is issued. If the node
+	// stays in the Rebooting state longer than this (e.g. it failed to
+	// boot the new image or never rejoined the cluster), it is reported as
+	// degraded at the pool level. If not set, the controller waits
+	// indefinitely.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	RebootTimeoutSeconds *int32 `json:"rebootTimeoutSeconds,omitempty"`
 }
 
 // DisruptionSpec controls the disruption behavior during updates.

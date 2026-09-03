@@ -45,8 +45,19 @@ type rolloutState struct {
 	degraded     []*bootcv1alpha1.BootcNode
 	unclassified []*bootcv1alpha1.BootcNode
 
+	// rebootTimedOutNodes are the subset of degraded nodes that got there
+	// by exceeding the reboot timeout (as opposed to a daemon-reported
+	// error). They booted the old digest, so findUnhealthySlots can't
+	// recognize them by digest and relies on this list instead.
+	rebootTimedOutNodes []*bootcv1alpha1.BootcNode
+
 	// BootcNodes with the in-reboot-slot annotation
 	occupiedSlots int
+
+	// requeueAfter, when non-zero, asks the reconciler to requeue the
+	// pool after this duration. Used for time-based transitions like the
+	// reboot timeout, which fire without any incoming event.
+	requeueAfter time.Duration
 }
 
 // nodeCount returns the total number of nodes in the pool, including
@@ -71,6 +82,14 @@ func (r *BootcNodePoolReconciler) driveRollout(
 	}
 
 	rs := buildRolloutState(log, ownedBootcNodes)
+
+	// Detect nodes stuck in the Rebooting state past the configured
+	// timeout (e.g. they failed to boot the new image or never rejoined
+	// the cluster) and reclassify them as degraded. The daemon can't
+	// self-report while the node is down, so the controller surfaces this
+	// at the pool level. requeueAfter drives the timeout to fire without
+	// any further Node event.
+	rs.requeueAfter = applyRebootTimeouts(rs, resolveRebootTimeout(pool), time.Now())
 
 	// Flag degraded nodes at the pool level.
 	if len(rs.degraded) > 0 {
@@ -477,6 +496,15 @@ func findUnhealthySlots(rs *rolloutState, targetDigest string) []unhealthySlot {
 			result = append(result, unhealthySlot{name: bn.Name, reason: "NotReady"})
 		}
 	}
+	// Reboot-timed-out nodes booted the old digest (they never came back),
+	// so the digest check above skips them. Count them here: a node that
+	// failed to boot the target is strong evidence the image is bad, which
+	// is exactly what the halt is meant to catch.
+	for _, bn := range rs.rebootTimedOutNodes {
+		if metav1.HasAnnotation(bn.ObjectMeta, bootcv1alpha1.AnnotationInRebootSlot) {
+			result = append(result, unhealthySlot{name: bn.Name, reason: "RebootTimeout"})
+		}
+	}
 	return result
 }
 
@@ -608,6 +636,64 @@ func (s nodeState) String() string {
 	default:
 		return fmt.Sprintf("Unknown(%d)", int(s))
 	}
+}
+
+// resolveRebootTimeout returns the configured reboot timeout, or 0 if the
+// timeout is disabled (unset).
+func resolveRebootTimeout(pool *bootcv1alpha1.BootcNodePool) time.Duration {
+	if pool.Spec.Rollout == nil || pool.Spec.Rollout.RebootTimeoutSeconds == nil {
+		return 0
+	}
+	return time.Duration(*pool.Spec.Rollout.RebootTimeoutSeconds) * time.Second
+}
+
+// rebootTimedOut reports whether a BootcNode has been in the Rebooting
+// state longer than timeout. A non-positive timeout disables the check.
+func rebootTimedOut(bn *bootcv1alpha1.BootcNode, timeout time.Duration, now time.Time) bool {
+	if timeout <= 0 {
+		return false
+	}
+	idle := apimeta.FindStatusCondition(bn.Status.Conditions, bootcv1alpha1.NodeIdle)
+	if idle == nil || idle.Reason != bootcv1alpha1.NodeReasonRebooting {
+		return false
+	}
+	return now.Sub(idle.LastTransitionTime.Time) > timeout
+}
+
+// applyRebootTimeouts moves rebooting nodes that have exceeded the reboot
+// timeout out of rs.rebooting and into rs.degraded, so the pool reports
+// them as degraded (the daemon can't self-report while the node is down).
+// It returns the duration after which the pool should be requeued to
+// re-evaluate the soonest not-yet-expired rebooting node, or 0 if the
+// timeout is disabled or no rebooting nodes remain.
+func applyRebootTimeouts(rs *rolloutState, timeout time.Duration, now time.Time) time.Duration {
+	if timeout <= 0 {
+		return 0
+	}
+
+	remaining := rs.rebooting[:0]
+	var requeue time.Duration
+	for _, bn := range rs.rebooting {
+		if rebootTimedOut(bn, timeout, now) {
+			rs.degraded = append(rs.degraded, bn)
+			rs.rebootTimedOutNodes = append(rs.rebootTimedOutNodes, bn)
+			continue
+		}
+		remaining = append(remaining, bn)
+
+		// Schedule a requeue for when this node would time out, so the
+		// timeout fires even without a further Node event.
+		idle := apimeta.FindStatusCondition(bn.Status.Conditions, bootcv1alpha1.NodeIdle)
+		if idle == nil {
+			continue
+		}
+		if left := timeout - now.Sub(idle.LastTransitionTime.Time); left > 0 &&
+			(requeue == 0 || left < requeue) {
+			requeue = left
+		}
+	}
+	rs.rebooting = remaining
+	return requeue
 }
 
 // classifyNode determines the effective state of a BootcNode.

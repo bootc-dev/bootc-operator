@@ -201,6 +201,138 @@ func TestDegradedNodeSetsPoolCondition(t *testing.T) {
 	}).Should(HaveKey(bootcv1alpha1.AnnotationInRebootSlot), "non-degraded node should get a reboot slot")
 }
 
+// TestRebootTimeoutMarksNodeDegraded verifies that a node stuck in the
+// Rebooting state longer than rebootTimeoutSeconds is reported as degraded
+// at the pool level, even though its daemon is down and can't self-report.
+func TestRebootTimeoutMarksNodeDegraded(t *testing.T) {
+	g := NewWithT(t)
+	g.SetDefaultEventuallyTimeout(pollTimeout)
+	g.SetDefaultEventuallyPollingInterval(pollInterval)
+	ctx := context.Background()
+
+	const (
+		poolName = "reboot-timeout-pool"
+		nodeName = "reboot-timeout-w1"
+	)
+
+	node := testutil.NewK8sNode(nodeName, testutil.WorkerLabels())
+	g.Expect(k8sClient.Create(ctx, node)).To(Succeed())
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, node)
+	})
+
+	// Pool targets digest B with a 1s reboot timeout.
+	pool := testutil.NewPool(poolName, testImageDigestRefB,
+		testutil.WithWorkerSelector(),
+		testutil.WithMaxUnavailable(intstr.FromInt32(1)),
+		testutil.WithRebootTimeoutSeconds(1),
+	)
+	g.Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, pool)
+	})
+
+	g.Eventually(func() error {
+		return k8sClient.Get(ctx, client.ObjectKey{Name: nodeName}, &bootcv1alpha1.BootcNode{})
+	}).Should(Succeed())
+
+	// Simulate the daemon issuing a reboot: node still booted on the old
+	// digest, Idle=False/Rebooting. The node never comes back.
+	simulateDaemonStatus(g, ctx, nodeName, testDigestA, bootcv1alpha1.NodeReasonRebooting)
+
+	// After the reboot timeout elapses, the pool should mark the node
+	// degraded and reflect it in degradedCount.
+	g.Eventually(func() ([]metav1.Condition, error) {
+		var p bootcv1alpha1.BootcNodePool
+		err := k8sClient.Get(ctx, client.ObjectKey{Name: poolName}, &p)
+		return p.Status.Conditions, err
+	}).Should(ContainElement(And(
+		HaveField("Type", bootcv1alpha1.PoolDegraded),
+		HaveField("Status", metav1.ConditionTrue),
+		HaveField("Reason", bootcv1alpha1.PoolNodeDegraded),
+		HaveField("Message", ContainSubstring(nodeName)),
+	)))
+
+	g.Eventually(func() (int32, error) {
+		var p bootcv1alpha1.BootcNodePool
+		err := k8sClient.Get(ctx, client.ObjectKey{Name: poolName}, &p)
+		return p.Status.DegradedCount, err
+	}).Should(Equal(int32(1)))
+}
+
+// TestRebootTimeoutHaltsRollout verifies that when 2+ slotted nodes exceed
+// the reboot timeout (they rebooted toward the target but never came back),
+// the controller escalates to Degraded/RolloutHalted rather than silently
+// stalling.
+func TestRebootTimeoutHaltsRollout(t *testing.T) {
+	g := NewWithT(t)
+	g.SetDefaultEventuallyTimeout(pollTimeout)
+	g.SetDefaultEventuallyPollingInterval(pollInterval)
+	ctx := context.Background()
+
+	const poolName = "reboot-halt-pool"
+
+	nodeNames := []string{"reboot-halt-w1", "reboot-halt-w2"}
+	for _, name := range nodeNames {
+		name := name
+		node := testutil.NewK8sNode(name, testutil.WorkerLabels())
+		g.Expect(k8sClient.Create(ctx, node)).To(Succeed())
+		t.Cleanup(func() {
+			_ = k8sClient.Delete(ctx, node)
+		})
+	}
+
+	// Pool targets digest B, both nodes may reboot at once, 1s timeout.
+	pool := testutil.NewPool(poolName, testImageDigestRefB,
+		testutil.WithWorkerSelector(),
+		testutil.WithMaxUnavailable(intstr.FromInt32(2)),
+		testutil.WithRebootTimeoutSeconds(1),
+	)
+	g.Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, pool)
+	})
+
+	for _, name := range nodeNames {
+		name := name
+		g.Eventually(func() error {
+			return k8sClient.Get(ctx, client.ObjectKey{Name: name}, &bootcv1alpha1.BootcNode{})
+		}).Should(Succeed())
+	}
+
+	// Drive both nodes to Staged so they acquire reboot slots (drain
+	// completes instantly in envtest since there are no pods).
+	for _, name := range nodeNames {
+		simulateDaemonStatus(g, ctx, name, testDigestA, bootcv1alpha1.NodeReasonStaged)
+	}
+	for _, name := range nodeNames {
+		name := name
+		g.Eventually(func() (map[string]string, error) {
+			var bn bootcv1alpha1.BootcNode
+			err := k8sClient.Get(ctx, client.ObjectKey{Name: name}, &bn)
+			return bn.Annotations, err
+		}).Should(HaveKey(bootcv1alpha1.AnnotationInRebootSlot), "node %s should get a slot", name)
+	}
+
+	// Both nodes reboot but never come back: still on the old digest,
+	// Idle=False/Rebooting, holding their slots.
+	for _, name := range nodeNames {
+		simulateDaemonStatus(g, ctx, name, testDigestA, bootcv1alpha1.NodeReasonRebooting)
+	}
+
+	// After the timeout, both count as unhealthy-in-slot → halt.
+	g.Eventually(func() ([]metav1.Condition, error) {
+		var p bootcv1alpha1.BootcNodePool
+		err := k8sClient.Get(ctx, client.ObjectKey{Name: poolName}, &p)
+		return p.Status.Conditions, err
+	}).Should(ContainElement(And(
+		HaveField("Type", bootcv1alpha1.PoolDegraded),
+		HaveField("Status", metav1.ConditionTrue),
+		HaveField("Reason", bootcv1alpha1.PoolRolloutHalted),
+		HaveField("Message", ContainSubstring("RebootTimeout")),
+	)))
+}
+
 // TestUnhealthyNodesHaltRollout verifies that when 2+ nodes in reboot slots
 // are unhealthy, the controller stops assigning new slots and sets
 // Degraded/RolloutHalted on the pool. It also verifies recovery: when
