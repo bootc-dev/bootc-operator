@@ -43,7 +43,7 @@ type drainStatus struct {
 	ctx       context.Context    // the drain goroutine's context; checked to distinguish cancellation from real errors
 	cancel    context.CancelFunc // to abort on targetDigest change or node removal
 	startTime time.Time          // for stall detection
-	isStalled bool               //nolint:unused // used by drain stall detection
+	isStalled bool               // set after the one-shot drain stall event is emitted
 }
 
 // TagResolver resolves a container image reference to a digest.
@@ -83,6 +83,7 @@ type BootcNodePoolReconciler struct {
 // +kubebuilder:rbac:groups="",resources=pods/eviction,verbs=create
 // +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *BootcNodePoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -253,7 +254,8 @@ func (r *BootcNodePoolReconciler) Reconcile(
 		return ctrl.Result{}, nil
 	}
 
-	// Snapshot status so we can detect changes and write once at the end.
+	// Snapshot status so we can detect changes, write once at the end, and
+	// emit events only for persisted transitions.
 	statusOrig := pool.Status.DeepCopy()
 
 	// Start with conditions in a healthy state; sync functions only set
@@ -270,10 +272,10 @@ func (r *BootcNodePoolReconciler) Reconcile(
 	// the end.
 
 	// Resolve the target digest from the image ref.
-	resolveResult, err := r.resolveTargetDigest(ctx, &pool)
+	resolveResult, tagTargetChanged, err := r.resolveTargetDigest(ctx, &pool)
 	if err != nil {
 		if isInvalidSpecError(err) {
-			return r.setInvalidSpecCondition(ctx, &pool, err)
+			return r.setInvalidSpecCondition(ctx, &pool, statusOrig, err)
 		}
 		return ctrl.Result{}, fmt.Errorf("resolving target digest: %w", err)
 	}
@@ -281,13 +283,11 @@ func (r *BootcNodePoolReconciler) Reconcile(
 	// complete handles the boilerplate exit logic for the happy path and writes
 	// the pool status if anything changed.
 	complete := func(result ctrl.Result) (ctrl.Result, error) {
-		if !reflect.DeepEqual(pool.Status, *statusOrig) {
-			if err := r.Status().Update(ctx, &pool); err != nil {
-				return ctrl.Result{}, fmt.Errorf("updating pool status: %w", err)
-			}
+		if err := r.updatePoolStatus(ctx, &pool, statusOrig, tagTargetChanged); err != nil {
+			return ctrl.Result{}, fmt.Errorf("updating pool status: %w", err)
 		}
 
-		return resolveResult, nil
+		return result, nil
 	}
 
 	if pool.Status.TargetDigest == "" {
@@ -299,7 +299,7 @@ func (r *BootcNodePoolReconciler) Reconcile(
 	ownedBootcNodes, err := r.syncMembership(ctx, &pool)
 	if err != nil {
 		if isInvalidSpecError(err) {
-			return r.setInvalidSpecCondition(ctx, &pool, err)
+			return r.setInvalidSpecCondition(ctx, &pool, statusOrig, err)
 		}
 		return ctrl.Result{}, fmt.Errorf("syncing membership: %w", err)
 	}
@@ -307,15 +307,20 @@ func (r *BootcNodePoolReconciler) Reconcile(
 	// From this point on, let's not re-Get/List() BootcNodes anymore and
 	// just use `ownedBootcNodes` so that we have a consistent view for this
 	// reconciliation run.
+	r.recordNodeEvents(ctx, &pool, ownedBootcNodes)
 
 	// Drive the rollout state machine.
 	rs, err := r.driveRollout(ctx, &pool, ownedBootcNodes)
 	if err != nil {
 		if isInvalidSpecError(err) {
-			return r.setInvalidSpecCondition(ctx, &pool, err)
+			return r.setInvalidSpecCondition(ctx, &pool, statusOrig, err)
 		}
 		return ctrl.Result{}, fmt.Errorf("driving rollout: %w", err)
 	}
+	resolveResult.RequeueAfter = earlierRequeue(
+		resolveResult.RequeueAfter,
+		r.recordDrainStalls(&pool, ownedBootcNodes),
+	)
 
 	// Early-return paths above (TargetDigest empty, InvalidSpec) skip
 	// aggregation. In-flight updates may complete during error conditions
@@ -380,12 +385,12 @@ func (r *BootcNodePoolReconciler) handlePoolDeletion(
 func (r *BootcNodePoolReconciler) resolveTargetDigest(
 	ctx context.Context,
 	pool *bootcv1alpha1.BootcNodePool,
-) (ctrl.Result, error) {
+) (ctrl.Result, bool, error) {
 	log := logf.FromContext(ctx)
 
 	ref, err := parseImageRef(pool.Spec.Image.Ref)
 	if err != nil {
-		return ctrl.Result{}, newInvalidSpecError(
+		return ctrl.Result{}, false, newInvalidSpecError(
 			fmt.Sprintf("invalid image ref %q: %v", pool.Spec.Image.Ref, err),
 		)
 	}
@@ -396,7 +401,7 @@ func (r *BootcNodePoolReconciler) resolveTargetDigest(
 		// Reset the NextTagResolutionTime in case we pass from a tag referenced image to a digested one.
 		// Otherwise, it simply a nop
 		pool.Status.NextTagResolutionTime = nil
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, false, nil
 	}
 
 	// Tag ref — check if resolution is due.
@@ -405,14 +410,16 @@ func (r *BootcNodePoolReconciler) resolveTargetDigest(
 		now.Before(pool.Status.NextTagResolutionTime.Time) {
 		remaining := pool.Status.NextTagResolutionTime.Sub(now)
 		log.V(1).Info("Tag resolution not yet due", "remaining", remaining)
-		return ctrl.Result{RequeueAfter: remaining}, nil
+		return ctrl.Result{RequeueAfter: remaining}, false, nil
 	}
 
 	digest, err := r.TagResolver.Resolve(ctx, pool.Spec.Image.Ref)
+	tagTargetChanged := false
 	if err != nil {
 		log.Error(err, "Failed to resolve tag", "ref", pool.Spec.Image.Ref)
 		setPoolDegraded(pool, bootcv1alpha1.PoolTagResolutionError, err.Error())
 	} else {
+		tagTargetChanged = pool.Status.TargetDigest != "" && pool.Status.TargetDigest != digest
 		if pool.Status.TargetDigest != digest {
 			log.Info("Resolved tag to new digest", "ref", pool.Spec.Image.Ref, "digest", digest)
 		}
@@ -421,7 +428,7 @@ func (r *BootcNodePoolReconciler) resolveTargetDigest(
 
 	next := metav1.NewTime(now.Add(r.TagResolutionInterval))
 	pool.Status.NextTagResolutionTime = &next
-	return ctrl.Result{RequeueAfter: r.TagResolutionInterval}, nil
+	return ctrl.Result{RequeueAfter: r.TagResolutionInterval}, tagTargetChanged, nil
 }
 
 // parseImageRef parses an image reference string into a named
@@ -455,10 +462,11 @@ func isInvalidSpecError(err error) bool {
 func (r *BootcNodePoolReconciler) setInvalidSpecCondition(
 	ctx context.Context,
 	pool *bootcv1alpha1.BootcNodePool,
+	previous *bootcv1alpha1.BootcNodePoolStatus,
 	specErr error,
 ) (ctrl.Result, error) {
 	setPoolDegraded(pool, bootcv1alpha1.PoolInvalidSpec, specErr.Error())
-	if err := r.Status().Update(ctx, pool); err != nil {
+	if err := r.updatePoolStatus(ctx, pool, previous, false); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating pool status: %w", err)
 	}
 	return ctrl.Result{}, nil

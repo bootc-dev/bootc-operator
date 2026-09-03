@@ -13,6 +13,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
@@ -339,56 +340,64 @@ func simulateDaemonStatus(
 	ctx context.Context,
 	nodeName, bootedDigest, idleReason string,
 ) {
-	var bn bootcv1alpha1.BootcNode
-	g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)).To(Succeed())
+	g.Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var bn bootcv1alpha1.BootcNode
+		if err := k8sClient.Get(ctx, client.ObjectKey{Name: nodeName}, &bn); err != nil {
+			return err
+		}
 
-	bn.Status.Booted = &bootcv1alpha1.ImageInfo{
-		Image:       "quay.io/example/myos@" + bootedDigest,
-		ImageDigest: bootedDigest,
-	}
+		bn.Status.Booted = &bootcv1alpha1.ImageInfo{
+			Image:       "quay.io/example/myos@" + bootedDigest,
+			ImageDigest: bootedDigest,
+		}
 
-	idleStatus := metav1.ConditionFalse
-	if idleReason == bootcv1alpha1.NodeReasonIdle {
-		idleStatus = metav1.ConditionTrue
-	}
-	apimeta.SetStatusCondition(&bn.Status.Conditions, metav1.Condition{
-		Type:   bootcv1alpha1.NodeIdle,
-		Status: idleStatus,
-		Reason: idleReason,
-	})
-	// Clear Degraded when simulating a healthy status.
-	apimeta.SetStatusCondition(&bn.Status.Conditions, metav1.Condition{
-		Type:   bootcv1alpha1.NodeDegraded,
-		Status: metav1.ConditionFalse,
-		Reason: bootcv1alpha1.NodeReasonHealthy,
-	})
+		idleStatus := metav1.ConditionFalse
+		if idleReason == bootcv1alpha1.NodeReasonIdle {
+			idleStatus = metav1.ConditionTrue
+		}
+		apimeta.SetStatusCondition(&bn.Status.Conditions, metav1.Condition{
+			Type:   bootcv1alpha1.NodeIdle,
+			Status: idleStatus,
+			Reason: idleReason,
+		})
+		// Clear Degraded when simulating a healthy status.
+		apimeta.SetStatusCondition(&bn.Status.Conditions, metav1.Condition{
+			Type:   bootcv1alpha1.NodeDegraded,
+			Status: metav1.ConditionFalse,
+			Reason: bootcv1alpha1.NodeReasonHealthy,
+		})
 
-	g.Expect(k8sClient.Status().Update(ctx, &bn)).To(Succeed())
+		return k8sClient.Status().Update(ctx, &bn)
+	})).To(Succeed())
 }
 
 // simulateDaemonDegraded writes BootcNode status as if the daemon had
 // reported the given booted digest with Degraded=True (e.g. staging failed).
 func simulateDaemonDegraded(g Gomega, ctx context.Context, nodeName, bootedDigest string) {
-	var bn bootcv1alpha1.BootcNode
-	g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)).To(Succeed())
+	g.Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var bn bootcv1alpha1.BootcNode
+		if err := k8sClient.Get(ctx, client.ObjectKey{Name: nodeName}, &bn); err != nil {
+			return err
+		}
 
-	bn.Status.Booted = &bootcv1alpha1.ImageInfo{
-		Image:       "quay.io/example/myos@" + bootedDigest,
-		ImageDigest: bootedDigest,
-	}
-	apimeta.SetStatusCondition(&bn.Status.Conditions, metav1.Condition{
-		Type:   bootcv1alpha1.NodeIdle,
-		Status: metav1.ConditionFalse,
-		Reason: bootcv1alpha1.NodeReasonStaging,
-	})
-	apimeta.SetStatusCondition(&bn.Status.Conditions, metav1.Condition{
-		Type:    bootcv1alpha1.NodeDegraded,
-		Status:  metav1.ConditionTrue,
-		Reason:  bootcv1alpha1.NodeReasonError,
-		Message: "simulated staging failure",
-	})
+		bn.Status.Booted = &bootcv1alpha1.ImageInfo{
+			Image:       "quay.io/example/myos@" + bootedDigest,
+			ImageDigest: bootedDigest,
+		}
+		apimeta.SetStatusCondition(&bn.Status.Conditions, metav1.Condition{
+			Type:   bootcv1alpha1.NodeIdle,
+			Status: metav1.ConditionFalse,
+			Reason: bootcv1alpha1.NodeReasonStaging,
+		})
+		apimeta.SetStatusCondition(&bn.Status.Conditions, metav1.Condition{
+			Type:    bootcv1alpha1.NodeDegraded,
+			Status:  metav1.ConditionTrue,
+			Reason:  bootcv1alpha1.NodeReasonError,
+			Message: "simulated staging failure",
+		})
 
-	g.Expect(k8sClient.Status().Update(ctx, &bn)).To(Succeed())
+		return k8sClient.Status().Update(ctx, &bn)
+	})).To(Succeed())
 }
 
 // setNodeReady sets the Ready condition on a K8s Node to True. In
