@@ -137,11 +137,17 @@ func (r *BootcNodeReconciler) Reconcile(
 
 	// Reboot after the status patch so the Rebooting condition is persisted before the node goes down.
 	if res.needsReboot {
-		log.Info("Starting reboot")
-		if err := r.Executor.Reboot(ctx); err != nil {
-			return ctrl.Result{}, fmt.Errorf("reboot: %w", err)
+		if res.softReboot {
+			log.Info("Applying update with soft reboot")
+			if err := r.Executor.ApplyUpdate(ctx, true); err != nil {
+				return ctrl.Result{}, fmt.Errorf("apply with soft reboot: %w", err)
+			}
+		} else {
+			log.Info("Starting reboot")
+			if err := r.Executor.Reboot(ctx); err != nil {
+				return ctrl.Result{}, fmt.Errorf("reboot: %w", err)
+			}
 		}
-		// Record if the reboot was issued in this way we can transition from Staged to Rebooting
 		r.rebootIssued = true
 	}
 
@@ -152,6 +158,7 @@ type reconcileResult struct {
 	result      ctrl.Result
 	degradedMsg string
 	needsReboot bool
+	softReboot  bool
 }
 
 // reconcileBootcNode defines the result of the reconcile of the bootc nodes. It returns the results for the reconcile,
@@ -226,6 +233,7 @@ func (r *BootcNodeReconciler) reconcileBootcNode(
 	case actionReboot:
 		reason = bootcv1alpha1.NodeReasonRebooting
 		res.needsReboot = true
+		res.softReboot = bn.Spec.RebootPolicy == bootcv1alpha1.RebootPolicyAllowSoftReboot
 
 	case actionAwaitBooted:
 		reason = bootcv1alpha1.NodeReasonStaged

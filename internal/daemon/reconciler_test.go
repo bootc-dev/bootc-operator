@@ -277,6 +277,77 @@ func TestRebootingSet(t *testing.T) {
 	g.Expect(fake.getRebooted()).To(BeTrue())
 }
 
+func TestSoftReboot(t *testing.T) {
+	g := NewWithT(t)
+	g.SetDefaultEventuallyTimeout(pollTimeout)
+	g.SetDefaultEventuallyPollingInterval(pollInterval)
+	ctx := context.Background()
+
+	fake := newTestEnv()
+	fake.status = newBootcStatus(testutil.DigestA)
+	fake.status.Status.Staged = newBootEntry(testutil.ImageDigestRefB, testutil.DigestB)
+
+	bn := testutil.NewNode(
+		testNodeName,
+		testutil.ImageDigestRefB,
+		testutil.WithDesiredImageState(bootcv1alpha1.DesiredImageStateBooted),
+		testutil.WithNodeRebootPolicy(bootcv1alpha1.RebootPolicyAllowSoftReboot),
+	)
+	g.Expect(k8sClient.Create(ctx, bn)).To(Succeed())
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, bn)
+	})
+
+	g.Eventually(func() ([]metav1.Condition, error) {
+		var got bootcv1alpha1.BootcNode
+		err := k8sClient.Get(ctx, client.ObjectKeyFromObject(bn), &got)
+		return got.Status.Conditions, err
+	}).Should(ContainElement(And(
+		HaveField("Type", bootcv1alpha1.NodeIdle),
+		HaveField("Status", metav1.ConditionFalse),
+		HaveField("Reason", bootcv1alpha1.NodeReasonRebooting),
+	)))
+
+	g.Expect(fake.getRebooted()).To(BeFalse(), "should not use systemctl reboot")
+	g.Expect(fake.getApplied()).To(BeTrue(), "should use ApplyUpdate")
+	g.Expect(fake.getAppliedSoft()).To(BeTrue(), "should pass softReboot=true")
+}
+
+func TestRebootOnlyPolicy(t *testing.T) {
+	g := NewWithT(t)
+	g.SetDefaultEventuallyTimeout(pollTimeout)
+	g.SetDefaultEventuallyPollingInterval(pollInterval)
+	ctx := context.Background()
+
+	fake := newTestEnv()
+	fake.status = newBootcStatus(testutil.DigestA)
+	fake.status.Status.Staged = newBootEntry(testutil.ImageDigestRefB, testutil.DigestB)
+
+	bn := testutil.NewNode(
+		testNodeName,
+		testutil.ImageDigestRefB,
+		testutil.WithDesiredImageState(bootcv1alpha1.DesiredImageStateBooted),
+		testutil.WithNodeRebootPolicy(bootcv1alpha1.RebootPolicyRebootOnly),
+	)
+	g.Expect(k8sClient.Create(ctx, bn)).To(Succeed())
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, bn)
+	})
+
+	g.Eventually(func() ([]metav1.Condition, error) {
+		var got bootcv1alpha1.BootcNode
+		err := k8sClient.Get(ctx, client.ObjectKeyFromObject(bn), &got)
+		return got.Status.Conditions, err
+	}).Should(ContainElement(And(
+		HaveField("Type", bootcv1alpha1.NodeIdle),
+		HaveField("Status", metav1.ConditionFalse),
+		HaveField("Reason", bootcv1alpha1.NodeReasonRebooting),
+	)))
+
+	g.Expect(fake.getRebooted()).To(BeTrue(), "should use systemctl reboot")
+	g.Expect(fake.getApplied()).To(BeFalse(), "should not use ApplyUpdate")
+}
+
 func TestRollback(t *testing.T) {
 	g := NewWithT(t)
 	g.SetDefaultEventuallyTimeout(pollTimeout)
