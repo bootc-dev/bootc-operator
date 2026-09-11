@@ -105,6 +105,7 @@ func main() {
 		Client:        mgr.GetClient(),
 		Scheme:        mgr.GetScheme(),
 		NodeName:      nodeName,
+		HostRoot:      "/proc/1/root",
 		Executor:      executor,
 		StatusWatcher: watcher,
 	}).SetupWithManager(mgr); err != nil {

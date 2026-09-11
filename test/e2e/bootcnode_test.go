@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
@@ -737,6 +738,93 @@ func TestNonExistingImage(t *testing.T) {
 		"node should not have staged the non-existing image")
 
 	t.Logf("Verified node %q did not stage non-existing image", nodeName)
+}
+
+// TestPullSecretAuth provisions a worker node, creates a
+// dockerconfigjson Secret with credentials, and verifies that the
+// daemon can stage from the auth-protected registry. The auth
+// registry shares storage with the unauthenticated one (port 5000),
+// so the update image is already available at both endpoints.
+func TestPullSecretAuth(t *testing.T) {
+	g := NewWithT(t)
+	g.SetDefaultEventuallyTimeout(pollTimeout)
+	g.SetDefaultEventuallyPollingInterval(pollInterval)
+
+	env := e2eutil.New(t)
+	if env.RegistryUser() == "" || env.RegistryPassword() == "" {
+		t.Skip("E2E_REGISTRY_USER / E2E_REGISTRY_PASSWORD not set")
+	}
+
+	ctx := context.Background()
+	nodeName := env.AddNode(t)
+
+	// The auth registry shares storage with the unauthenticated
+	// registry, so the update image pushed to localhost:5000 is
+	// already visible at auth-registry.cluster.local:5001.
+	digest := env.NodeImageUpdateDigest()
+
+	// Create a dockerconfigjson Secret with credentials for the
+	// in-cluster auth registry hostname.
+	authStr := base64.StdEncoding.EncodeToString(
+		[]byte(env.RegistryUser() + ":" + env.RegistryPassword()),
+	)
+	dockerCfg := fmt.Sprintf(
+		`{"auths":{"auth-registry.cluster.local:5001":{"auth":"%s"}}}`,
+		authStr,
+	)
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      env.TestID() + "-pull-secret",
+			Namespace: testutil.OperatorNamespaceName,
+		},
+		Type: corev1.SecretTypeDockerConfigJson,
+		Data: map[string][]byte{
+			corev1.DockerConfigJsonKey: []byte(dockerCfg),
+		},
+	}
+	g.Expect(env.Client.Create(ctx, secret)).To(Succeed())
+	t.Cleanup(func() { _ = env.Client.Delete(ctx, secret) })
+
+	// Create a pool targeting the auth registry with the pull secret.
+	authImageRef := "auth-registry.cluster.local:5001/node@" + digest
+	pool := env.NewPool("pullsecret", authImageRef,
+		testutil.WithPullSecret(secret.Name, secret.Namespace),
+	)
+	g.Expect(env.Client.Create(ctx, pool)).To(Succeed())
+
+	// Verify BootcNode gets the pullSecretRef.
+	g.Eventually(func() (*bootcv1alpha1.PullSecretRef, error) {
+		var bn bootcv1alpha1.BootcNode
+		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
+		return bn.Spec.PullSecretRef, err
+	}).Should(Equal(&bootcv1alpha1.PullSecretRef{
+		Name: secret.Name, Namespace: secret.Namespace,
+	}))
+
+	t.Logf("BootcNode %q has pullSecretRef set", nodeName)
+
+	// Wait for the node to stage and reboot into the update image.
+	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
+		var bn bootcv1alpha1.BootcNode
+		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
+		return bn.Status, err
+	}).WithTimeout(5 * time.Minute).Should(And(
+		HaveField("Booted", And(
+			Not(BeNil()),
+			HaveField("ImageDigest", Equal(digest)),
+		)),
+		HaveField("Conditions", ContainElement(And(
+			HaveField("Type", bootcv1alpha1.NodeIdle),
+			HaveField("Status", metav1.ConditionTrue),
+			HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
+		))),
+	))
+
+	t.Logf("Node %q booted into auth-registry image", nodeName)
+
+	// Verify pool status reflects steady state.
+	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).
+		Should(poolAllUpdated(1, digest))
 }
 
 func fetchPoolStatus(

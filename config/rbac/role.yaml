@@ -35,6 +35,14 @@ rules:
   verbs:
   - create
 - apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - apps
   resources:
   - daemonsets

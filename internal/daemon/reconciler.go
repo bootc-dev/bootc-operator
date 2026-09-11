@@ -5,6 +5,8 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sync"
 	"time"
@@ -12,10 +14,12 @@ import (
 	"github.com/distribution/reference"
 
 	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -55,6 +59,7 @@ type BootcNodeReconciler struct {
 	client.Client
 	Scheme        *runtime.Scheme
 	NodeName      string
+	HostRoot      string
 	Executor      bootc.Executor
 	StatusWatcher *StatusWatcher
 
@@ -205,6 +210,8 @@ func (r *BootcNodeReconciler) reconcileBootcNode(
 			degradedMsg: fmt.Sprintf("bootc stage failed: %v", stageErr),
 		}, nil
 	}
+
+	r.syncPullSecret(ctx, log, bn)
 
 	desiredImage := desiredRef.String()
 
@@ -378,6 +385,75 @@ func (r *BootcNodeReconciler) classifyAction(
 	}
 
 	return actionReboot
+}
+
+// syncPullSecret fetches the pull secret referenced by the BootcNode
+// and writes it to the host filesystem so bootc can authenticate.
+func (r *BootcNodeReconciler) syncPullSecret(
+	ctx context.Context,
+	log logr.Logger,
+	bn *bootcv1alpha1.BootcNode,
+) {
+	if bn.Spec.PullSecretRef == nil {
+		return
+	}
+
+	key := types.NamespacedName{
+		Name:      bn.Spec.PullSecretRef.Name,
+		Namespace: bn.Spec.PullSecretRef.Namespace,
+	}
+	var secret corev1.Secret
+	if err := r.Get(ctx, key, &secret); err != nil {
+		log.Error(err, "Failed to fetch pull secret, continuing", "secret", key)
+		return
+	}
+
+	data, ok := secret.Data[corev1.DockerConfigJsonKey]
+	if !ok {
+		log.Info("Pull secret missing .dockerconfigjson key, continuing", "secret", key)
+		return
+	}
+
+	if err := r.writeAuthFile(data); err != nil {
+		log.Error(err, "Failed to write auth file, continuing")
+	}
+}
+
+// writeAuthFile writes dockerconfigjson data to the host filesystem
+// atomically (temp file + rename).
+func (r *BootcNodeReconciler) writeAuthFile(data []byte) error {
+	hostRoot := r.HostRoot
+	if hostRoot == "" {
+		hostRoot = "/proc/1/root"
+	}
+
+	dir := filepath.Join(hostRoot, "run", "ostree")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("creating auth dir: %w", err)
+	}
+
+	tmp, err := os.CreateTemp(dir, ".auth-*.json")
+	if err != nil {
+		return fmt.Errorf("creating temp file: %w", err)
+	}
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+		return fmt.Errorf("writing auth data: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmp.Name())
+		return fmt.Errorf("closing temp file: %w", err)
+	}
+
+	target := filepath.Join(dir, "auth.json")
+	if err := os.Rename(tmp.Name(), target); err != nil {
+		_ = os.Remove(tmp.Name())
+		return fmt.Errorf("renaming auth file: %w", err)
+	}
+
+	return nil
 }
 
 func convertBootEntry(entry *bootc.BootEntry) *bootcv1alpha1.ImageInfo {

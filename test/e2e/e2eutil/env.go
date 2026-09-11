@@ -70,6 +70,14 @@ type Env struct {
 	// nodeImageUpdate2Digest is the manifest digest of the second update
 	// image (e.g. "sha256:789abc..."). Used by mid-rollout image change tests.
 	nodeImageUpdate2Digest string
+
+	// registryUser is the username for the authenticated e2e registry
+	// on port 5001. Empty when not configured.
+	registryUser string
+
+	// registryPassword is the password for the authenticated e2e
+	// registry on port 5001. Empty when not configured.
+	registryPassword string
 }
 
 // New connects to an existing bink cluster and returns an Env ready
@@ -115,6 +123,8 @@ func New(t *testing.T) *Env {
 		nodeImageRegistry:      nodeImageRegistry,
 		nodeImageUpdateDigest:  nodeImageUpdateDigest,
 		nodeImageUpdate2Digest: nodeImageUpdate2Digest,
+		registryUser:           os.Getenv("E2E_REGISTRY_USER"),
+		registryPassword:       os.Getenv("E2E_REGISTRY_PASSWORD"),
 	}
 
 	t.Cleanup(func() {
@@ -224,6 +234,11 @@ func (e *Env) NewPool(
 	return testutil.NewPool(e.testID+"-"+suffix, imageRef, allOpts...)
 }
 
+// TestID returns the sanitized test name used for naming resources.
+func (e *Env) TestID() string {
+	return e.testID
+}
+
 // TestLabels returns the label map identifying resources belonging to
 // this test. Use with testutil.WithNodeSelector() when overriding the
 // default node selector in NewPool.
@@ -277,6 +292,18 @@ func (e *Env) NodeImageUpdate2DigestedPullSpec() string {
 // NodeImageUpdate2Digest returns the manifest digest of the second update image.
 func (e *Env) NodeImageUpdate2Digest() string {
 	return e.nodeImageUpdate2Digest
+}
+
+// RegistryUser returns the authenticated registry username, or empty
+// if not configured.
+func (e *Env) RegistryUser() string {
+	return e.registryUser
+}
+
+// RegistryPassword returns the authenticated registry password, or
+// empty if not configured.
+func (e *Env) RegistryPassword() string {
+	return e.registryPassword
 }
 
 // RetagImage reads the image at srcRef from the localhost registry and

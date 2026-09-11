@@ -13,6 +13,8 @@ LDFLAGS := -X github.com/bootc-dev/bootc-operator/internal/version.Version=$(VER
 DEFAULT_KUBE_MINOR ?= 1.35
 BINK_NODE_DISK_IMAGE ?= ghcr.io/bootc-dev/bink/node:v$(DEFAULT_KUBE_MINOR)-fedora-44-disk
 BINK_LOCAL_REGISTRY_NODE_IMAGE ?= registry.cluster.local:5000/node
+E2E_REGISTRY_USER ?= e2e-user
+E2E_REGISTRY_PASSWORD ?= e2e-password
 # YEAR defines the year value used for substituting the YEAR placeholder in the boilerplate header.
 YEAR ?= $(shell date +%Y)
 
@@ -100,6 +102,7 @@ e2e: ## Run e2e tests (requires: make deploy-bink). V=1 for verbose. RUN=<regex>
 		BINK_NODE_IMAGE_DIGEST=$$(skopeo inspect --tls-verify=false --format '{{.Digest}}' docker://localhost:5000/node:latest) \
 		BINK_NODE_IMAGE_UPDATE_DIGEST=$$(skopeo inspect --tls-verify=false docker://localhost:5000/node:update | jq -r '.Digest') \
 		BINK_NODE_IMAGE_UPDATE2_DIGEST=$$(skopeo inspect --tls-verify=false docker://localhost:5000/node:update2 | jq -r '.Digest') \
+		E2E_REGISTRY_USER=$(E2E_REGISTRY_USER) E2E_REGISTRY_PASSWORD=$(E2E_REGISTRY_PASSWORD) \
 		go test -timeout 30m -count=1 $(if $(V),-v) $(if $(RUN),-run $(RUN)) .
 
 ##@ Build
@@ -180,7 +183,8 @@ start-bink: seed-node-image ## Start a bink cluster (idempotent).
 	bink cluster list 2>&1 | grep -qw $(BINK_CLUSTER_NAME) || { \
 		node_digest=$$(skopeo inspect --tls-verify=false --format '{{.Digest}}' docker://localhost:5000/node:latest) && \
 		bink cluster start --cluster-name $(BINK_CLUSTER_NAME) --node-name controller --api-port 0 --expose $(KUBECONFIG_BINK) \
-		--node-image $(BINK_NODE_DISK_IMAGE) --target-imgref $(BINK_LOCAL_REGISTRY_NODE_IMAGE)@$$node_digest; }
+		--node-image $(BINK_NODE_DISK_IMAGE) --target-imgref $(BINK_LOCAL_REGISTRY_NODE_IMAGE)@$$node_digest \
+		--registry-user $(E2E_REGISTRY_USER) --registry-password $(E2E_REGISTRY_PASSWORD); }
 	kubectl --kubeconfig $(KUBECONFIG_BINK) wait --for=condition=Ready node/controller --timeout=5m
 
 .PHONY: deploy-bink

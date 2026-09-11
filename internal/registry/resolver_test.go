@@ -48,7 +48,7 @@ func TestResolveValidTag(t *testing.T) {
 			g.Expect(err).NotTo(HaveOccurred())
 
 			resolver := &GGCRResolver{}
-			got, err := resolver.Resolve(context.Background(), ref.String())
+			got, err := resolver.Resolve(context.Background(), ref.String(), nil)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(got).To(Equal(want.String()))
 		})
@@ -61,7 +61,7 @@ func TestResolveDigestRef(t *testing.T) {
 	resolver := &GGCRResolver{}
 	digest := "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 	ref := "registry.example.com/test/image@" + digest
-	got, err := resolver.Resolve(context.Background(), ref)
+	got, err := resolver.Resolve(context.Background(), ref, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(got).To(Equal(digest))
 }
@@ -70,7 +70,7 @@ func TestResolveUnreachableRegistry(t *testing.T) {
 	g := NewWithT(t)
 
 	resolver := &GGCRResolver{}
-	_, err := resolver.Resolve(context.Background(), "localhost:1/nonexistent/image:latest")
+	_, err := resolver.Resolve(context.Background(), "localhost:1/nonexistent/image:latest", nil)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("fetching manifest"))
 }

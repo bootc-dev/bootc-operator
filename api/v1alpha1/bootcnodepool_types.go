@@ -56,6 +56,10 @@ const (
 	// resolve the tag.
 	PoolTagResolutionError string = "TagResolutionError"
 
+	// PoolSecretError means the referenced pull secret is missing or
+	// does not contain the expected key.
+	PoolSecretError string = "SecretError"
+
 	// PoolHealthy means no issues.
 	PoolHealthy string = "Healthy"
 )

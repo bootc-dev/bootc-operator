@@ -27,7 +27,6 @@ const (
 
 	testSecretName = "my-pull-secret"
 	testSecretNS   = "bootc-operator"
-	testSecretHash = "sha256:b37e50cedcd3e3f1ff64f4afc0422084ae694253cf399326868e07a35f4a45fb" // "secret"
 )
 
 func TestBootcNodePoolCRD(t *testing.T) {
@@ -63,7 +62,7 @@ func TestBootcNodeCRD(t *testing.T) {
 	ctx := context.Background()
 
 	node := testutil.NewNode("worker-1", testImageDigestRefA,
-		testutil.WithNodePullSecret(testSecretName, testSecretNS, testSecretHash),
+		testutil.WithNodePullSecret(testSecretName, testSecretNS),
 	)
 
 	// Save the spec before Create, which mutates node in-place.

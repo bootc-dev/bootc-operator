@@ -62,12 +62,6 @@ spec:
                 - Staged
                 - Booted
                 type: string
-              pullSecretHash:
-                description: |-
-                  pullSecretHash is a hash of the pull secret's content, used to
-                  detect changes. When this value changes, the daemon re-fetches
-                  the secret and updates the host filesystem.
-                type: string
               pullSecretRef:
                 description: |-
                   pullSecretRef references a Secret containing image pull

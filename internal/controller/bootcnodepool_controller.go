@@ -48,7 +48,7 @@ type drainStatus struct {
 
 // TagResolver resolves a container image reference to a digest.
 type TagResolver interface {
-	Resolve(ctx context.Context, ref string) (string, error)
+	Resolve(ctx context.Context, ref string, auth []byte) (string, error)
 }
 
 // BootcNodePoolReconciler reconciles a BootcNodePool object
@@ -79,6 +79,7 @@ type BootcNodePoolReconciler struct {
 // +kubebuilder:rbac:groups=node.bootc.dev,resources=bootcnodes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=node.bootc.dev,resources=bootcnodes/status,verbs=get
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list
 // +kubebuilder:rbac:groups="",resources=pods/eviction,verbs=create
 // +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get
@@ -94,6 +95,7 @@ func (r *BootcNodePoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&bootcv1alpha1.BootcNodePool{}).
 		Owns(&bootcv1alpha1.BootcNode{}).
 		Watches(&corev1.Node{}, handler.EnqueueRequestsFromMapFunc(r.mapNodeToPoolRequests), builder.WithPredicates(nodePredicates())).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.mapSecretToPoolRequests), builder.WithPredicates(secretTypePredicate())).
 		WatchesRawSource(source.Channel(r.drainCh, &handler.EnqueueRequestForObject{})).
 		Named("bootcnodepool").
 		Complete(r)
@@ -161,6 +163,39 @@ func (r *BootcNodePoolReconciler) mapNodeToPoolRequests(
 	return requests
 }
 
+// mapSecretToPoolRequests maps a Secret event to the BootcNodePool(s) that
+// should be reconciled. It enqueues pools whose pullSecretRef matches the
+// changed Secret's name and namespace.
+func (r *BootcNodePoolReconciler) mapSecretToPoolRequests(
+	ctx context.Context,
+	obj client.Object,
+) []reconcile.Request {
+	secret, ok := obj.(*corev1.Secret)
+	if !ok {
+		return nil
+	}
+
+	var pools bootcv1alpha1.BootcNodePoolList
+	if err := r.List(ctx, &pools); err != nil {
+		log := logf.FromContext(ctx)
+		log.Error(err, "Failed to list BootcNodePools in secret mapper")
+		return nil
+	}
+
+	var requests []reconcile.Request
+	for i := range pools.Items {
+		pool := &pools.Items[i]
+		if pool.Spec.PullSecretRef != nil &&
+			pool.Spec.PullSecretRef.Name == secret.Name &&
+			pool.Spec.PullSecretRef.Namespace == secret.Namespace {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pool.Name},
+			})
+		}
+	}
+	return requests
+}
+
 // nodeSelectorMatchesNode evaluates whether a node's labels match a
 // LabelSelector.
 func nodeSelectorMatchesNode(sel *metav1.LabelSelector, node *corev1.Node) (bool, error) {
@@ -219,6 +254,18 @@ func nodeUnschedulableChanged(oldNode, newNode *corev1.Node) bool {
 	return oldNode.Spec.Unschedulable != newNode.Spec.Unschedulable
 }
 
+// secretTypePredicate returns a predicate that accepts only Secrets of
+// type kubernetes.io/dockerconfigjson.
+func secretTypePredicate() predicate.Predicate {
+	return predicate.NewPredicateFuncs(func(obj client.Object) bool {
+		secret, ok := obj.(*corev1.Secret)
+		if !ok {
+			return false
+		}
+		return secret.Type == corev1.SecretTypeDockerConfigJson
+	})
+}
+
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 func (r *BootcNodePoolReconciler) Reconcile(
@@ -269,8 +316,12 @@ func (r *BootcNodePoolReconciler) Reconcile(
 	// Status writes to `pool` are also permitted; we Update() back once at
 	// the end.
 
-	// Resolve the target digest from the image ref.
-	resolveResult, err := r.resolveTargetDigest(ctx, &pool)
+	secretData, err := r.fetchPullSecretData(ctx, &pool)
+	if err != nil {
+		log.Error(err, "Failed to fetch pull secret")
+		setPoolDegraded(&pool, bootcv1alpha1.PoolSecretError, err.Error())
+	}
+	resolveResult, err := r.resolveTargetDigest(ctx, &pool, secretData)
 	if err != nil {
 		if isInvalidSpecError(err) {
 			return r.setInvalidSpecCondition(ctx, &pool, err)
@@ -387,6 +438,7 @@ func (r *BootcNodePoolReconciler) handlePoolDeletion(
 func (r *BootcNodePoolReconciler) resolveTargetDigest(
 	ctx context.Context,
 	pool *bootcv1alpha1.BootcNodePool,
+	secretData []byte,
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -415,7 +467,7 @@ func (r *BootcNodePoolReconciler) resolveTargetDigest(
 		return ctrl.Result{RequeueAfter: remaining}, nil
 	}
 
-	digest, err := r.TagResolver.Resolve(ctx, pool.Spec.Image.Ref)
+	digest, err := r.TagResolver.Resolve(ctx, pool.Spec.Image.Ref, secretData)
 	if err != nil {
 		log.Error(err, "Failed to resolve tag", "ref", pool.Spec.Image.Ref)
 		setPoolDegraded(pool, bootcv1alpha1.PoolTagResolutionError, err.Error())
@@ -598,6 +650,38 @@ func (r *BootcNodePoolReconciler) listAllBootcNodes(
 		all[bnList.Items[i].Name] = &bnList.Items[i]
 	}
 	return all, nil
+}
+
+// fetchPullSecretData fetches the .dockerconfigjson data from the pull
+// secret referenced by the pool. Returns nil if no pull secret is set.
+func (r *BootcNodePoolReconciler) fetchPullSecretData(
+	ctx context.Context,
+	pool *bootcv1alpha1.BootcNodePool,
+) ([]byte, error) {
+	if pool.Spec.PullSecretRef == nil {
+		return nil, nil
+	}
+
+	key := types.NamespacedName{
+		Name:      pool.Spec.PullSecretRef.Name,
+		Namespace: pool.Spec.PullSecretRef.Namespace,
+	}
+	var secret corev1.Secret
+	if err := r.Get(ctx, key, &secret); err != nil {
+		return nil, fmt.Errorf("fetching pull secret %s/%s: %w", key.Namespace, key.Name, err)
+	}
+
+	data, ok := secret.Data[corev1.DockerConfigJsonKey]
+	if !ok {
+		return nil, fmt.Errorf(
+			"pull secret %s/%s missing %s key",
+			key.Namespace,
+			key.Name,
+			corev1.DockerConfigJsonKey,
+		)
+	}
+
+	return data, nil
 }
 
 // syncBootcNodeSpec updates a BootcNode's spec fields to match the pool.
@@ -786,10 +870,11 @@ func (r *BootcNodePoolReconciler) restoreCordonState(
 var poolDegradedPrecedence = map[string]int{
 	bootcv1alpha1.PoolHealthy:            0,
 	bootcv1alpha1.PoolNodeDegraded:       1,
-	bootcv1alpha1.PoolNodeConflict:       2,
-	bootcv1alpha1.PoolRolloutHalted:      3,
-	bootcv1alpha1.PoolInvalidSpec:        4,
-	bootcv1alpha1.PoolTagResolutionError: 5,
+	bootcv1alpha1.PoolSecretError:        2,
+	bootcv1alpha1.PoolNodeConflict:       3,
+	bootcv1alpha1.PoolRolloutHalted:      4,
+	bootcv1alpha1.PoolInvalidSpec:        5,
+	bootcv1alpha1.PoolTagResolutionError: 6,
 }
 
 // setPoolDegraded sets the Degraded condition on the pool, but only if the new

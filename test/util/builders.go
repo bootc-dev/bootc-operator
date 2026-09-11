@@ -231,14 +231,13 @@ func WithDesiredImageState(state bootcv1alpha1.DesiredImageState) NodeOption {
 	}
 }
 
-// WithNodePullSecret sets the pull secret reference and hash on a node.
-func WithNodePullSecret(name, namespace, hash string) NodeOption {
+// WithNodePullSecret sets the pull secret reference on a node.
+func WithNodePullSecret(name, namespace string) NodeOption {
 	return func(node *bootcv1alpha1.BootcNode) {
 		node.Spec.PullSecretRef = &bootcv1alpha1.PullSecretRef{
 			Name:      name,
 			Namespace: namespace,
 		}
-		node.Spec.PullSecretHash = hash
 	}
 }
 
