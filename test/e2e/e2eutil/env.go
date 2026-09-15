@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package e2eutil provides helpers for running end-to-end tests against
-// a bink-managed Kubernetes cluster. The cluster and operator are
-// expected to be already running (via `make deploy-bink`). Each test
-// provisions its own worker nodes for isolation.
+// a Kubernetes cluster. The cluster and operator are expected to be
+// already running. Each test provisions its own worker nodes for
+// isolation.
 package e2eutil
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -45,12 +43,12 @@ type Env struct {
 	// registered.
 	Client client.Client
 
-	// clusterName is the bink cluster name.
-	clusterName string
-
 	// testID is the sanitized test name, used as the value for
 	// LabelE2ETest on nodes and in pool selectors.
 	testID string
+
+	// provider handles node provisioning and removal.
+	provider NodeProvider
 
 	// nodes tracks node names added via AddNode for cleanup.
 	nodes []string
@@ -80,20 +78,14 @@ type Env struct {
 	registryPassword string
 }
 
-// New connects to an existing bink cluster and returns an Env ready
-// for testing. The cluster must be running with the operator deployed
-// (via `make deploy-bink`).
+// New connects to an existing cluster and returns an Env ready for
+// testing. The cluster must be running with the operator deployed.
 func New(t *testing.T) *Env {
 	t.Helper()
 
 	kubeconfigPath := os.Getenv("KUBECONFIG")
 	if kubeconfigPath == "" {
 		t.Fatal("KUBECONFIG must be set")
-	}
-
-	clusterName := os.Getenv("BINK_CLUSTER_NAME")
-	if clusterName == "" {
-		t.Fatal("BINK_CLUSTER_NAME must be set")
 	}
 
 	nodeImageDigest := os.Getenv("BINK_NODE_IMAGE_DIGEST")
@@ -115,10 +107,29 @@ func New(t *testing.T) *Env {
 
 	k8sClient := buildClient(t, kubeconfigPath)
 
+	providerName := os.Getenv("E2E_PROVIDER")
+	if providerName == "" {
+		providerName = "bink"
+	}
+
+	var provider NodeProvider
+	switch providerName {
+	case "bink":
+		clusterName := os.Getenv("BINK_CLUSTER_NAME")
+		if clusterName == "" {
+			t.Fatal("BINK_CLUSTER_NAME must be set for bink provider")
+		}
+		targetImgRef := nodeImageRegistry + "@" + nodeImageDigest
+		diskImage := os.Getenv("BINK_NODE_DISK_IMAGE")
+		provider = newBinkProvider(clusterName, targetImgRef, diskImage)
+	default:
+		t.Fatalf("unknown E2E_PROVIDER %q (supported: bink)", providerName)
+	}
+
 	env := &Env{
 		Client:                 k8sClient,
-		clusterName:            clusterName,
 		testID:                 sanitizeTestName(t.Name()),
+		provider:               provider,
 		nodeImageDigest:        nodeImageDigest,
 		nodeImageRegistry:      nodeImageRegistry,
 		nodeImageUpdateDigest:  nodeImageUpdateDigest,
@@ -170,9 +181,9 @@ func WithTargetImgRef(ref string) NodeOption {
 	}
 }
 
-// AddNode provisions a worker node via bink, waits for it to be Ready,
-// and returns the node name. The node is labeled with LabelE2ETest
-// (and any extra labels from WithLabel).
+// AddNode provisions a worker node via the configured provider, waits
+// for it to be Ready, and returns the node name. The node is labeled
+// with LabelE2ETest (and any extra labels from WithLabel).
 func (e *Env) AddNode(t *testing.T, opts ...NodeOption) string {
 	t.Helper()
 
@@ -181,38 +192,20 @@ func (e *Env) AddNode(t *testing.T, opts ...NodeOption) string {
 		o(cfg)
 	}
 
-	if cfg.targetImgRef == "" {
-		if e.nodeImageRegistry == "" || e.nodeImageDigest == "" {
-			t.Fatal(
-				"BINK_LOCAL_REGISTRY_NODE_IMAGE and NODE_IMAGE_DIGEST must be set (or use WithTargetImgRef)",
-			)
-		}
-		cfg.targetImgRef = e.nodeImageRegistry + "@" + e.nodeImageDigest
-	}
-
-	nodeName := e.generateNodeName(t)
-
-	// Provision the node with labels applied at join time.
-	args := []string{"node", "add", nodeName, "--cluster-name", e.clusterName}
-	args = append(args, "--label", LabelE2ETest+"="+e.testID)
+	labels := map[string]string{LabelE2ETest: e.testID}
 	for k, v := range cfg.labels {
-		args = append(args, "--label", k+"="+v)
+		labels[k] = v
 	}
-	if cfg.memory > 0 {
-		args = append(args, "--memory", fmt.Sprintf("%d", cfg.memory))
+
+	ctx := context.Background()
+	t.Logf("Adding node...")
+	nodeName, err := e.provider.AddNode(ctx, labels)
+	if err != nil {
+		t.Fatalf("adding node: %v", err)
 	}
-	if img := os.Getenv("BINK_NODE_DISK_IMAGE"); img != "" {
-		args = append(args, "--node-image", img)
-	}
-	args = append(args, "--target-imgref", cfg.targetImgRef)
-	t.Logf("Adding node %q...", nodeName)
-	if err := runBink(t, args...); err != nil {
-		t.Fatalf("adding node %q: %v", nodeName, err)
-	}
+	t.Logf("Added node %q", nodeName)
 
 	e.nodes = append(e.nodes, nodeName)
-
-	// Wait for Ready.
 	waitForNodeReady(t, e.Client, nodeName)
 
 	return nodeName
@@ -334,7 +327,7 @@ func RetagImage(t *testing.T, srcRef, dstTag string) {
 }
 
 // cleanup gathers diagnostic logs, then deletes test-scoped resources
-// and bink nodes.
+// and removes nodes via the provider.
 func (e *Env) cleanup(t *testing.T) {
 	e.gatherLogs(t)
 
@@ -349,15 +342,7 @@ func (e *Env) cleanup(t *testing.T) {
 	}
 	for _, name := range e.nodes {
 		t.Logf("Removing node %q...", name)
-		if err := runBink(
-			t,
-			"node",
-			"remove",
-			name,
-			"--force",
-			"--cluster-name",
-			e.clusterName,
-		); err != nil {
+		if err := e.provider.RemoveNode(ctx, name); err != nil {
 			t.Logf("WARNING: failed to remove node %q: %v", name, err)
 		}
 	}
@@ -395,17 +380,6 @@ func sanitizeTestName(name string) string {
 		panic(fmt.Sprintf("test name %q is %d characters (max 63)", name, len(name)))
 	}
 	return name
-}
-
-// generateNodeName creates a unique node name derived from the test name.
-func (e *Env) generateNodeName(t *testing.T) string {
-	t.Helper()
-
-	b := make([]byte, 3)
-	if _, err := rand.Read(b); err != nil {
-		t.Fatalf("generating random suffix: %v", err)
-	}
-	return e.testID + "-" + hex.EncodeToString(b)
 }
 
 // buildClient creates a controller-runtime client from the kubeconfig
@@ -446,14 +420,4 @@ func waitForNodeReady(t *testing.T, c client.Client, nodeName string) {
 		)), "node %q not Ready yet", nodeName)
 		t.Logf("  node %q is Ready", nodeName)
 	}).WithTimeout(5 * time.Minute).WithPolling(5 * time.Second).Should(Succeed())
-}
-
-// runBink executes a bink command and returns any error.
-func runBink(t *testing.T, args ...string) error {
-	t.Helper()
-
-	cmd := exec.Command("bink", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
 }
