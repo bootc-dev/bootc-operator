@@ -229,7 +229,7 @@ deploy-bink: start-bink build-update-image kustomize ## Deploy to a bink cluster
 
 .PHONY: gather-bink
 gather-bink: ## Gather diagnostic logs from the bink cluster.
-	KUBECONFIG=$(abspath $(KUBECONFIG_BINK)) BINK_CLUSTER_NAME=$(BINK_CLUSTER_NAME) \
+	KUBECONFIG=$(abspath $(KUBECONFIG_BINK)) \
 		hack/gather-logs.sh $(ARTIFACTS)/gather-bink controller
 
 .PHONY: teardown-bink
