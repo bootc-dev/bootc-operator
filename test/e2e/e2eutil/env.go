@@ -122,8 +122,28 @@ func New(t *testing.T) *Env {
 		targetImgRef := nodeImageRegistry + "@" + nodeImageDigest
 		diskImage := os.Getenv("BINK_NODE_DISK_IMAGE")
 		provider = newBinkProvider(clusterName, targetImgRef, diskImage)
+	case "eks":
+		eksClusterName := os.Getenv("EKS_CLUSTER_NAME")
+		if eksClusterName == "" {
+			t.Fatal("EKS_CLUSTER_NAME must be set for eks provider")
+		}
+		nodeGroup := os.Getenv("EKS_NODE_GROUP")
+		if nodeGroup == "" {
+			t.Fatal("EKS_NODE_GROUP must be set for eks provider")
+		}
+		region := os.Getenv("AWS_REGION")
+		if region == "" {
+			t.Fatal("AWS_REGION must be set for eks provider")
+		}
+		var err error
+		provider, err = newEKSProvider(
+			eksClusterName, nodeGroup, region, k8sClient,
+		)
+		if err != nil {
+			t.Fatalf("creating EKS provider: %v", err)
+		}
 	default:
-		t.Fatalf("unknown E2E_PROVIDER %q (supported: bink)", providerName)
+		t.Fatalf("unknown E2E_PROVIDER %q (supported: bink, eks)", providerName)
 	}
 
 	env := &Env{
