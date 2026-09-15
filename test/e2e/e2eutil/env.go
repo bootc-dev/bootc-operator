@@ -54,10 +54,10 @@ type Env struct {
 	nodes []string
 
 	// nodeImageDigest is the manifest digest of the bootc image seeded
-	// into the bink registry (e.g. "sha256:abc123..."). Empty when not seeded.
+	// into the registry (e.g. "sha256:abc123..."). Empty when not seeded.
 	nodeImageDigest string
 
-	// nodeImageRegistry is the in-cluster registry path for the seeded node image
+	// nodeImageRegistry is the registry path for the seeded node image
 	// (e.g. "registry.cluster.local:5000/node"). Empty when not seeded.
 	nodeImageRegistry string
 
@@ -169,16 +169,7 @@ func New(t *testing.T) *Env {
 type NodeOption func(*nodeConfig)
 
 type nodeConfig struct {
-	memory       int
-	labels       map[string]string
-	targetImgRef string
-}
-
-// WithMemory sets the VM memory in MB for the node.
-func WithMemory(mb int) NodeOption {
-	return func(c *nodeConfig) {
-		c.memory = mb
-	}
+	labels map[string]string
 }
 
 // WithLabel adds a label to the provisioned node. This is in addition
@@ -189,15 +180,6 @@ func WithLabel(key, value string) NodeOption {
 			c.labels = make(map[string]string)
 		}
 		c.labels[key] = value
-	}
-}
-
-// WithTargetImgRef sets the target image reference for the node,
-// passed as --target-imgref to bink node add. Overrides the automatic
-// default that AddNode applies when registry metadata is available.
-func WithTargetImgRef(ref string) NodeOption {
-	return func(c *nodeConfig) {
-		c.targetImgRef = ref
 	}
 }
 
