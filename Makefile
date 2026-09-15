@@ -94,14 +94,15 @@ e2e: ## Run e2e tests (requires: make deploy-bink). V=1 for verbose. RUN=<regex>
 # each package, even though we just have one here--but I really like streaming
 # output...).
 	rm -rf $(ARTIFACTS)
-	cd test/e2e && KUBECONFIG=$(abspath $(KUBECONFIG_BINK)) BINK_CLUSTER_NAME=$(BINK_CLUSTER_NAME) \
-		$(if $(BINK_NODE_IMAGE),BINK_NODE_IMAGE=$(BINK_NODE_IMAGE)) \
+	cd test/e2e && KUBECONFIG=$(abspath $(KUBECONFIG_BINK)) \
+		E2E_PROVIDER=bink \
+		BINK_CLUSTER_NAME=$(BINK_CLUSTER_NAME) \
 		BINK_NODE_DISK_IMAGE=$(BINK_NODE_DISK_IMAGE) \
-		BINK_LOCAL_REGISTRY_NODE_IMAGE=$(BINK_LOCAL_REGISTRY_NODE_IMAGE) \
+		E2E_NODE_IMAGE_REGISTRY=$(BINK_LOCAL_REGISTRY_NODE_IMAGE) \
 		ARTIFACTS=$(ARTIFACTS) \
-		BINK_NODE_IMAGE_DIGEST=$$(skopeo inspect --tls-verify=false --format '{{.Digest}}' docker://localhost:5000/node:latest) \
-		BINK_NODE_IMAGE_UPDATE_DIGEST=$$(skopeo inspect --tls-verify=false docker://localhost:5000/node:update | jq -r '.Digest') \
-		BINK_NODE_IMAGE_UPDATE2_DIGEST=$$(skopeo inspect --tls-verify=false docker://localhost:5000/node:update2 | jq -r '.Digest') \
+		E2E_NODE_IMAGE_DIGEST=$$(skopeo inspect --tls-verify=false --format '{{.Digest}}' docker://localhost:5000/node:latest) \
+		E2E_NODE_IMAGE_UPDATE_DIGEST=$$(skopeo inspect --tls-verify=false docker://localhost:5000/node:update | jq -r '.Digest') \
+		E2E_NODE_IMAGE_UPDATE2_DIGEST=$$(skopeo inspect --tls-verify=false docker://localhost:5000/node:update2 | jq -r '.Digest') \
 		E2E_REGISTRY_USER=$(E2E_REGISTRY_USER) E2E_REGISTRY_PASSWORD=$(E2E_REGISTRY_PASSWORD) \
 		go test -timeout 30m -count=1 $(if $(V),-v) $(if $(RUN),-run $(RUN)) .
 

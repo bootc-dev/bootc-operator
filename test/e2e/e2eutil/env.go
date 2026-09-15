@@ -88,21 +88,21 @@ func New(t *testing.T) *Env {
 		t.Fatal("KUBECONFIG must be set")
 	}
 
-	nodeImageDigest := os.Getenv("BINK_NODE_IMAGE_DIGEST")
+	nodeImageDigest := os.Getenv("E2E_NODE_IMAGE_DIGEST")
 	if nodeImageDigest == "" {
-		t.Fatal("BINK_NODE_IMAGE_DIGEST must be set")
+		t.Fatal("E2E_NODE_IMAGE_DIGEST must be set")
 	}
-	nodeImageRegistry := os.Getenv("BINK_LOCAL_REGISTRY_NODE_IMAGE")
+	nodeImageRegistry := os.Getenv("E2E_NODE_IMAGE_REGISTRY")
 	if nodeImageRegistry == "" {
-		t.Fatal("BINK_LOCAL_REGISTRY_NODE_IMAGE must be set")
+		t.Fatal("E2E_NODE_IMAGE_REGISTRY must be set")
 	}
-	nodeImageUpdateDigest := os.Getenv("BINK_NODE_IMAGE_UPDATE_DIGEST")
+	nodeImageUpdateDigest := os.Getenv("E2E_NODE_IMAGE_UPDATE_DIGEST")
 	if nodeImageUpdateDigest == "" {
-		t.Fatal("BINK_NODE_IMAGE_UPDATE_DIGEST must be set")
+		t.Fatal("E2E_NODE_IMAGE_UPDATE_DIGEST must be set")
 	}
-	nodeImageUpdate2Digest := os.Getenv("BINK_NODE_IMAGE_UPDATE2_DIGEST")
+	nodeImageUpdate2Digest := os.Getenv("E2E_NODE_IMAGE_UPDATE2_DIGEST")
 	if nodeImageUpdate2Digest == "" {
-		t.Fatal("BINK_NODE_IMAGE_UPDATE2_DIGEST must be set")
+		t.Fatal("E2E_NODE_IMAGE_UPDATE2_DIGEST must be set")
 	}
 
 	k8sClient := buildClient(t, kubeconfigPath)
