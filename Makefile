@@ -106,6 +106,32 @@ e2e: ## Run e2e tests (requires: make deploy-bink). V=1 for verbose. RUN=<regex>
 		E2E_REGISTRY_USER=$(E2E_REGISTRY_USER) E2E_REGISTRY_PASSWORD=$(E2E_REGISTRY_PASSWORD) \
 		go test -timeout 30m -count=1 $(if $(V),-v) $(if $(RUN),-run $(RUN)) .
 
+# EKS e2e settings
+EKS_CLUSTER_NAME ?=
+EKS_NODE_GROUP ?=
+AWS_REGION ?=
+EKS_NODE_IMAGE_REF ?=
+EKS_NODE_IMAGE_UPDATE_REF ?=
+EKS_NODE_IMAGE_UPDATE2_REF ?=
+EKS_REGISTRY_USER ?=
+EKS_REGISTRY_PASSWORD ?=
+
+.PHONY: e2e-eks
+e2e-eks: ## Run e2e tests against EKS. V=1 for verbose. RUN=<regex> to filter.
+	rm -rf $(ARTIFACTS)
+	cd test/e2e && KUBECONFIG="$(KUBECONFIG)" \
+		E2E_PROVIDER=eks \
+		EKS_CLUSTER_NAME="$(EKS_CLUSTER_NAME)" \
+		EKS_NODE_GROUP="$(EKS_NODE_GROUP)" \
+		AWS_REGION="$(AWS_REGION)" \
+		E2E_NODE_IMAGE_REF="$(EKS_NODE_IMAGE_REF)" \
+		E2E_NODE_IMAGE_UPDATE_REF="$(EKS_NODE_IMAGE_UPDATE_REF)" \
+		E2E_NODE_IMAGE_UPDATE2_REF="$(EKS_NODE_IMAGE_UPDATE2_REF)" \
+		E2E_REGISTRY_USER="$(EKS_REGISTRY_USER)" \
+		E2E_REGISTRY_PASSWORD="$(EKS_REGISTRY_PASSWORD)" \
+		ARTIFACTS="$(ARTIFACTS)" \
+		go test -timeout 30m -count=1 $(if $(V),-v) $(if $(RUN),-run $(RUN)) .
+
 ##@ Build
 
 .PHONY: build
