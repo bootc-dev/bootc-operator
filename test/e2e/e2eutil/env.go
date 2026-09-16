@@ -47,34 +47,37 @@ type Env struct {
 	// LabelE2ETest on nodes and in pool selectors.
 	testID string
 
+	// providerName identifies the active provider ("bink" or "eks").
+	providerName string
+
 	// provider handles node provisioning and removal.
 	provider NodeProvider
 
 	// nodes tracks node names added via AddNode for cleanup.
 	nodes []string
 
-	// nodeImageDigest is the manifest digest of the bootc image seeded
-	// into the registry (e.g. "sha256:abc123..."). Empty when not seeded.
-	nodeImageDigest string
+	// nodeImageRef is the full digest-qualified reference for the base
+	// node image (e.g. "registry.example.com/node@sha256:abc123").
+	nodeImageRef string
 
-	// nodeImageRegistry is the registry path for the seeded node image
-	// (e.g. "registry.cluster.local:5000/node"). Empty when not seeded.
-	nodeImageRegistry string
+	// nodeImageUpdateRef is the full digest-qualified reference for the
+	// update image. May point to a different registry/image than the base.
+	nodeImageUpdateRef string
 
-	// nodeImageUpdateDigest is the manifest digest of the update image
-	// (e.g. "sha256:def456..."). Empty when not built.
-	nodeImageUpdateDigest string
+	// nodeImageUpdate2Ref is the full digest-qualified reference for the
+	// second update image. Empty when not needed.
+	nodeImageUpdate2Ref string
 
-	// nodeImageUpdate2Digest is the manifest digest of the second update
-	// image (e.g. "sha256:789abc..."). Used by mid-rollout image change tests.
-	nodeImageUpdate2Digest string
+	// registryHost is the hostname (with optional port) of the
+	// authenticated registry used by TestPullSecretAuth.
+	registryHost string
 
-	// registryUser is the username for the authenticated e2e registry
-	// on port 5001. Empty when not configured.
+	// registryUser is the username for the authenticated e2e registry.
+	// Empty when not configured.
 	registryUser string
 
 	// registryPassword is the password for the authenticated e2e
-	// registry on port 5001. Empty when not configured.
+	// registry. Empty when not configured.
 	registryPassword string
 }
 
@@ -88,23 +91,6 @@ func New(t *testing.T) *Env {
 		t.Fatal("KUBECONFIG must be set")
 	}
 
-	nodeImageDigest := os.Getenv("E2E_NODE_IMAGE_DIGEST")
-	if nodeImageDigest == "" {
-		t.Fatal("E2E_NODE_IMAGE_DIGEST must be set")
-	}
-	nodeImageRegistry := os.Getenv("E2E_NODE_IMAGE_REGISTRY")
-	if nodeImageRegistry == "" {
-		t.Fatal("E2E_NODE_IMAGE_REGISTRY must be set")
-	}
-	nodeImageUpdateDigest := os.Getenv("E2E_NODE_IMAGE_UPDATE_DIGEST")
-	if nodeImageUpdateDigest == "" {
-		t.Fatal("E2E_NODE_IMAGE_UPDATE_DIGEST must be set")
-	}
-	nodeImageUpdate2Digest := os.Getenv("E2E_NODE_IMAGE_UPDATE2_DIGEST")
-	if nodeImageUpdate2Digest == "" {
-		t.Fatal("E2E_NODE_IMAGE_UPDATE2_DIGEST must be set")
-	}
-
 	k8sClient := buildClient(t, kubeconfigPath)
 
 	providerName := os.Getenv("E2E_PROVIDER")
@@ -112,29 +98,40 @@ func New(t *testing.T) *Env {
 		providerName = "bink"
 	}
 
-	var provider NodeProvider
+	var (
+		provider     NodeProvider
+		nodeImageRef string
+		updateRef    string
+		update2Ref   string
+		registryHost string
+	)
+
 	switch providerName {
 	case "bink":
-		clusterName := os.Getenv("BINK_CLUSTER_NAME")
-		if clusterName == "" {
-			t.Fatal("BINK_CLUSTER_NAME must be set for bink provider")
-		}
-		targetImgRef := nodeImageRegistry + "@" + nodeImageDigest
+		nodeImageRegistry := requireEnv(t, "E2E_NODE_IMAGE_REGISTRY")
+		nodeImageDigest := requireEnv(t, "E2E_NODE_IMAGE_DIGEST")
+		updateDigest := requireEnv(t, "E2E_NODE_IMAGE_UPDATE_DIGEST")
+		update2Digest := requireEnv(t, "E2E_NODE_IMAGE_UPDATE2_DIGEST")
+
+		nodeImageRef = nodeImageRegistry + "@" + nodeImageDigest
+		updateRef = nodeImageRegistry + "@" + updateDigest
+		update2Ref = nodeImageRegistry + "@" + update2Digest
+
+		registryHost = "auth-registry.cluster.local:5001"
+
+		clusterName := requireEnv(t, "BINK_CLUSTER_NAME")
 		diskImage := os.Getenv("BINK_NODE_DISK_IMAGE")
-		provider = newBinkProvider(clusterName, targetImgRef, diskImage)
+		provider = newBinkProvider(clusterName, nodeImageRef, diskImage)
 	case "eks":
-		eksClusterName := os.Getenv("EKS_CLUSTER_NAME")
-		if eksClusterName == "" {
-			t.Fatal("EKS_CLUSTER_NAME must be set for eks provider")
-		}
-		nodeGroup := os.Getenv("EKS_NODE_GROUP")
-		if nodeGroup == "" {
-			t.Fatal("EKS_NODE_GROUP must be set for eks provider")
-		}
-		region := os.Getenv("AWS_REGION")
-		if region == "" {
-			t.Fatal("AWS_REGION must be set for eks provider")
-		}
+		nodeImageRef = requireEnv(t, "E2E_NODE_IMAGE_REF")
+		updateRef = requireEnv(t, "E2E_NODE_IMAGE_UPDATE_REF")
+		update2Ref = os.Getenv("E2E_NODE_IMAGE_UPDATE2_REF")
+		registryHost = extractRegistryHost(updateRef)
+
+		eksClusterName := requireEnv(t, "EKS_CLUSTER_NAME")
+		nodeGroup := requireEnv(t, "EKS_NODE_GROUP")
+		region := requireEnv(t, "AWS_REGION")
+
 		var err error
 		provider, err = newEKSProvider(
 			eksClusterName, nodeGroup, region, k8sClient,
@@ -147,15 +144,16 @@ func New(t *testing.T) *Env {
 	}
 
 	env := &Env{
-		Client:                 k8sClient,
-		testID:                 sanitizeTestName(t.Name()),
-		provider:               provider,
-		nodeImageDigest:        nodeImageDigest,
-		nodeImageRegistry:      nodeImageRegistry,
-		nodeImageUpdateDigest:  nodeImageUpdateDigest,
-		nodeImageUpdate2Digest: nodeImageUpdate2Digest,
-		registryUser:           os.Getenv("E2E_REGISTRY_USER"),
-		registryPassword:       os.Getenv("E2E_REGISTRY_PASSWORD"),
+		Client:              k8sClient,
+		testID:              sanitizeTestName(t.Name()),
+		providerName:        providerName,
+		provider:            provider,
+		nodeImageRef:        nodeImageRef,
+		nodeImageUpdateRef:  updateRef,
+		nodeImageUpdate2Ref: update2Ref,
+		registryHost:        registryHost,
+		registryUser:        os.Getenv("E2E_REGISTRY_USER"),
+		registryPassword:    os.Getenv("E2E_REGISTRY_PASSWORD"),
 	}
 
 	t.Cleanup(func() {
@@ -241,52 +239,69 @@ func (e *Env) TestLabels() map[string]string {
 	return map[string]string{LabelE2ETest: e.testID}
 }
 
-// digestedPullSpec builds a digest-qualified image reference from the
-// registry and the given digest. Returns "" if either is empty.
-func (e *Env) digestedPullSpec(digest string) string {
-	if e.nodeImageRegistry == "" || digest == "" {
-		return ""
-	}
-	return e.nodeImageRegistry + "@" + digest
-}
-
-// NodeImageDigestedPullSpec returns the digest-qualified reference for the
-// seeded node image (e.g. "registry.cluster.local:5000/node@sha256:abc123").
+// NodeImageDigestedPullSpec returns the full digest-qualified reference
+// for the base node image.
 func (e *Env) NodeImageDigestedPullSpec() string {
-	return e.digestedPullSpec(e.nodeImageDigest)
+	return e.nodeImageRef
 }
 
-// NodeImageTagRef returns the tag-based reference for the seeded node
+// NodeImageTagRef returns the tag-based reference for the base node
 // image (e.g. "registry.cluster.local:5000/node:latest").
 func (e *Env) NodeImageTagRef() string {
-	return e.nodeImageRegistry + ":latest"
+	repo, _, _ := strings.Cut(e.nodeImageRef, "@")
+	return repo + ":latest"
 }
 
-// NodeImageDigest returns the manifest digest of the seeded node image.
+// NodeImageDigest returns the manifest digest portion of the base
+// node image reference.
 func (e *Env) NodeImageDigest() string {
-	return e.nodeImageDigest
+	_, digest, _ := strings.Cut(e.nodeImageRef, "@")
+	return digest
 }
 
-// NodeImageUpdateDigestedPullSpec returns the digest-qualified reference for the
-// update image (e.g. "registry.cluster.local:5000/node@sha256:def456").
+// NodeImageUpdateDigestedPullSpec returns the full digest-qualified
+// reference for the update image.
 func (e *Env) NodeImageUpdateDigestedPullSpec() string {
-	return e.digestedPullSpec(e.nodeImageUpdateDigest)
+	return e.nodeImageUpdateRef
 }
 
-// NodeImageUpdateDigest returns the manifest digest of the update image.
+// NodeImageUpdateDigest returns the manifest digest portion of the
+// update image reference.
 func (e *Env) NodeImageUpdateDigest() string {
-	return e.nodeImageUpdateDigest
+	_, digest, _ := strings.Cut(e.nodeImageUpdateRef, "@")
+	return digest
 }
 
-// NodeImageUpdate2DigestedPullSpec returns the digest-qualified reference for the
-// second update image (e.g. "registry.cluster.local:5000/node@sha256:789abc").
+// NodeImageUpdate2DigestedPullSpec returns the full digest-qualified
+// reference for the second update image.
 func (e *Env) NodeImageUpdate2DigestedPullSpec() string {
-	return e.digestedPullSpec(e.nodeImageUpdate2Digest)
+	return e.nodeImageUpdate2Ref
 }
 
-// NodeImageUpdate2Digest returns the manifest digest of the second update image.
+// NodeImageUpdate2Digest returns the manifest digest portion of the
+// second update image reference.
 func (e *Env) NodeImageUpdate2Digest() string {
-	return e.nodeImageUpdate2Digest
+	_, digest, _ := strings.Cut(e.nodeImageUpdate2Ref, "@")
+	return digest
+}
+
+// AuthImageRef returns the image reference to use for pull secret
+// tests. For bink, this rewrites the update digest to go through the
+// auth registry (port 5001). For EKS, the update image already
+// requires auth, so it is returned as-is.
+func (e *Env) AuthImageRef() string {
+	switch e.providerName {
+	case "bink":
+		return e.registryHost + "/node@" + e.NodeImageUpdateDigest()
+	default:
+		return e.nodeImageUpdateRef
+	}
+}
+
+// RegistryHost returns the hostname (with optional port) of the
+// authenticated registry used for pull secret tests.
+func (e *Env) RegistryHost() string {
+	return e.registryHost
 }
 
 // RegistryUser returns the authenticated registry username, or empty
@@ -372,6 +387,23 @@ func (e *Env) gatherLogs(t *testing.T) {
 	if err := cmd.Run(); err != nil {
 		t.Logf("WARNING: gather-logs.sh failed: %v", err)
 	}
+}
+
+func requireEnv(t *testing.T, key string) string {
+	t.Helper()
+	v := os.Getenv(key)
+	if v == "" {
+		t.Fatalf("%s must be set", key)
+	}
+	return v
+}
+
+// extractRegistryHost returns the registry hostname from a full image
+// reference like "registry.example.com/path/image@sha256:...".
+func extractRegistryHost(ref string) string {
+	withoutDigest, _, _ := strings.Cut(ref, "@")
+	host, _, _ := strings.Cut(withoutDigest, "/")
+	return host
 }
 
 // sanitizeTestName lowercases a test name for use in k8s object names.
