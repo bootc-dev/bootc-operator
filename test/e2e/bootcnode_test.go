@@ -882,6 +882,9 @@ func TestPullSecretAuth(t *testing.T) {
 	t.Logf("BootcNode %q has pullSecretRef set", nodeName)
 
 	// Wait for the node to stage and reboot into the update image.
+	// Check Booted.Image (the full ref with manifest digest) rather
+	// than Booted.ImageDigest (the content digest) because they can
+	// differ with remote registries.
 	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
 		var bn bootcv1alpha1.BootcNode
 		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
@@ -889,7 +892,7 @@ func TestPullSecretAuth(t *testing.T) {
 	}).WithTimeout(5 * time.Minute).Should(And(
 		HaveField("Booted", And(
 			Not(BeNil()),
-			HaveField("ImageDigest", Equal(digest)),
+			HaveField("Image", Equal(authImageRef)),
 		)),
 		HaveField("Conditions", ContainElement(And(
 			HaveField("Type", bootcv1alpha1.NodeIdle),
