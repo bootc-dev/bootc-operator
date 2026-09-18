@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package e2eutil provides helpers for running end-to-end tests against
-// a bink-managed Kubernetes cluster. The cluster and operator are
-// expected to be already running (via `make deploy-bink`). Each test
-// provisions its own worker nodes for isolation.
+// a Kubernetes cluster. The cluster and operator are expected to be
+// already running. Each test provisions its own worker nodes for
+// isolation.
 package e2eutil
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -45,44 +43,46 @@ type Env struct {
 	// registered.
 	Client client.Client
 
-	// clusterName is the bink cluster name.
-	clusterName string
-
 	// testID is the sanitized test name, used as the value for
 	// LabelE2ETest on nodes and in pool selectors.
 	testID string
 
+	// providerName identifies the active provider ("bink" or "eks").
+	providerName string
+
+	// provider handles node provisioning and removal.
+	provider NodeProvider
+
 	// nodes tracks node names added via AddNode for cleanup.
 	nodes []string
 
-	// nodeImageDigest is the manifest digest of the bootc image seeded
-	// into the bink registry (e.g. "sha256:abc123..."). Empty when not seeded.
-	nodeImageDigest string
+	// nodeImageRef is the full digest-qualified reference for the base
+	// node image (e.g. "registry.example.com/node@sha256:abc123").
+	nodeImageRef string
 
-	// nodeImageRegistry is the in-cluster registry path for the seeded node image
-	// (e.g. "registry.cluster.local:5000/node"). Empty when not seeded.
-	nodeImageRegistry string
+	// nodeImageUpdateRef is the full digest-qualified reference for the
+	// update image. May point to a different registry/image than the base.
+	nodeImageUpdateRef string
 
-	// nodeImageUpdateDigest is the manifest digest of the update image
-	// (e.g. "sha256:def456..."). Empty when not built.
-	nodeImageUpdateDigest string
+	// nodeImageUpdate2Ref is the full digest-qualified reference for the
+	// second update image. Empty when not needed.
+	nodeImageUpdate2Ref string
 
-	// nodeImageUpdate2Digest is the manifest digest of the second update
-	// image (e.g. "sha256:789abc..."). Used by mid-rollout image change tests.
-	nodeImageUpdate2Digest string
+	// registryHost is the hostname (with optional port) of the
+	// authenticated registry used by TestPullSecretAuth.
+	registryHost string
 
-	// registryUser is the username for the authenticated e2e registry
-	// on port 5001. Empty when not configured.
+	// registryUser is the username for the authenticated e2e registry.
+	// Empty when not configured.
 	registryUser string
 
 	// registryPassword is the password for the authenticated e2e
-	// registry on port 5001. Empty when not configured.
+	// registry. Empty when not configured.
 	registryPassword string
 }
 
-// New connects to an existing bink cluster and returns an Env ready
-// for testing. The cluster must be running with the operator deployed
-// (via `make deploy-bink`).
+// New connects to an existing cluster and returns an Env ready for
+// testing. The cluster must be running with the operator deployed.
 func New(t *testing.T) *Env {
 	t.Helper()
 
@@ -91,40 +91,69 @@ func New(t *testing.T) *Env {
 		t.Fatal("KUBECONFIG must be set")
 	}
 
-	clusterName := os.Getenv("BINK_CLUSTER_NAME")
-	if clusterName == "" {
-		t.Fatal("BINK_CLUSTER_NAME must be set")
-	}
-
-	nodeImageDigest := os.Getenv("BINK_NODE_IMAGE_DIGEST")
-	if nodeImageDigest == "" {
-		t.Fatal("BINK_NODE_IMAGE_DIGEST must be set")
-	}
-	nodeImageRegistry := os.Getenv("BINK_LOCAL_REGISTRY_NODE_IMAGE")
-	if nodeImageRegistry == "" {
-		t.Fatal("BINK_LOCAL_REGISTRY_NODE_IMAGE must be set")
-	}
-	nodeImageUpdateDigest := os.Getenv("BINK_NODE_IMAGE_UPDATE_DIGEST")
-	if nodeImageUpdateDigest == "" {
-		t.Fatal("BINK_NODE_IMAGE_UPDATE_DIGEST must be set")
-	}
-	nodeImageUpdate2Digest := os.Getenv("BINK_NODE_IMAGE_UPDATE2_DIGEST")
-	if nodeImageUpdate2Digest == "" {
-		t.Fatal("BINK_NODE_IMAGE_UPDATE2_DIGEST must be set")
-	}
-
 	k8sClient := buildClient(t, kubeconfigPath)
 
+	providerName := os.Getenv("E2E_PROVIDER")
+	if providerName == "" {
+		providerName = "bink"
+	}
+
+	var (
+		provider     NodeProvider
+		nodeImageRef string
+		updateRef    string
+		update2Ref   string
+		registryHost string
+	)
+
+	switch providerName {
+	case "bink":
+		nodeImageRegistry := requireEnv(t, "E2E_NODE_IMAGE_REGISTRY")
+		nodeImageDigest := requireEnv(t, "E2E_NODE_IMAGE_DIGEST")
+		updateDigest := requireEnv(t, "E2E_NODE_IMAGE_UPDATE_DIGEST")
+		update2Digest := requireEnv(t, "E2E_NODE_IMAGE_UPDATE2_DIGEST")
+
+		nodeImageRef = nodeImageRegistry + "@" + nodeImageDigest
+		updateRef = nodeImageRegistry + "@" + updateDigest
+		update2Ref = nodeImageRegistry + "@" + update2Digest
+
+		registryHost = "auth-registry.cluster.local:5001"
+
+		clusterName := requireEnv(t, "BINK_CLUSTER_NAME")
+		diskImage := os.Getenv("BINK_NODE_DISK_IMAGE")
+		provider = NewBinkProvider(clusterName, nodeImageRef, diskImage)
+	case "eks":
+		nodeImageRef = requireEnv(t, "E2E_NODE_IMAGE_REF")
+		updateRef = requireEnv(t, "E2E_NODE_IMAGE_UPDATE_REF")
+		update2Ref = os.Getenv("E2E_NODE_IMAGE_UPDATE2_REF")
+		registryHost = extractRegistryHost(updateRef)
+
+		eksClusterName := requireEnv(t, "EKS_CLUSTER_NAME")
+		nodeGroup := requireEnv(t, "EKS_NODE_GROUP")
+		region := requireEnv(t, "AWS_REGION")
+
+		var err error
+		provider, err = NewEKSProvider(
+			eksClusterName, nodeGroup, region, k8sClient,
+		)
+		if err != nil {
+			t.Fatalf("creating EKS provider: %v", err)
+		}
+	default:
+		t.Fatalf("unknown E2E_PROVIDER %q (supported: bink, eks)", providerName)
+	}
+
 	env := &Env{
-		Client:                 k8sClient,
-		clusterName:            clusterName,
-		testID:                 sanitizeTestName(t.Name()),
-		nodeImageDigest:        nodeImageDigest,
-		nodeImageRegistry:      nodeImageRegistry,
-		nodeImageUpdateDigest:  nodeImageUpdateDigest,
-		nodeImageUpdate2Digest: nodeImageUpdate2Digest,
-		registryUser:           os.Getenv("E2E_REGISTRY_USER"),
-		registryPassword:       os.Getenv("E2E_REGISTRY_PASSWORD"),
+		Client:              k8sClient,
+		testID:              sanitizeTestName(t.Name()),
+		providerName:        providerName,
+		provider:            provider,
+		nodeImageRef:        nodeImageRef,
+		nodeImageUpdateRef:  updateRef,
+		nodeImageUpdate2Ref: update2Ref,
+		registryHost:        registryHost,
+		registryUser:        os.Getenv("E2E_REGISTRY_USER"),
+		registryPassword:    os.Getenv("E2E_REGISTRY_PASSWORD"),
 	}
 
 	t.Cleanup(func() {
@@ -138,16 +167,7 @@ func New(t *testing.T) *Env {
 type NodeOption func(*nodeConfig)
 
 type nodeConfig struct {
-	memory       int
-	labels       map[string]string
-	targetImgRef string
-}
-
-// WithMemory sets the VM memory in MB for the node.
-func WithMemory(mb int) NodeOption {
-	return func(c *nodeConfig) {
-		c.memory = mb
-	}
+	labels map[string]string
 }
 
 // WithLabel adds a label to the provisioned node. This is in addition
@@ -161,18 +181,9 @@ func WithLabel(key, value string) NodeOption {
 	}
 }
 
-// WithTargetImgRef sets the target image reference for the node,
-// passed as --target-imgref to bink node add. Overrides the automatic
-// default that AddNode applies when registry metadata is available.
-func WithTargetImgRef(ref string) NodeOption {
-	return func(c *nodeConfig) {
-		c.targetImgRef = ref
-	}
-}
-
-// AddNode provisions a worker node via bink, waits for it to be Ready,
-// and returns the node name. The node is labeled with LabelE2ETest
-// (and any extra labels from WithLabel).
+// AddNode provisions a worker node via the configured provider, waits
+// for it to be Ready, and returns the node name. The node is labeled
+// with LabelE2ETest (and any extra labels from WithLabel).
 func (e *Env) AddNode(t *testing.T, opts ...NodeOption) string {
 	t.Helper()
 
@@ -181,38 +192,20 @@ func (e *Env) AddNode(t *testing.T, opts ...NodeOption) string {
 		o(cfg)
 	}
 
-	if cfg.targetImgRef == "" {
-		if e.nodeImageRegistry == "" || e.nodeImageDigest == "" {
-			t.Fatal(
-				"BINK_LOCAL_REGISTRY_NODE_IMAGE and NODE_IMAGE_DIGEST must be set (or use WithTargetImgRef)",
-			)
-		}
-		cfg.targetImgRef = e.nodeImageRegistry + "@" + e.nodeImageDigest
-	}
-
-	nodeName := e.generateNodeName(t)
-
-	// Provision the node with labels applied at join time.
-	args := []string{"node", "add", nodeName, "--cluster-name", e.clusterName}
-	args = append(args, "--label", LabelE2ETest+"="+e.testID)
+	labels := map[string]string{LabelE2ETest: e.testID}
 	for k, v := range cfg.labels {
-		args = append(args, "--label", k+"="+v)
+		labels[k] = v
 	}
-	if cfg.memory > 0 {
-		args = append(args, "--memory", fmt.Sprintf("%d", cfg.memory))
+
+	ctx := context.Background()
+	t.Logf("Adding node...")
+	nodeName, err := e.provider.AddNode(ctx, labels)
+	if err != nil {
+		t.Fatalf("adding node: %v", err)
 	}
-	if img := os.Getenv("BINK_NODE_DISK_IMAGE"); img != "" {
-		args = append(args, "--node-image", img)
-	}
-	args = append(args, "--target-imgref", cfg.targetImgRef)
-	t.Logf("Adding node %q...", nodeName)
-	if err := runBink(t, args...); err != nil {
-		t.Fatalf("adding node %q: %v", nodeName, err)
-	}
+	t.Logf("Added node %q", nodeName)
 
 	e.nodes = append(e.nodes, nodeName)
-
-	// Wait for Ready.
 	waitForNodeReady(t, e.Client, nodeName)
 
 	return nodeName
@@ -246,52 +239,69 @@ func (e *Env) TestLabels() map[string]string {
 	return map[string]string{LabelE2ETest: e.testID}
 }
 
-// digestedPullSpec builds a digest-qualified image reference from the
-// registry and the given digest. Returns "" if either is empty.
-func (e *Env) digestedPullSpec(digest string) string {
-	if e.nodeImageRegistry == "" || digest == "" {
-		return ""
-	}
-	return e.nodeImageRegistry + "@" + digest
-}
-
-// NodeImageDigestedPullSpec returns the digest-qualified reference for the
-// seeded node image (e.g. "registry.cluster.local:5000/node@sha256:abc123").
+// NodeImageDigestedPullSpec returns the full digest-qualified reference
+// for the base node image.
 func (e *Env) NodeImageDigestedPullSpec() string {
-	return e.digestedPullSpec(e.nodeImageDigest)
+	return e.nodeImageRef
 }
 
-// NodeImageTagRef returns the tag-based reference for the seeded node
+// NodeImageTagRef returns the tag-based reference for the base node
 // image (e.g. "registry.cluster.local:5000/node:latest").
 func (e *Env) NodeImageTagRef() string {
-	return e.nodeImageRegistry + ":latest"
+	repo, _, _ := strings.Cut(e.nodeImageRef, "@")
+	return repo + ":latest"
 }
 
-// NodeImageDigest returns the manifest digest of the seeded node image.
+// NodeImageDigest returns the manifest digest portion of the base
+// node image reference.
 func (e *Env) NodeImageDigest() string {
-	return e.nodeImageDigest
+	_, digest, _ := strings.Cut(e.nodeImageRef, "@")
+	return digest
 }
 
-// NodeImageUpdateDigestedPullSpec returns the digest-qualified reference for the
-// update image (e.g. "registry.cluster.local:5000/node@sha256:def456").
+// NodeImageUpdateDigestedPullSpec returns the full digest-qualified
+// reference for the update image.
 func (e *Env) NodeImageUpdateDigestedPullSpec() string {
-	return e.digestedPullSpec(e.nodeImageUpdateDigest)
+	return e.nodeImageUpdateRef
 }
 
-// NodeImageUpdateDigest returns the manifest digest of the update image.
+// NodeImageUpdateDigest returns the manifest digest portion of the
+// update image reference.
 func (e *Env) NodeImageUpdateDigest() string {
-	return e.nodeImageUpdateDigest
+	_, digest, _ := strings.Cut(e.nodeImageUpdateRef, "@")
+	return digest
 }
 
-// NodeImageUpdate2DigestedPullSpec returns the digest-qualified reference for the
-// second update image (e.g. "registry.cluster.local:5000/node@sha256:789abc").
+// NodeImageUpdate2DigestedPullSpec returns the full digest-qualified
+// reference for the second update image.
 func (e *Env) NodeImageUpdate2DigestedPullSpec() string {
-	return e.digestedPullSpec(e.nodeImageUpdate2Digest)
+	return e.nodeImageUpdate2Ref
 }
 
-// NodeImageUpdate2Digest returns the manifest digest of the second update image.
+// NodeImageUpdate2Digest returns the manifest digest portion of the
+// second update image reference.
 func (e *Env) NodeImageUpdate2Digest() string {
-	return e.nodeImageUpdate2Digest
+	_, digest, _ := strings.Cut(e.nodeImageUpdate2Ref, "@")
+	return digest
+}
+
+// AuthImageRef returns the image reference to use for pull secret
+// tests. For bink, this rewrites the update digest to go through the
+// auth registry (port 5001). For EKS, the update image already
+// requires auth, so it is returned as-is.
+func (e *Env) AuthImageRef() string {
+	switch e.providerName {
+	case "bink":
+		return e.registryHost + "/node@" + e.NodeImageUpdateDigest()
+	default:
+		return e.nodeImageUpdateRef
+	}
+}
+
+// RegistryHost returns the hostname (with optional port) of the
+// authenticated registry used for pull secret tests.
+func (e *Env) RegistryHost() string {
+	return e.registryHost
 }
 
 // RegistryUser returns the authenticated registry username, or empty
@@ -334,7 +344,7 @@ func RetagImage(t *testing.T, srcRef, dstTag string) {
 }
 
 // cleanup gathers diagnostic logs, then deletes test-scoped resources
-// and bink nodes.
+// and removes nodes via the provider.
 func (e *Env) cleanup(t *testing.T) {
 	e.gatherLogs(t)
 
@@ -349,15 +359,7 @@ func (e *Env) cleanup(t *testing.T) {
 	}
 	for _, name := range e.nodes {
 		t.Logf("Removing node %q...", name)
-		if err := runBink(
-			t,
-			"node",
-			"remove",
-			name,
-			"--force",
-			"--cluster-name",
-			e.clusterName,
-		); err != nil {
+		if err := e.provider.RemoveNode(ctx, name); err != nil {
 			t.Logf("WARNING: failed to remove node %q: %v", name, err)
 		}
 	}
@@ -387,6 +389,23 @@ func (e *Env) gatherLogs(t *testing.T) {
 	}
 }
 
+func requireEnv(t *testing.T, key string) string {
+	t.Helper()
+	v := os.Getenv(key)
+	if v == "" {
+		t.Fatalf("%s must be set", key)
+	}
+	return v
+}
+
+// extractRegistryHost returns the registry hostname from a full image
+// reference like "registry.example.com/path/image@sha256:...".
+func extractRegistryHost(ref string) string {
+	withoutDigest, _, _ := strings.Cut(ref, "@")
+	host, _, _ := strings.Cut(withoutDigest, "/")
+	return host
+}
+
 // sanitizeTestName lowercases a test name for use in k8s object names.
 // Panics if the result exceeds 63 characters (k8s label value limit).
 func sanitizeTestName(name string) string {
@@ -395,17 +414,6 @@ func sanitizeTestName(name string) string {
 		panic(fmt.Sprintf("test name %q is %d characters (max 63)", name, len(name)))
 	}
 	return name
-}
-
-// generateNodeName creates a unique node name derived from the test name.
-func (e *Env) generateNodeName(t *testing.T) string {
-	t.Helper()
-
-	b := make([]byte, 3)
-	if _, err := rand.Read(b); err != nil {
-		t.Fatalf("generating random suffix: %v", err)
-	}
-	return e.testID + "-" + hex.EncodeToString(b)
 }
 
 // buildClient creates a controller-runtime client from the kubeconfig
@@ -446,14 +454,4 @@ func waitForNodeReady(t *testing.T, c client.Client, nodeName string) {
 		)), "node %q not Ready yet", nodeName)
 		t.Logf("  node %q is Ready", nodeName)
 	}).WithTimeout(5 * time.Minute).WithPolling(5 * time.Second).Should(Succeed())
-}
-
-// runBink executes a bink command and returns any error.
-func runBink(t *testing.T, args ...string) error {
-	t.Helper()
-
-	cmd := exec.Command("bink", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
 }
