@@ -71,6 +71,12 @@ type Env struct {
 	// image (e.g. "sha256:789abc..."). Used by mid-rollout image change tests.
 	nodeImageUpdate2Digest string
 
+	// nodeImageDifferentOSDigest is the manifest digest of an image built
+	// from a different OS lineage than the seeded node image (e.g. CentOS
+	// vs Fedora). Used by the cross-distro upgrade test. Empty when not
+	// seeded, in which case that test is skipped.
+	nodeImageDifferentOSDigest string
+
 	// registryUser is the username for the authenticated e2e registry
 	// on port 5001. Empty when not configured.
 	registryUser string
@@ -112,19 +118,23 @@ func New(t *testing.T) *Env {
 	if nodeImageUpdate2Digest == "" {
 		t.Fatal("BINK_NODE_IMAGE_UPDATE2_DIGEST must be set")
 	}
+	// Optional: only the cross-distro upgrade test needs this. That test
+	// skips itself when it is unset rather than failing the whole suite.
+	nodeImageDifferentOSDigest := os.Getenv("BINK_NODE_IMAGE_DIFFERENT_OS_DIGEST")
 
 	k8sClient := buildClient(t, kubeconfigPath)
 
 	env := &Env{
-		Client:                 k8sClient,
-		clusterName:            clusterName,
-		testID:                 sanitizeTestName(t.Name()),
-		nodeImageDigest:        nodeImageDigest,
-		nodeImageRegistry:      nodeImageRegistry,
-		nodeImageUpdateDigest:  nodeImageUpdateDigest,
-		nodeImageUpdate2Digest: nodeImageUpdate2Digest,
-		registryUser:           os.Getenv("E2E_REGISTRY_USER"),
-		registryPassword:       os.Getenv("E2E_REGISTRY_PASSWORD"),
+		Client:                     k8sClient,
+		clusterName:                clusterName,
+		testID:                     sanitizeTestName(t.Name()),
+		nodeImageDigest:            nodeImageDigest,
+		nodeImageRegistry:          nodeImageRegistry,
+		nodeImageUpdateDigest:      nodeImageUpdateDigest,
+		nodeImageUpdate2Digest:     nodeImageUpdate2Digest,
+		nodeImageDifferentOSDigest: nodeImageDifferentOSDigest,
+		registryUser:               os.Getenv("E2E_REGISTRY_USER"),
+		registryPassword:           os.Getenv("E2E_REGISTRY_PASSWORD"),
 	}
 
 	t.Cleanup(func() {
@@ -294,6 +304,19 @@ func (e *Env) NodeImageUpdate2Digest() string {
 	return e.nodeImageUpdate2Digest
 }
 
+// NodeImageDifferentOSDigestedPullSpec returns the digest-qualified reference for
+// the different-OS image (e.g. "registry.cluster.local:5000/node@sha256:...").
+// Returns "" when the image is not seeded.
+func (e *Env) NodeImageDifferentOSDigestedPullSpec() string {
+	return e.digestedPullSpec(e.nodeImageDifferentOSDigest)
+}
+
+// NodeImageDifferentOSDigest returns the manifest digest of the different-OS
+// image, or "" when it is not seeded.
+func (e *Env) NodeImageDifferentOSDigest() string {
+	return e.nodeImageDifferentOSDigest
+}
+
 // RegistryUser returns the authenticated registry username, or empty
 // if not configured.
 func (e *Env) RegistryUser() string {
@@ -330,6 +353,28 @@ func RetagImage(t *testing.T, srcRef, dstTag string) {
 	}
 	if err := remote.Write(dst, img); err != nil {
 		t.Fatalf("writing %q: %v", dstTag, err)
+	}
+}
+
+// PowerOffNode forcibly stops the podman container backing a bink node's VM,
+// simulating a node that goes down and does not come back (e.g. a faulty node
+// that fails to return after a reboot). The Kubernetes Node object is left in
+// place (it goes NotReady), so the node's BootcNode is not garbage-collected.
+// bink names the backing container "k8s-<cluster>-<node>".
+//
+// Test teardown tolerates a powered-off node: gatherLogs only warns when it
+// cannot reach the node, and `bink node remove --force` removes the stopped
+// container.
+func (e *Env) PowerOffNode(t *testing.T, nodeName string) {
+	t.Helper()
+
+	container := "k8s-" + e.clusterName + "-" + nodeName
+	t.Logf("Powering off node %q (podman stop %s)", nodeName, container)
+	cmd := exec.Command("podman", "stop", container)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("powering off node %q: %v", nodeName, err)
 	}
 }
 

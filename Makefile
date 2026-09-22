@@ -104,6 +104,7 @@ e2e: ## Run e2e tests (requires: make deploy-bink). V=1 for verbose. RUN=<regex>
 		BINK_NODE_IMAGE_DIGEST=$$(skopeo inspect --tls-verify=false --format '{{.Digest}}' docker://localhost:5000/node:latest) \
 		BINK_NODE_IMAGE_UPDATE_DIGEST=$$(skopeo inspect --tls-verify=false docker://localhost:5000/node:update | jq -r '.Digest') \
 		BINK_NODE_IMAGE_UPDATE2_DIGEST=$$(skopeo inspect --tls-verify=false docker://localhost:5000/node:update2 | jq -r '.Digest') \
+		BINK_NODE_IMAGE_DIFFERENT_OS_DIGEST=$$(skopeo inspect --tls-verify=false docker://localhost:5000/node:different-os 2>/dev/null | jq -r '.Digest // empty') \
 		E2E_REGISTRY_USER=$(E2E_REGISTRY_USER) E2E_REGISTRY_PASSWORD=$(E2E_REGISTRY_PASSWORD) \
 		go test -timeout 40m -count=1 $(if $(V),-v) $(if $(RUN),-run $(RUN)) .
 
@@ -139,6 +140,17 @@ build-update-image: ## Build derived node images for update testing and push to 
 	@printf 'FROM localhost:5000/node:latest\nRUN touch /usr/share/update-marker-2\n' | \
 		podman build -t localhost:5000/node:update2 -f - .
 	podman push --tls-verify=false localhost:5000/node:update2
+
+# Base image for the cross-distro upgrade test. Deliberately a different OS
+# lineage than the Fedora-based node image so the test exercises switching
+# across distributions (CentOS Stream vs Fedora).
+DIFFERENT_OS_IMAGE ?= quay.io/centos-bootc/centos-bootc:stream10
+
+.PHONY: seed-different-os-image
+seed-different-os-image: ## Seed a different-OS bootc image for the cross-distro upgrade e2e test.
+	skopeo copy --dest-tls-verify=false \
+		docker://$(DIFFERENT_OS_IMAGE) \
+		docker://localhost:5000/node:different-os
 
 ##@ Deployment
 
