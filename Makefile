@@ -94,15 +94,42 @@ e2e: ## Run e2e tests (requires: make deploy-bink). V=1 for verbose. RUN=<regex>
 # each package, even though we just have one here--but I really like streaming
 # output...).
 	rm -rf $(ARTIFACTS)
-	cd test/e2e && KUBECONFIG=$(abspath $(KUBECONFIG_BINK)) BINK_CLUSTER_NAME=$(BINK_CLUSTER_NAME) \
-		$(if $(BINK_NODE_IMAGE),BINK_NODE_IMAGE=$(BINK_NODE_IMAGE)) \
+	cd test/e2e && KUBECONFIG=$(abspath $(KUBECONFIG_BINK)) \
+		E2E_PROVIDER=bink \
+		BINK_CLUSTER_NAME=$(BINK_CLUSTER_NAME) \
 		BINK_NODE_DISK_IMAGE=$(BINK_NODE_DISK_IMAGE) \
-		BINK_LOCAL_REGISTRY_NODE_IMAGE=$(BINK_LOCAL_REGISTRY_NODE_IMAGE) \
+		E2E_NODE_IMAGE_REGISTRY=$(BINK_LOCAL_REGISTRY_NODE_IMAGE) \
 		ARTIFACTS=$(ARTIFACTS) \
-		BINK_NODE_IMAGE_DIGEST=$$(skopeo inspect --tls-verify=false --format '{{.Digest}}' docker://localhost:5000/node:latest) \
-		BINK_NODE_IMAGE_UPDATE_DIGEST=$$(skopeo inspect --tls-verify=false docker://localhost:5000/node:update | jq -r '.Digest') \
-		BINK_NODE_IMAGE_UPDATE2_DIGEST=$$(skopeo inspect --tls-verify=false docker://localhost:5000/node:update2 | jq -r '.Digest') \
+		E2E_NODE_IMAGE_DIGEST=$$(skopeo inspect --tls-verify=false --format '{{.Digest}}' docker://localhost:5000/node:latest) \
+		E2E_NODE_IMAGE_UPDATE_DIGEST=$$(skopeo inspect --tls-verify=false docker://localhost:5000/node:update | jq -r '.Digest') \
+		E2E_NODE_IMAGE_UPDATE2_DIGEST=$$(skopeo inspect --tls-verify=false docker://localhost:5000/node:update2 | jq -r '.Digest') \
 		E2E_REGISTRY_USER=$(E2E_REGISTRY_USER) E2E_REGISTRY_PASSWORD=$(E2E_REGISTRY_PASSWORD) \
+		go test -timeout 30m -count=1 $(if $(V),-v) $(if $(RUN),-run $(RUN)) .
+
+# EKS e2e settings
+EKS_CLUSTER_NAME ?=
+EKS_NODE_GROUP ?=
+AWS_REGION ?=
+EKS_NODE_IMAGE_REF ?=
+EKS_NODE_IMAGE_UPDATE_REF ?=
+EKS_NODE_IMAGE_UPDATE2_REF ?=
+EKS_REGISTRY_USER ?=
+EKS_REGISTRY_PASSWORD ?=
+
+.PHONY: e2e-eks
+e2e-eks: ## Run e2e tests against EKS. V=1 for verbose. RUN=<regex> to filter.
+	rm -rf $(ARTIFACTS)
+	cd test/e2e && KUBECONFIG="$(KUBECONFIG)" \
+		E2E_PROVIDER=eks \
+		EKS_CLUSTER_NAME="$(EKS_CLUSTER_NAME)" \
+		EKS_NODE_GROUP="$(EKS_NODE_GROUP)" \
+		AWS_REGION="$(AWS_REGION)" \
+		E2E_NODE_IMAGE_REF="$(EKS_NODE_IMAGE_REF)" \
+		E2E_NODE_IMAGE_UPDATE_REF="$(EKS_NODE_IMAGE_UPDATE_REF)" \
+		E2E_NODE_IMAGE_UPDATE2_REF="$(EKS_NODE_IMAGE_UPDATE2_REF)" \
+		E2E_REGISTRY_USER="$(EKS_REGISTRY_USER)" \
+		E2E_REGISTRY_PASSWORD="$(EKS_REGISTRY_PASSWORD)" \
+		ARTIFACTS="$(ARTIFACTS)" \
 		go test -timeout 30m -count=1 $(if $(V),-v) $(if $(RUN),-run $(RUN)) .
 
 ##@ Build
@@ -202,7 +229,7 @@ deploy-bink: start-bink build-update-image kustomize ## Deploy to a bink cluster
 
 .PHONY: gather-bink
 gather-bink: ## Gather diagnostic logs from the bink cluster.
-	KUBECONFIG=$(abspath $(KUBECONFIG_BINK)) BINK_CLUSTER_NAME=$(BINK_CLUSTER_NAME) \
+	KUBECONFIG=$(abspath $(KUBECONFIG_BINK)) \
 		hack/gather-logs.sh $(ARTIFACTS)/gather-bink controller
 
 .PHONY: teardown-bink

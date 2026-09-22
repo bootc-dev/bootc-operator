@@ -1,9 +1,9 @@
 #!/bin/bash
-# Gather diagnostic logs from a bink cluster.
+# Gather diagnostic logs from a cluster.
 #
 # Usage: hack/gather-logs.sh <output-dir> [node-names...]
 #
-# Expects KUBECONFIG and BINK_CLUSTER_NAME from environment.
+# Expects KUBECONFIG from environment.
 # Each command's output is written to a separate file in <output-dir>.
 # Individual command failures are non-fatal.
 
@@ -15,7 +15,6 @@ if [[ $# -lt 1 ]]; then
 fi
 
 : "${KUBECONFIG:?must be set}"
-: "${BINK_CLUSTER_NAME:?must be set}"
 
 output_dir="$1"
 shift
@@ -32,10 +31,6 @@ run() {
     "$@" > "${output_dir}/${filename}" 2>&1 || true
 }
 
-# Host diagnostics
-run "host-journal.txt"            journalctl --no-pager
-run "host-dmesg.txt"              dmesg
-
 # Cluster-wide commands
 run "k-get-pods.txt"              kubectl get pods -n bootc-operator -o wide
 run "k-describe-pods.txt"         kubectl describe pods -n bootc-operator
@@ -50,10 +45,19 @@ for pod in $(kubectl get pods -n bootc-operator -o jsonpath='{.items[*].metadata
     run "k-logs-${pod}-previous.log" kubectl logs -n bootc-operator "${pod}" --all-containers --previous
 done
 
-# Per-node commands
+# Per-node commands via daemon pod exec
 for node in "${nodes[@]}"; do
     run "k-describe-node-${node}.txt" kubectl describe node "${node}"
-    run "journal-${node}.txt"         bink node ssh "${node}" --cluster-name "${BINK_CLUSTER_NAME}" -- journalctl --no-pager
+
+    daemon_pod=$(kubectl get pods -n bootc-operator \
+        -l app.kubernetes.io/name=bootc-operator,app.kubernetes.io/component=daemon \
+        --field-selector "spec.nodeName=${node}" \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+
+    if [[ -n "${daemon_pod}" ]]; then
+        run "journal-${node}.txt" kubectl exec -n bootc-operator "${daemon_pod}" -- \
+            journalctl --no-pager
+    fi
 done
 
 echo "Done."

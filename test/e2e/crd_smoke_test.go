@@ -18,6 +18,7 @@ import (
 // e2e-worthy flows once we have more of the controller and daemon implemented.
 // Note more comprehensive CRD round-trip tests exist in the unit tests.
 func TestCRDSmoke(t *testing.T) {
+	e2eutil.Providers(t, "bink")
 	env := e2eutil.New(t)
 
 	ctx := context.Background()
