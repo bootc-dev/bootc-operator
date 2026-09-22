@@ -1,0 +1,11 @@
+commands_restrictions:
+  backport:
+    conditions:
+      - base=main
+
+pull_request_rules:
+  - name: automatic rebase for backport PRs
+    conditions:
+      - head~=^mergify/bp/
+    actions:
+      update: {}
