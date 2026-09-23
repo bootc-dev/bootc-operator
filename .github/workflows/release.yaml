@@ -1,19 +1,46 @@
 name: Release
 
 on:
-  pull_request:
+  # A post-merge push can access release secrets even when the PR came from a fork.
+  push:
     branches: [main, release-*]
-    types: [closed]
+    paths: [VERSION]
   workflow_dispatch: {}
 
 permissions: {}
 
 jobs:
+  check-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      release: ${{ steps.check.outputs.release }}
+    steps:
+      - name: Check release label on merged PR
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == workflow_dispatch ]]; then
+            echo 'release=true' >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          # Require this push to be the merge commit of a release-labeled PR.
+          PULLS=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls")
+          if jq -e --arg sha "${GITHUB_SHA}" --arg base "${GITHUB_REF_NAME}" \
+              '[.[] | select(.merged_at != null and .merge_commit_sha == $sha and .base.ref == $base and any(.labels[]?; .name == "release"))] | length > 0' \
+              > /dev/null <<< "${PULLS}"; then
+            echo 'release=true' >> "${GITHUB_OUTPUT}"
+          else
+            echo 'release=false' >> "${GITHUB_OUTPUT}"
+          fi
+
   release:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.pull_request.merged == true &&
-      contains(github.event.pull_request.labels.*.name, 'release'))
+    needs: check-release
+    if: needs.check-release.outputs.release == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
