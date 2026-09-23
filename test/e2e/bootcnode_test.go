@@ -112,7 +112,7 @@ func TestControllerMembership(t *testing.T) {
 // original image, then updates the pool to a new image and verifies the
 // full update lifecycle: staging, reboot, and idle with the new image.
 func TestUpdateReboot(t *testing.T) {
-	e2eutil.Providers(t, "bink")
+	e2eutil.Providers(t, "bink", "eks")
 	g := NewWithT(t)
 	g.SetDefaultEventuallyTimeout(pollTimeout)
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
@@ -825,7 +825,7 @@ func TestNonExistingImage(t *testing.T) {
 // registry shares storage with the unauthenticated one (port 5000),
 // so the update image is already available at both endpoints.
 func TestPullSecretAuth(t *testing.T) {
-	e2eutil.Providers(t, "bink", "eks")
+	e2eutil.Providers(t, "bink")
 	g := NewWithT(t)
 	g.SetDefaultEventuallyTimeout(pollTimeout)
 	g.SetDefaultEventuallyPollingInterval(pollInterval)

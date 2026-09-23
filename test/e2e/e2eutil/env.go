@@ -8,6 +8,7 @@ package e2eutil
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
@@ -20,6 +21,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	. "github.com/onsi/gomega" //nolint:staticcheck
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -79,6 +81,11 @@ type Env struct {
 	// registryPassword is the password for the authenticated e2e
 	// registry. Empty when not configured.
 	registryPassword string
+
+	// nodePullSecretName is the name of the auto-created pull secret
+	// for node images. Empty when no credentials are configured or
+	// the provider does not need one.
+	nodePullSecretName string
 }
 
 // New connects to an existing cluster and returns an Env ready for
@@ -126,7 +133,10 @@ func New(t *testing.T) *Env {
 		nodeImageRef = requireEnv(t, "E2E_NODE_IMAGE_REF")
 		updateRef = requireEnv(t, "E2E_NODE_IMAGE_UPDATE_REF")
 		update2Ref = os.Getenv("E2E_NODE_IMAGE_UPDATE2_REF")
-		registryHost = extractRegistryHost(updateRef)
+		registryHost = os.Getenv("E2E_REGISTRY_HOST")
+		if registryHost == "" {
+			registryHost = extractRegistryHost(updateRef)
+		}
 
 		eksClusterName := requireEnv(t, "EKS_CLUSTER_NAME")
 		nodeGroup := requireEnv(t, "EKS_NODE_GROUP")
@@ -154,6 +164,13 @@ func New(t *testing.T) *Env {
 		registryHost:        registryHost,
 		registryUser:        os.Getenv("E2E_REGISTRY_USER"),
 		registryPassword:    os.Getenv("E2E_REGISTRY_PASSWORD"),
+	}
+
+	if os.Getenv("E2E_REGISTRY_AUTH") == "true" {
+		if env.registryUser == "" || env.registryPassword == "" {
+			t.Fatal("E2E_REGISTRY_AUTH=true requires E2E_REGISTRY_USER and E2E_REGISTRY_PASSWORD")
+		}
+		env.createNodePullSecret(t)
 	}
 
 	t.Cleanup(func() {
@@ -222,6 +239,15 @@ func (e *Env) NewPool(
 	defaults := []testutil.PoolOption{
 		testutil.WithLabel(LabelE2ETest, e.testID),
 		testutil.WithNodeSelector(e.TestLabels()),
+	}
+	if e.nodePullSecretName != "" {
+		defaults = append(
+			defaults,
+			testutil.WithPullSecret(
+				e.nodePullSecretName,
+				testutil.OperatorNamespaceName,
+			),
+		)
 	}
 	allOpts := append(defaults, opts...)
 	return testutil.NewPool(e.testID+"-"+suffix, imageRef, allOpts...)
@@ -314,6 +340,47 @@ func (e *Env) RegistryUser() string {
 // empty if not configured.
 func (e *Env) RegistryPassword() string {
 	return e.registryPassword
+}
+
+// createNodePullSecret creates a dockerconfigjson Secret for pulling
+// node images from an authenticated registry. The secret is scoped to
+// the test via testID and cleaned up automatically.
+func (e *Env) createNodePullSecret(t *testing.T) {
+	t.Helper()
+
+	authStr := base64.StdEncoding.EncodeToString(
+		[]byte(e.registryUser + ":" + e.registryPassword),
+	)
+	dockerCfg := fmt.Sprintf(
+		`{"auths":{%q:{"auth":"%s"}}}`,
+		e.registryHost, authStr,
+	)
+
+	secretName := e.testID + "-node-pull-secret"
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secretName,
+			Namespace: testutil.OperatorNamespaceName,
+		},
+		Type: corev1.SecretTypeDockerConfigJson,
+		Data: map[string][]byte{
+			corev1.DockerConfigJsonKey: []byte(dockerCfg),
+		},
+	}
+
+	ctx := context.Background()
+	if err := e.Client.Create(ctx, secret); err != nil {
+		t.Fatalf("creating node pull secret: %v", err)
+	}
+	t.Logf("Created node pull secret %q", secretName)
+
+	t.Cleanup(func() {
+		if err := e.Client.Delete(ctx, secret); err != nil {
+			t.Logf("WARNING: deleting node pull secret %q: %v", secretName, err)
+		}
+	})
+
+	e.nodePullSecretName = secretName
 }
 
 // RetagImage reads the image at srcRef from the localhost registry and
