@@ -134,6 +134,10 @@ e2e-eks: ## Run e2e tests against EKS. V=1 for verbose. RUN=<regex> to filter.
 		ARTIFACTS="$(ARTIFACTS)" \
 		go test -timeout 30m -count=1 $(if $(V),-v) $(if $(RUN),-run $(RUN)) .
 
+.PHONY: start-socket
+start-socket:
+	systemctl start --user podman.socket
+
 ##@ Build
 
 .PHONY: build
@@ -200,7 +204,7 @@ undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.
 IMG_BINK ?= registry.cluster.local:5000/bootc-operator-e2e:latest
 
 .PHONY: seed-node-image
-seed-node-image: ## Pull the bootc node image by digest and push to the bink registry.
+seed-node-image: start-socket ## Pull the bootc node image by digest and push to the bink registry.
 	bink registry start
 	podman pull $(BINK_NODE_DISK_IMAGE)
 	bootc_img=$$(podman inspect --format '{{index .Config.Labels "bink.bootc-image"}}' $(BINK_NODE_DISK_IMAGE)) && \
@@ -237,7 +241,7 @@ gather-bink: ## Gather diagnostic logs from the bink cluster.
 		hack/gather-logs.sh $(ARTIFACTS)/gather-bink controller
 
 .PHONY: teardown-bink
-teardown-bink: ## Tear down the bink cluster.
+teardown-bink: start-socket ## Tear down the bink cluster.
 	bink cluster stop --remove-data --cluster-name $(BINK_CLUSTER_NAME)
 	rm -f $(KUBECONFIG_BINK)
 
