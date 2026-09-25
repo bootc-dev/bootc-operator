@@ -17,6 +17,14 @@ BINK_NODE_DISK_IMAGE ?= ghcr.io/bootc-dev/bink/node:v$(DEFAULT_KUBE_MINOR)-fedor
 BINK_LOCAL_REGISTRY_NODE_IMAGE ?= registry.cluster.local:5000/node
 E2E_REGISTRY_USER ?= e2e-user
 E2E_REGISTRY_PASSWORD ?= e2e-password
+# Released operator for upgrade testing (set to run TestOperatorUpgrade).
+# RELEASED_OPERATOR_TAG: GitHub release tag to download install.yaml from.
+# RELEASED_OPERATOR_IMG: container image to use (defaults to upstream, override for downstream).
+# Example: RELEASED_OPERATOR_TAG=v0.1.0
+#          RELEASED_OPERATOR_IMG=ghcr.io/bootc-dev/bootc-operator:v0.1.0
+RELEASED_OPERATOR_TAG ?=
+RELEASED_OPERATOR_IMG ?=
+IMG_BINK_RELEASED ?= registry.cluster.local:5000/bootc-operator-released:latest
 # YEAR defines the year value used for substituting the YEAR placeholder in the boilerplate header.
 YEAR ?= $(shell date +%Y)
 
@@ -106,6 +114,8 @@ e2e: ## Run e2e tests (requires: make deploy-bink). V=1 for verbose. RUN=<regex>
 		E2E_NODE_IMAGE_UPDATE_DIGEST=$$(skopeo inspect --tls-verify=false docker://localhost:5000/node:update | jq -r '.Digest') \
 		E2E_NODE_IMAGE_UPDATE2_DIGEST=$$(skopeo inspect --tls-verify=false docker://localhost:5000/node:update2 | jq -r '.Digest') \
 		E2E_REGISTRY_USER=$(E2E_REGISTRY_USER) E2E_REGISTRY_PASSWORD=$(E2E_REGISTRY_PASSWORD) \
+		$(if $(RELEASED_OPERATOR_TAG),E2E_OPERATOR_RELEASE_TAG=$(RELEASED_OPERATOR_TAG)) \
+		$(if $(RELEASED_OPERATOR_IMG),E2E_OPERATOR_RELEASED_IMG=$(IMG_BINK_RELEASED)) \
 		go test -timeout 40m -count=1 $(if $(V),-v) $(if $(RUN),-run $(RUN)) .
 
 # EKS e2e settings
@@ -167,6 +177,15 @@ build-update-image: ## Build derived node images for update testing and push to 
 		podman build -t localhost:5000/node:update2 -f - .
 	podman push --tls-verify=false localhost:5000/node:update2
 
+.PHONY: push-released-operator-image
+push-released-operator-image: ## Pull released operator image and push to bink registry for upgrade testing.
+	@if [ -z "$(RELEASED_OPERATOR_IMG)" ]; then \
+		echo "Error: RELEASED_OPERATOR_IMG must be set (e.g. ghcr.io/bootc-dev/bootc-operator:v0.1.0)"; \
+		exit 1; \
+	fi
+	podman pull $(RELEASED_OPERATOR_IMG)
+	podman push --tls-verify=false $(RELEASED_OPERATOR_IMG) localhost:5000/bootc-operator-released:latest
+
 ##@ Deployment
 
 ifndef ignore-not-found
@@ -219,7 +238,7 @@ start-bink: seed-node-image ## Start a bink cluster (idempotent).
 	kubectl --kubeconfig $(KUBECONFIG_BINK) wait --for=condition=Ready node/controller --timeout=5m
 
 .PHONY: deploy-bink
-deploy-bink: start-bink build-update-image kustomize ## Deploy to a bink cluster (requires: buildimg).
+deploy-bink: start-bink build-update-image $(if $(RELEASED_OPERATOR_IMG),push-released-operator-image) kustomize ## Deploy to a bink cluster (requires: buildimg).
 	podman push --tls-verify=false $(IMG) localhost:5000/bootc-operator-e2e:latest
 	# On re-deploy, restart the rollout to force a re-pull of the :latest tag.
 	# On fresh deploy, skip the restart -- the pod is already pulling the correct image.

@@ -20,6 +20,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	. "github.com/onsi/gomega" //nolint:staticcheck
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -423,6 +424,9 @@ func buildClient(t *testing.T, kubeconfigPath string) client.Client {
 
 	if err := bootcv1alpha1.AddToScheme(scheme.Scheme); err != nil {
 		t.Fatalf("adding bootc scheme: %v", err)
+	}
+	if err := apiextensionsv1.AddToScheme(scheme.Scheme); err != nil {
+		t.Fatalf("adding apiextensions scheme: %v", err)
 	}
 
 	cfg, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)

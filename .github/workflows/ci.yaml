@@ -9,6 +9,7 @@ on:
 
 env:
   BINK_COMMIT: e7d4574fdc610a9fd9bd067aff984516ec7c507d
+  RELEASED_OPERATOR_TAG: v0.1.1
 
 permissions: {}
 
@@ -197,6 +198,8 @@ jobs:
 
       - name: Deploy to bink cluster
         run: make deploy-bink
+        env:
+          RELEASED_OPERATOR_IMG: ghcr.io/${{ github.repository }}:${{ env.RELEASED_OPERATOR_TAG }}
 
       - name: Gather deploy logs
         if: failure()
@@ -204,6 +207,8 @@ jobs:
 
       - name: Run e2e tests
         run: make e2e V=1
+        env:
+          RELEASED_OPERATOR_IMG: ghcr.io/${{ github.repository }}:${{ env.RELEASED_OPERATOR_TAG }}
 
       - name: Upload logs
         if: always()

@@ -86,22 +86,12 @@ func TestControllerMembership(t *testing.T) {
 		HaveField("Status.Phase", corev1.PodRunning),
 	)), "expected exactly one running daemon pod on %s", nodeName)
 
-	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
-		var bn bootcv1alpha1.BootcNode
-		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
-		return bn.Status, err
-	}).WithTimeout(3 * time.Minute).Should(And(
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 3*time.Minute,
 		HaveField("Booted", And(
-			Not(BeNil()),
 			HaveField("Image", env.NodeImageDigestedPullSpec()),
 			HaveField("ImageDigest", env.NodeImageDigest()),
 		)),
-		HaveField("Conditions", ContainElement(And(
-			HaveField("Type", bootcv1alpha1.NodeIdle),
-			HaveField("Status", metav1.ConditionTrue),
-			HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
-		))),
-	))
+	)
 
 	// Verify pool status reflects steady state.
 	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).
@@ -126,18 +116,7 @@ func TestUpdateReboot(t *testing.T) {
 	pool := env.NewPool("workers", env.NodeImageDigestedPullSpec())
 	g.Expect(env.Client.Create(ctx, pool)).To(Succeed())
 
-	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
-		var bn bootcv1alpha1.BootcNode
-		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
-		return bn.Status, err
-	}).WithTimeout(3 * time.Minute).Should(And(
-		HaveField("Booted", Not(BeNil())),
-		HaveField("Conditions", ContainElement(And(
-			HaveField("Type", bootcv1alpha1.NodeIdle),
-			HaveField("Status", metav1.ConditionTrue),
-			HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
-		))),
-	))
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 3*time.Minute)
 
 	t.Logf("Node %q is Idle with original image", nodeName)
 
@@ -224,21 +203,9 @@ func TestUpdateReboot(t *testing.T) {
 
 	// Phase 4: Wait for Idle with the update digest — proves the full
 	// update lifecycle completed (staging, reboot, boot into new image).
-	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
-		var bn bootcv1alpha1.BootcNode
-		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
-		return bn.Status, err
-	}).WithTimeout(5*time.Minute).Should(And(
-		HaveField("Booted", And(
-			Not(BeNil()),
-			HaveField("ImageDigest", env.NodeImageUpdateDigest()),
-		)),
-		HaveField("Conditions", ContainElement(And(
-			HaveField("Type", bootcv1alpha1.NodeIdle),
-			HaveField("Status", metav1.ConditionTrue),
-			HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
-		))),
-	), "expected node to reach Idle with update image after reboot")
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 5*time.Minute,
+		HaveField("Booted", HaveField("ImageDigest", env.NodeImageUpdateDigest())),
+	)
 
 	t.Logf("Node %q is Idle with update image", nodeName)
 
@@ -280,21 +247,9 @@ func TestUpdateReboot(t *testing.T) {
 	t.Logf("Patched pool to rollback to original image %s", originalRef)
 
 	// Phase 8: Wait for Idle with the original digest — proves rollback succeeded.
-	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
-		var bn2 bootcv1alpha1.BootcNode
-		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn2)
-		return bn2.Status, err
-	}).WithTimeout(5*time.Minute).Should(And(
-		HaveField("Booted", And(
-			Not(BeNil()),
-			HaveField("ImageDigest", Equal(env.NodeImageDigest())),
-		)),
-		HaveField("Conditions", ContainElement(And(
-			HaveField("Type", bootcv1alpha1.NodeIdle),
-			HaveField("Status", metav1.ConditionTrue),
-			HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
-		))),
-	), "expected node to reach Idle with original image after rollback")
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 5*time.Minute,
+		HaveField("Booted", HaveField("ImageDigest", Equal(env.NodeImageDigest()))),
+	)
 
 	t.Logf("Node %q successfully rolled back to original image", nodeName)
 
@@ -333,20 +288,9 @@ func TestTagResolution(t *testing.T) {
 	t.Logf("Tag resolved to original digest %s", env.NodeImageDigest())
 
 	// Wait for node to reach Idle with the original image.
-	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
-		var bn bootcv1alpha1.BootcNode
-		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
-		return bn.Status, err
-	}).WithTimeout(3 * time.Minute).Should(And(
-		HaveField("Booted", And(
-			Not(BeNil()),
-			HaveField("ImageDigest", Equal(env.NodeImageDigest())),
-		)),
-		HaveField("Conditions", ContainElement(And(
-			HaveField("Type", bootcv1alpha1.NodeIdle),
-			HaveField("Status", metav1.ConditionTrue),
-		))),
-	))
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 3*time.Minute,
+		HaveField("Booted", HaveField("ImageDigest", Equal(env.NodeImageDigest()))),
+	)
 
 	t.Logf("Node %q is Idle with original image", nodeName)
 
@@ -391,20 +335,9 @@ func TestTagResolution(t *testing.T) {
 		)))
 
 	// Wait for node to reach Idle with the update image.
-	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
-		var bn bootcv1alpha1.BootcNode
-		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
-		return bn.Status, err
-	}).WithTimeout(5 * time.Minute).Should(And(
-		HaveField("Booted", And(
-			Not(BeNil()),
-			HaveField("ImageDigest", Equal(env.NodeImageUpdateDigest())),
-		)),
-		HaveField("Conditions", ContainElement(And(
-			HaveField("Type", bootcv1alpha1.NodeIdle),
-			HaveField("Status", metav1.ConditionTrue),
-		))),
-	))
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 5*time.Minute,
+		HaveField("Booted", HaveField("ImageDigest", Equal(env.NodeImageUpdateDigest()))),
+	)
 
 	t.Logf("Node %q is Idle with update image", nodeName)
 }
@@ -431,18 +364,7 @@ func TestMidRolloutImageChange(t *testing.T) {
 	g.Expect(env.Client.Create(ctx, pool)).To(Succeed())
 
 	for _, nodeName := range []string{nodeA, nodeB} {
-		g.Eventually(func() (bootcv1alpha1.BootcNode, error) {
-			var bn bootcv1alpha1.BootcNode
-			err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
-			return bn, err
-		}).WithTimeout(3 * time.Minute).Should(SatisfyAll(
-			HaveField("Status.Booted", Not(BeNil())),
-			HaveField("Status.Conditions", ContainElement(And(
-				HaveField("Type", bootcv1alpha1.NodeIdle),
-				HaveField("Status", metav1.ConditionTrue),
-				HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
-			))),
-		))
+		testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 3*time.Minute)
 	}
 
 	t.Logf("Both nodes are Idle with original image")
@@ -503,19 +425,9 @@ func TestMidRolloutImageChange(t *testing.T) {
 
 	// Phase 6: Wait for both nodes to be Idle with the second update image.
 	for _, nodeName := range []string{nodeA, nodeB} {
-		g.Eventually(func() (bootcv1alpha1.BootcNode, error) {
-			var bn bootcv1alpha1.BootcNode
-			err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
-			return bn, err
-		}).WithTimeout(8*time.Minute).Should(SatisfyAll(
-			HaveField("Status.Booted", Not(BeNil())),
-			HaveField("Status.Booted.ImageDigest", Equal(env.NodeImageUpdate2Digest())),
-			HaveField("Status.Conditions", ContainElement(And(
-				HaveField("Type", bootcv1alpha1.NodeIdle),
-				HaveField("Status", metav1.ConditionTrue),
-				HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
-			))),
-		), "expected node %s to reach Idle with second update image", nodeName)
+		testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 8*time.Minute,
+			HaveField("Booted", HaveField("ImageDigest", Equal(env.NodeImageUpdate2Digest()))),
+		)
 	}
 
 	t.Logf("Both nodes are Idle with second update image")
@@ -627,20 +539,11 @@ func TestPauseResume(t *testing.T) {
 	pool := env.NewPool("bnp-pause", env.NodeImageDigestedPullSpec())
 	g.Expect(env.Client.Create(ctx, pool)).To(Succeed())
 
-	var bn bootcv1alpha1.BootcNode
-	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
-		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
-		return bn.Status, err
-	}).WithTimeout(3 * time.Minute).Should(And(
-		HaveField("Booted", Not(BeNil())),
-		HaveField("Conditions", ContainElement(And(
-			HaveField("Type", bootcv1alpha1.NodeIdle),
-			HaveField("Status", metav1.ConditionTrue),
-			HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
-		))),
-	))
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 3*time.Minute)
 
 	t.Logf("Node %q is Idle with original image", nodeName)
+
+	var bn bootcv1alpha1.BootcNode
 
 	// Phase 2: Patch pool to update image with paused=true.
 	updateRef := env.NodeImageUpdateDigestedPullSpec()
@@ -712,20 +615,9 @@ func TestPauseResume(t *testing.T) {
 
 	// Phase 5: Wait for node to complete the update — proves the full
 	// update lifecycle completed after resume (reboot, boot into new image).
-	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
-		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
-		return bn.Status, err
-	}).WithTimeout(5*time.Minute).Should(And(
-		HaveField("Booted", And(
-			Not(BeNil()),
-			HaveField("ImageDigest", Equal(env.NodeImageUpdateDigest())),
-		)),
-		HaveField("Conditions", ContainElement(And(
-			HaveField("Type", bootcv1alpha1.NodeIdle),
-			HaveField("Status", metav1.ConditionTrue),
-			HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
-		))),
-	), "expected node to reach Idle with update image after resume")
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 5*time.Minute,
+		HaveField("Booted", HaveField("ImageDigest", Equal(env.NodeImageUpdateDigest()))),
+	)
 
 	t.Logf("Node %q completed update after resume", nodeName)
 
@@ -752,20 +644,11 @@ func TestNonExistingImage(t *testing.T) {
 	pool := env.NewPool("bnp-noimg", env.NodeImageDigestedPullSpec())
 	g.Expect(env.Client.Create(ctx, pool)).To(Succeed())
 
-	var bn bootcv1alpha1.BootcNode
-	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
-		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
-		return bn.Status, err
-	}).WithTimeout(3 * time.Minute).Should(And(
-		HaveField("Booted", Not(BeNil())),
-		HaveField("Conditions", ContainElement(And(
-			HaveField("Type", bootcv1alpha1.NodeIdle),
-			HaveField("Status", metav1.ConditionTrue),
-			HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
-		))),
-	))
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 3*time.Minute)
 
 	t.Logf("Node %q is Idle with original image", nodeName)
+
+	var bn bootcv1alpha1.BootcNode
 
 	// Phase 2: Patch pool to update to a non-existing image.
 	nonExistingRef := "localhost:5000/node@sha256:0000000000000000000000000000000000000000000000000000000000000000"
@@ -886,21 +769,9 @@ func TestPullSecretAuth(t *testing.T) {
 	// Check Booted.Image (the full ref with manifest digest) rather
 	// than Booted.ImageDigest (the content digest) because they can
 	// differ with remote registries.
-	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
-		var bn bootcv1alpha1.BootcNode
-		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
-		return bn.Status, err
-	}).WithTimeout(5 * time.Minute).Should(And(
-		HaveField("Booted", And(
-			Not(BeNil()),
-			HaveField("Image", Equal(authImageRef)),
-		)),
-		HaveField("Conditions", ContainElement(And(
-			HaveField("Type", bootcv1alpha1.NodeIdle),
-			HaveField("Status", metav1.ConditionTrue),
-			HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
-		))),
-	))
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 5*time.Minute,
+		HaveField("Booted", HaveField("Image", Equal(authImageRef))),
+	)
 
 	t.Logf("Node %q booted into auth-registry image", nodeName)
 
@@ -930,18 +801,7 @@ func TestControllerRecovery(t *testing.T) {
 	pool := env.NewPool("bnp-recovery", env.NodeImageDigestedPullSpec())
 	g.Expect(env.Client.Create(ctx, pool)).To(Succeed())
 
-	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
-		var bn bootcv1alpha1.BootcNode
-		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
-		return bn.Status, err
-	}).WithTimeout(3 * time.Minute).Should(And(
-		HaveField("Booted", Not(BeNil())),
-		HaveField("Conditions", ContainElement(And(
-			HaveField("Type", bootcv1alpha1.NodeIdle),
-			HaveField("Status", metav1.ConditionTrue),
-			HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
-		))),
-	))
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 3*time.Minute)
 
 	t.Logf("Node %q is Idle with original image", nodeName)
 
@@ -1024,21 +884,9 @@ func TestControllerRecovery(t *testing.T) {
 	scaleController(t, env, ctx, 1)
 	t.Logf("Controller restored; waiting for the interrupted rollout to finish")
 
-	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
-		var bn bootcv1alpha1.BootcNode
-		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
-		return bn.Status, err
-	}).WithTimeout(5*time.Minute).Should(And(
-		HaveField("Booted", And(
-			Not(BeNil()),
-			HaveField("ImageDigest", Equal(env.NodeImageUpdateDigest())),
-		)),
-		HaveField("Conditions", ContainElement(And(
-			HaveField("Type", bootcv1alpha1.NodeIdle),
-			HaveField("Status", metav1.ConditionTrue),
-			HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
-		))),
-	), "expected node to reach Idle with update image after controller recovery")
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 5*time.Minute,
+		HaveField("Booted", HaveField("ImageDigest", Equal(env.NodeImageUpdateDigest()))),
+	)
 
 	t.Logf("Node %q completed the interrupted rollout after controller recovery", nodeName)
 
