@@ -56,6 +56,11 @@ type Env struct {
 	// provider handles node provisioning and removal.
 	provider NodeProvider
 
+	// clusterName is the bink cluster name, used by PowerOffNode to
+	// derive the backing podman container name. Empty for non-bink
+	// providers.
+	clusterName string
+
 	// nodes tracks node names added via AddNode for cleanup.
 	nodes []string
 
@@ -112,6 +117,7 @@ func New(t *testing.T) *Env {
 		updateRef    string
 		update2Ref   string
 		registryHost string
+		clusterName  string
 	)
 
 	switch providerName {
@@ -127,7 +133,7 @@ func New(t *testing.T) *Env {
 
 		registryHost = "auth-registry.cluster.local:5001"
 
-		clusterName := requireEnv(t, "BINK_CLUSTER_NAME")
+		clusterName = requireEnv(t, "BINK_CLUSTER_NAME")
 		diskImage := os.Getenv("BINK_NODE_DISK_IMAGE")
 		provider = newBinkProvider(clusterName, nodeImageRef, diskImage)
 	case "eks":
@@ -159,6 +165,7 @@ func New(t *testing.T) *Env {
 		testID:              sanitizeTestName(t.Name()),
 		providerName:        providerName,
 		provider:            provider,
+		clusterName:         clusterName,
 		nodeImageRef:        nodeImageRef,
 		nodeImageUpdateRef:  updateRef,
 		nodeImageUpdate2Ref: update2Ref,
@@ -408,6 +415,33 @@ func RetagImage(t *testing.T, srcRef, dstTag string) {
 	}
 	if err := remote.Write(dst, img); err != nil {
 		t.Fatalf("writing %q: %v", dstTag, err)
+	}
+}
+
+// PowerOffNode forcibly stops the podman container backing a bink node's VM,
+// simulating a node that goes down and does not come back (e.g. a faulty node
+// that fails to return after a reboot). The Kubernetes Node object is left in
+// place (it goes NotReady), so the node's BootcNode is not garbage-collected.
+// bink names the backing container "k8s-<cluster>-<node>". Only valid for the
+// bink provider.
+//
+// Test teardown tolerates a powered-off node: gatherLogs only warns when it
+// cannot reach the node, and `bink node remove --force` removes the stopped
+// container.
+func (e *Env) PowerOffNode(t *testing.T, nodeName string) {
+	t.Helper()
+
+	if e.clusterName == "" {
+		t.Fatalf("PowerOffNode requires the bink provider")
+	}
+
+	container := "k8s-" + e.clusterName + "-" + nodeName
+	t.Logf("Powering off node %q (podman stop %s)", nodeName, container)
+	cmd := exec.Command("podman", "stop", container)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("powering off node %q: %v", nodeName, err)
 	}
 }
 
