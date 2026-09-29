@@ -886,6 +886,11 @@ func (r *BootcNodePoolReconciler) restoreCordonState(
 	}
 	modified := node.DeepCopy()
 	modified.Spec.Unschedulable = false
+
+	if metav1.HasAnnotation(node.ObjectMeta, karpenterDoNotRepairAnnotationKey) {
+		delete(modified.Annotations, karpenterDoNotRepairAnnotationKey)
+	}
+
 	if err := r.Patch(ctx, modified, client.StrategicMergeFrom(node)); err != nil {
 		return fmt.Errorf("uncordoning node: %w", err)
 	}

@@ -34,6 +34,15 @@ import (
 // https://github.com/bootc-dev/bootc-operator/issues/99.
 const unhealthySlotHaltThreshold = 2
 
+// Ensures that clusters using Karpenter will not have their nodes reaped when
+// a bootc-operator driven update / reboot is in progress.
+//
+// See:
+// - https://redhat.atlassian.net/browse/BIFROST-1447
+// - https://redhat.atlassian.net/browse/MCO-2599
+// - https://github.com/kubernetes-sigs/karpenter/pull/3311
+const karpenterDoNotRepairAnnotationKey = "karpenter.sh/do-not-repair"
+
 // rolloutState holds the classified BootcNodes for a single reconcile
 // pass.
 type rolloutState struct {
@@ -225,6 +234,11 @@ func (r *BootcNodePoolReconciler) assignRebootSlot(
 		log.Info("Cordoning node", "node", node.Name)
 		modifiedNode := node.DeepCopy()
 		modifiedNode.Spec.Unschedulable = true
+		metav1.SetMetaDataAnnotation(
+			&modifiedNode.ObjectMeta,
+			karpenterDoNotRepairAnnotationKey,
+			"true",
+		)
 		if err := r.Patch(ctx, modifiedNode, client.StrategicMergeFrom(node)); err != nil {
 			return fmt.Errorf("cordoning node: %w", err)
 		}
