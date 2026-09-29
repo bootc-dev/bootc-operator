@@ -809,7 +809,7 @@ func TestControllerRecovery(t *testing.T) {
 	// the controller drain and reboot the node before we scale it down, racing
 	// the stall assertion below.
 	updateRef := env.NodeImageUpdateDigestedPullSpec()
-	stagePausedUpdate(t, g, env, ctx, pool, nodeName,
+	testutil.StagePausedUpdate(t, g, ctx, env.Client, pool, nodeName,
 		updateRef, env.NodeImageUpdateDigest(), env.NodeImageDigest())
 
 	t.Logf("Rollout staged and parked pre-reboot; interrupting the controller")
@@ -857,54 +857,6 @@ func TestControllerRecovery(t *testing.T) {
 	// Verify pool status after recovery.
 	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).
 		Should(poolAllUpdated(1, env.NodeImageUpdateDigest()))
-}
-
-// stagePausedUpdate patches pool to targetRef with the rollout paused, then
-// waits until nodeName has staged targetDigest while still booted on
-// originalDigest. Pausing exposes zero reboot slots, so the controller still
-// propagates the target and the daemon stages it, but the node parks at
-// Staged and cannot reboot on its own — a deterministic pre-reboot window for
-// interrupting the controller or daemon mid-rollout.
-func stagePausedUpdate(
-	t *testing.T,
-	g Gomega,
-	env *e2eutil.Env,
-	ctx context.Context,
-	pool *bootcv1alpha1.BootcNodePool,
-	nodeName, targetRef, targetDigest, originalDigest string,
-) {
-	t.Helper()
-
-	patched := pool.DeepCopy()
-	patched.Spec.Image.Ref = targetRef
-	if patched.Spec.Rollout == nil {
-		patched.Spec.Rollout = &bootcv1alpha1.RolloutSpec{}
-	}
-	patched.Spec.Rollout.Paused = true
-	g.Expect(env.Client.Patch(ctx, patched, client.MergeFrom(pool))).To(Succeed())
-	*pool = *patched
-
-	t.Logf("Patched pool to update image %s (paused)", targetRef)
-
-	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
-		var bn bootcv1alpha1.BootcNode
-		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
-		return bn.Status, err
-	}).WithTimeout(5*time.Minute).Should(And(
-		HaveField("Staged", And(
-			Not(BeNil()),
-			HaveField("ImageDigest", Equal(targetDigest)),
-		)),
-		HaveField("Booted", And(
-			Not(BeNil()),
-			HaveField("ImageDigest", Equal(originalDigest)),
-		)),
-		HaveField("Conditions", ContainElement(And(
-			HaveField("Type", bootcv1alpha1.NodeIdle),
-			HaveField("Status", metav1.ConditionFalse),
-			HaveField("Reason", bootcv1alpha1.NodeReasonStaged),
-		))),
-	), "expected node to stage the update but stay pre-reboot")
 }
 
 // scaleController scales the operator's controller-manager Deployment to the
@@ -990,34 +942,6 @@ func poolAllUpdated(nodeCount int32, deployedDigest string) types.GomegaMatcher 
 	)
 }
 
-// daemonPodsOnNode returns a poll function listing the operator daemon pods
-// scheduled on the given node.
-func daemonPodsOnNode(
-	env *e2eutil.Env,
-	ctx context.Context,
-	nodeName string,
-) func() ([]corev1.Pod, error) {
-	return func() ([]corev1.Pod, error) {
-		var pods corev1.PodList
-		if err := env.Client.List(ctx, &pods,
-			client.InNamespace(testutil.OperatorNamespaceName),
-			client.MatchingLabels{
-				"app.kubernetes.io/name":      "bootc-operator",
-				"app.kubernetes.io/component": "daemon",
-			},
-		); err != nil {
-			return nil, err
-		}
-		var onNode []corev1.Pod
-		for _, p := range pods.Items {
-			if p.Spec.NodeName == nodeName {
-				onNode = append(onNode, p)
-			}
-		}
-		return onNode, nil
-	}
-}
-
 // TestDaemonRecovery provisions a worker node, starts a rollout, and deletes
 // the node's daemon pod while the rollout is parked pre-reboot. The DaemonSet
 // must recreate the pod and the rollout must still complete after resume.
@@ -1047,14 +971,14 @@ func TestDaemonRecovery(t *testing.T) {
 	// deterministically parks at Staged (staging done, pre-reboot) — a stable
 	// window in which to kill the daemon.
 	updateRef := env.NodeImageUpdateDigestedPullSpec()
-	stagePausedUpdate(t, g, env, ctx, pool, nodeName,
+	testutil.StagePausedUpdate(t, g, ctx, env.Client, pool, nodeName,
 		updateRef, env.NodeImageUpdateDigest(), env.NodeImageDigest())
 
 	// Phase 4: Delete the node's daemon pod mid-rollout.
-	g.Eventually(daemonPodsOnNode(env, ctx, nodeName)).
+	g.Eventually(testutil.DaemonPodsOnNode(ctx, env.Client, nodeName)).
 		WithTimeout(2*time.Minute).Should(HaveLen(1),
 		"expected one daemon pod on %s", nodeName)
-	pods, err := daemonPodsOnNode(env, ctx, nodeName)()
+	pods, err := testutil.DaemonPodsOnNode(ctx, env.Client, nodeName)()
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(pods).To(HaveLen(1))
 	oldPod := pods[0]
@@ -1063,7 +987,7 @@ func TestDaemonRecovery(t *testing.T) {
 	t.Logf("Deleted daemon pod %q (uid %s) mid-rollout", oldPod.Name, oldUID)
 
 	// Phase 5: The DaemonSet must recreate the daemon pod.
-	g.Eventually(daemonPodsOnNode(env, ctx, nodeName)).
+	g.Eventually(testutil.DaemonPodsOnNode(ctx, env.Client, nodeName)).
 		WithTimeout(2*time.Minute).Should(ConsistOf(And(
 		HaveField("Status.Phase", corev1.PodRunning),
 		Not(HaveField("UID", oldUID)),
@@ -1155,39 +1079,6 @@ func TestRebootTimeoutDegraded(t *testing.T) {
 	t.Logf("Pool reported the faulty node %q as degraded", nodeName)
 }
 
-// restartOperator simulates an operator upgrade by deleting all operator pods
-// (both the controller Deployment and the DaemonSet). Kubernetes recreates
-// them as it would after an image bump. It waits for a fresh controller pod and
-// a fresh daemon pod on the given node to be Running before returning.
-func restartOperator(t *testing.T, env *e2eutil.Env, ctx context.Context, nodeName string) {
-	t.Helper()
-
-	g := NewWithT(t)
-	g.Expect(env.Client.DeleteAllOf(ctx, &corev1.Pod{},
-		client.InNamespace(testutil.OperatorNamespaceName),
-		client.MatchingLabels{"app.kubernetes.io/name": "bootc-operator"},
-	)).To(Succeed())
-
-	g.Eventually(func() ([]corev1.Pod, error) {
-		var pods corev1.PodList
-		err := env.Client.List(ctx, &pods,
-			client.InNamespace(testutil.OperatorNamespaceName),
-			client.MatchingLabels{
-				"app.kubernetes.io/name":      "bootc-operator",
-				"app.kubernetes.io/component": "controller",
-			},
-		)
-		return pods.Items, err
-	}).WithTimeout(2*time.Minute).Should(ContainElement(
-		HaveField("Status.Phase", corev1.PodRunning),
-	), "expected a running controller pod after restart")
-
-	g.Eventually(daemonPodsOnNode(env, ctx, nodeName)).
-		WithTimeout(2*time.Minute).Should(ConsistOf(
-		HaveField("Status.Phase", corev1.PodRunning),
-	), "expected a running daemon pod on %s after restart", nodeName)
-}
-
 // TestOperatorRestartResilience brings a node to steady state, simulates an
 // unexpected operator crash/restart by cycling both operator components, and
 // verifies managed nodes are not disrupted (no extra reboot, still Idle and
@@ -1219,7 +1110,7 @@ func TestOperatorRestartResilience(t *testing.T) {
 	bootsBefore := getBootCount(t, env, ctx, nodeName)
 
 	// Phase 2: Simulate an operator upgrade by cycling both components.
-	restartOperator(t, env, ctx, nodeName)
+	testutil.RestartOperator(t, g, ctx, env.Client, nodeName)
 	t.Logf("Operator components restarted")
 
 	// Phase 3: The managed node must not be disrupted by the operator restart:
