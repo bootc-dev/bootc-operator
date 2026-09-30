@@ -23,6 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
+	"github.com/bootc-dev/bootc-operator/internal/image"
 	"github.com/bootc-dev/bootc-operator/test/e2e/e2eutil"
 	testutil "github.com/bootc-dev/bootc-operator/test/util"
 )
@@ -223,6 +224,7 @@ func TestUpdateReboot(t *testing.T) {
 
 	// Phase 4: Wait for Idle with the update digest — proves the full
 	// update lifecycle completed (staging, reboot, boot into new image).
+<<<<<<< HEAD
 	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
 		var bn bootcv1alpha1.BootcNode
 		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
@@ -238,6 +240,11 @@ func TestUpdateReboot(t *testing.T) {
 			HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
 		))),
 	), "expected node to reach Idle with update image after reboot")
+=======
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 5*time.Minute,
+		HaveField("Booted", imageMatchesDigest(env.NodeImageUpdateDigest())),
+	)
+>>>>>>> a3c5760 (e2e: fix TestUpdateReboot for manifest-list digests on EKS)
 
 	t.Logf("Node %q is Idle with update image", nodeName)
 
@@ -262,13 +269,7 @@ func TestUpdateReboot(t *testing.T) {
 		return node.Spec.Unschedulable, err
 	}).WithTimeout(3*time.Minute).Should(BeFalse(), "expected node to be schedulable after update")
 
-	// Phase 6: Verify update marker exists on the host via daemon pod exec.
-	execOnNode(t, g, env, ctx, nodeName,
-		"stat", "/proc/1/root/usr/share/update-marker")
-
-	t.Logf("Verified update-marker exists on host via daemon pod")
-
-	// Phase 7: Rollback to original image.
+	// Phase 6: Rollback to original image.
 	originalRef := env.NodeImageDigestedPullSpec()
 
 	modified = pool.DeepCopy()
@@ -279,6 +280,7 @@ func TestUpdateReboot(t *testing.T) {
 	t.Logf("Patched pool to rollback to original image %s", originalRef)
 
 	// Phase 8: Wait for Idle with the original digest — proves rollback succeeded.
+<<<<<<< HEAD
 	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
 		var bn2 bootcv1alpha1.BootcNode
 		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn2)
@@ -294,6 +296,11 @@ func TestUpdateReboot(t *testing.T) {
 			HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
 		))),
 	), "expected node to reach Idle with original image after rollback")
+=======
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 5*time.Minute,
+		HaveField("Booted", imageMatchesDigest(env.NodeImageDigest())),
+	)
+>>>>>>> a3c5760 (e2e: fix TestUpdateReboot for manifest-list digests on EKS)
 
 	t.Logf("Node %q successfully rolled back to original image", nodeName)
 
@@ -936,7 +943,21 @@ func fetchEvents(
 	}
 }
 
+<<<<<<< HEAD
 func poolAllUpdated(nodeCount int32, deployedDigest string) gtypes.GomegaMatcher {
+=======
+// imageMatchesDigest returns a matcher that checks whether an ImageInfo
+// matches the given digest using image.InfoMatchesDigest, which accepts
+// both the content digest and the manifest-list digest embedded in the
+// Image pullspec.
+func imageMatchesDigest(digest string) types.GomegaMatcher {
+	return WithTransform(func(info *bootcv1alpha1.ImageInfo) bool {
+		return image.InfoMatchesDigest(info, digest)
+	}, BeTrue())
+}
+
+func poolAllUpdated(nodeCount int32, deployedDigest string) types.GomegaMatcher {
+>>>>>>> a3c5760 (e2e: fix TestUpdateReboot for manifest-list digests on EKS)
 	return And(
 		HaveField("NodeCount", BeEquivalentTo(nodeCount)),
 		HaveField("UpdatedCount", BeEquivalentTo(nodeCount)),
