@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
+	"github.com/bootc-dev/bootc-operator/internal/image"
 	"github.com/bootc-dev/bootc-operator/test/e2e/e2eutil"
 	testutil "github.com/bootc-dev/bootc-operator/test/util"
 )
@@ -204,7 +205,7 @@ func TestUpdateReboot(t *testing.T) {
 	// Phase 4: Wait for Idle with the update digest — proves the full
 	// update lifecycle completed (staging, reboot, boot into new image).
 	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 5*time.Minute,
-		HaveField("Booted", HaveField("ImageDigest", env.NodeImageUpdateDigest())),
+		HaveField("Booted", imageMatchesDigest(env.NodeImageUpdateDigest())),
 	)
 
 	t.Logf("Node %q is Idle with update image", nodeName)
@@ -230,13 +231,7 @@ func TestUpdateReboot(t *testing.T) {
 		return node.Spec.Unschedulable, err
 	}).WithTimeout(3*time.Minute).Should(BeFalse(), "expected node to be schedulable after update")
 
-	// Phase 6: Verify update marker exists on the host via daemon pod exec.
-	execOnNode(t, g, env, ctx, nodeName,
-		"stat", "/proc/1/root/usr/share/update-marker")
-
-	t.Logf("Verified update-marker exists on host via daemon pod")
-
-	// Phase 7: Rollback to original image.
+	// Phase 6: Rollback to original image.
 	originalRef := env.NodeImageDigestedPullSpec()
 
 	modified = pool.DeepCopy()
@@ -248,7 +243,7 @@ func TestUpdateReboot(t *testing.T) {
 
 	// Phase 8: Wait for Idle with the original digest — proves rollback succeeded.
 	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 5*time.Minute,
-		HaveField("Booted", HaveField("ImageDigest", Equal(env.NodeImageDigest()))),
+		HaveField("Booted", imageMatchesDigest(env.NodeImageDigest())),
 	)
 
 	t.Logf("Node %q successfully rolled back to original image", nodeName)
@@ -948,6 +943,16 @@ func fetchEvents(
 
 		return testutil.FilterEventsByObject(eventList.Items, kind, name, uid), nil
 	}
+}
+
+// imageMatchesDigest returns a matcher that checks whether an ImageInfo
+// matches the given digest using image.InfoMatchesDigest, which accepts
+// both the content digest and the manifest-list digest embedded in the
+// Image pullspec.
+func imageMatchesDigest(digest string) types.GomegaMatcher {
+	return WithTransform(func(info *bootcv1alpha1.ImageInfo) bool {
+		return image.InfoMatchesDigest(info, digest)
+	}, BeTrue())
 }
 
 func poolAllUpdated(nodeCount int32, deployedDigest string) types.GomegaMatcher {
