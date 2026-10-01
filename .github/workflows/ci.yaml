@@ -8,7 +8,12 @@ on:
     branches: [main, release-*]
 
 env:
+<<<<<<< HEAD
   BINK_COMMIT: e7d4574fdc610a9fd9bd067aff984516ec7c507d
+=======
+  BINK_COMMIT: c7c4013e1275f07fe6ee90be92b61d256117460f
+  RELEASED_OPERATOR_TAG: v0.1.1
+>>>>>>> d21934e (ci: Test Kubernetes 1.37 with current bink images)
 
 permissions: {}
 
@@ -118,12 +123,12 @@ jobs:
       # to help discover new Kubernetes minor versions to add here.
       matrix:
         include:
-          - kube-minor: "1.34"
-            digest: sha256:f7f487ea2a4722163b44bba184ba6814fed657bd08355e60f9a9e7c546be2bcb
+          - kube-minor: "1.37"
+            digest: sha256:6e23773eed8ead35af532007d5a32c8ed6fa3bce29a62e3ec357d1f1ebe94928
           - kube-minor: "1.35"
-            digest: sha256:d3077c99027db0c196d5c6531ef07b8955be827651b9e3d2bc4b8e7c6ebf5612
+            digest: sha256:0974145c201395e6856e5b22265ee15afeefe8765c54ee12fd57aa8711351efd
           - kube-minor: "1.36"
-            digest: sha256:0db6e56357ffd238a44a17d5e1d5b8cd75e9e54448fd466e568042077796a14b
+            digest: sha256:bb3f10867f7c76d3ec5169995c92d5d48149b23ba8ea528b2a0c48c0f8c38b97
     env:
       BINK_NODE_DISK_IMAGE: ghcr.io/bootc-dev/bink/node@${{ matrix.digest }}
     steps:
