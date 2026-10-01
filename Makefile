@@ -51,6 +51,10 @@ docs-serve: ## Serve documentation locally with live reload.
 manifests: controller-gen ## Generate CRD and RBAC manifests.
 	"$(CONTROLLER_GEN)" rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
 
+.PHONY: helm
+helm: manifests yq ## Regenerate Helm chart from Kustomize manifests.
+	YQ="$(YQ)" ./hack/sync-helm.sh
+
 .PHONY: generate
 generate: controller-gen ## Generate DeepCopy method implementations.
 	"$(CONTROLLER_GEN)" object:headerFile="hack/boilerplate.go.txt",year=$(YEAR) paths="./..."

@@ -4,3 +4,14 @@ bin/
 kubeconfig-*
 docs/book/
 user-docs
+chart/bootc-operator/crds/
+chart/bootc-operator/templates/controller-clusterrole.yaml
+chart/bootc-operator/templates/daemon-clusterrole.yaml
+chart/bootc-operator/templates/leader-election-role.yaml
+chart/bootc-operator/templates/controller-deployment.yaml
+chart/bootc-operator/templates/daemon-daemonset.yaml
+chart/bootc-operator/templates/controller-clusterrolebinding.yaml
+chart/bootc-operator/templates/daemon-clusterrolebinding.yaml
+chart/bootc-operator/templates/leader-election-rolebinding.yaml
+chart/bootc-operator/templates/controller-serviceaccount.yaml
+chart/bootc-operator/templates/daemon-serviceaccount.yaml
