@@ -10,7 +10,7 @@ VERSION ?= $(shell git describe --tags --always --dirty)
 GIT_COMMIT ?= $(shell git rev-parse --short HEAD)
 LDFLAGS := -X github.com/bootc-dev/bootc-operator/internal/version.Version=$(VERSION) \
            -X github.com/bootc-dev/bootc-operator/internal/version.GitCommit=$(GIT_COMMIT)
-DEFAULT_KUBE_MINOR ?= 1.35
+DEFAULT_KUBE_MINOR ?= 1.36
 BINK_NODE_DISK_IMAGE ?= ghcr.io/bootc-dev/bink/node:v$(DEFAULT_KUBE_MINOR)-fedora-44-disk
 BINK_LOCAL_REGISTRY_NODE_IMAGE ?= registry.cluster.local:5000/node
 E2E_REGISTRY_USER ?= e2e-user
