@@ -800,7 +800,8 @@ func TestControllerRecovery(t *testing.T) {
 
 	t.Logf("Node %q is Idle with original image", nodeName)
 
-	// Phase 2: Patch the pool to the update image with the rollout paused.
+	// Phase 2-3: Patch the pool to the update image with the rollout paused
+	// and wait until the node has staged the update but has not rebooted.
 	// Pausing makes the pre-reboot window deterministic: the controller still
 	// propagates the target to the node spec and the daemon stages it, but a
 	// paused pool exposes zero reboot slots, so the node parks at Staged and
@@ -808,40 +809,8 @@ func TestControllerRecovery(t *testing.T) {
 	// the controller drain and reboot the node before we scale it down, racing
 	// the stall assertion below.
 	updateRef := env.NodeImageUpdateDigestedPullSpec()
-
-	patched := pool.DeepCopy()
-	patched.Spec.Image.Ref = updateRef
-	if patched.Spec.Rollout == nil {
-		patched.Spec.Rollout = &bootcv1alpha1.RolloutSpec{}
-	}
-	patched.Spec.Rollout.Paused = true
-	g.Expect(env.Client.Patch(ctx, patched, client.MergeFrom(pool))).To(Succeed())
-	*pool = *patched
-
-	t.Logf("Patched pool to update image %s (paused)", updateRef)
-
-	// Phase 3: Wait until the node has staged the update but has not rebooted.
-	// The booted image must still be the original digest — the rollout is now
-	// genuinely in progress but parked pre-reboot.
-	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
-		var bn bootcv1alpha1.BootcNode
-		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
-		return bn.Status, err
-	}).WithTimeout(5*time.Minute).Should(And(
-		HaveField("Staged", And(
-			Not(BeNil()),
-			HaveField("ImageDigest", Equal(env.NodeImageUpdateDigest())),
-		)),
-		HaveField("Booted", And(
-			Not(BeNil()),
-			HaveField("ImageDigest", Equal(env.NodeImageDigest())),
-		)),
-		HaveField("Conditions", ContainElement(And(
-			HaveField("Type", bootcv1alpha1.NodeIdle),
-			HaveField("Status", metav1.ConditionFalse),
-			HaveField("Reason", bootcv1alpha1.NodeReasonStaged),
-		))),
-	), "expected node to stage the update but stay pre-reboot before killing controller")
+	testutil.StagePausedUpdate(t, g, ctx, env.Client, pool, nodeName,
+		updateRef, env.NodeImageUpdateDigest(), env.NodeImageDigest())
 
 	t.Logf("Rollout staged and parked pre-reboot; interrupting the controller")
 
@@ -969,4 +938,218 @@ func poolAllUpdated(nodeCount int32, deployedDigest string) types.GomegaMatcher 
 			HaveField("Reason", bootcv1alpha1.PoolAllUpdated),
 		))),
 	)
+}
+
+// TestDaemonRecovery provisions a worker node, starts a rollout, and deletes
+// the node's daemon pod while the rollout is parked pre-reboot. The DaemonSet
+// must recreate the pod and the rollout must still complete after resume.
+// Covers the daemon half of scenario 5 of #69 (kill the daemon during a
+// roll-out).
+func TestDaemonRecovery(t *testing.T) {
+	e2eutil.Providers(t, "bink")
+	g := NewWithT(t)
+	g.SetDefaultEventuallyTimeout(pollTimeout)
+	g.SetDefaultEventuallyPollingInterval(pollInterval)
+
+	env := e2eutil.New(t)
+	nodeName := env.AddNode(t)
+
+	ctx := context.Background()
+
+	// Phase 1: Create pool with original image and wait for Idle.
+	pool := env.NewPool("bnp-daemonrec", env.NodeImageDigestedPullSpec())
+	g.Expect(env.Client.Create(ctx, pool)).To(Succeed())
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 3*time.Minute,
+		HaveField("Booted", HaveField("ImageDigest", Equal(env.NodeImageDigest()))),
+	)
+	t.Logf("Node %q is Idle with original image", nodeName)
+
+	// Phase 2-3: Patch to the update image with the rollout paused and wait
+	// until the node has staged the update but has not rebooted, so the node
+	// deterministically parks at Staged (staging done, pre-reboot) — a stable
+	// window in which to kill the daemon.
+	updateRef := env.NodeImageUpdateDigestedPullSpec()
+	testutil.StagePausedUpdate(t, g, ctx, env.Client, pool, nodeName,
+		updateRef, env.NodeImageUpdateDigest(), env.NodeImageDigest())
+
+	// Phase 4: Delete the node's daemon pod mid-rollout.
+	g.Eventually(testutil.DaemonPodsOnNode(ctx, env.Client, nodeName)).
+		WithTimeout(2*time.Minute).Should(HaveLen(1),
+		"expected one daemon pod on %s", nodeName)
+	pods, err := testutil.DaemonPodsOnNode(ctx, env.Client, nodeName)()
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(pods).To(HaveLen(1))
+	oldPod := pods[0]
+	oldUID := oldPod.UID
+	g.Expect(env.Client.Delete(ctx, &oldPod)).To(Succeed())
+	t.Logf("Deleted daemon pod %q (uid %s) mid-rollout", oldPod.Name, oldUID)
+
+	// Phase 5: The DaemonSet must recreate the daemon pod.
+	g.Eventually(testutil.DaemonPodsOnNode(ctx, env.Client, nodeName)).
+		WithTimeout(2*time.Minute).Should(ConsistOf(And(
+		HaveField("Status.Phase", corev1.PodRunning),
+		Not(HaveField("UID", oldUID)),
+	)), "expected a fresh running daemon pod on %s", nodeName)
+	t.Logf("Daemon pod recreated; resuming the rollout")
+
+	// Phase 6: Unpause and verify the rollout completes despite the daemon
+	// having been restarted mid-rollout.
+	unpaused := pool.DeepCopy()
+	unpaused.Spec.Rollout.Paused = false
+	g.Expect(env.Client.Patch(ctx, unpaused, client.MergeFrom(pool))).To(Succeed())
+	*pool = *unpaused
+
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 5*time.Minute,
+		HaveField("Booted", HaveField("ImageDigest", Equal(env.NodeImageUpdateDigest()))),
+	)
+	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).
+		Should(poolAllUpdated(1, env.NodeImageUpdateDigest()))
+	t.Logf("Node %q completed the rollout after daemon recovery", nodeName)
+}
+
+// TestRebootTimeoutDegraded provisions a worker node, triggers a rollout with a
+// short reboot timeout, and powers the node off once it starts rebooting so it
+// never returns. The controller must report the stuck node as degraded at the
+// pool level once the timeout elapses. Covers scenario 4 of #69 (a faulty node
+// that fails to come back after the reboot).
+func TestRebootTimeoutDegraded(t *testing.T) {
+	e2eutil.Providers(t, "bink")
+	g := NewWithT(t)
+	g.SetDefaultEventuallyTimeout(pollTimeout)
+	g.SetDefaultEventuallyPollingInterval(pollInterval)
+
+	env := e2eutil.New(t)
+	nodeName := env.AddNode(t)
+
+	ctx := context.Background()
+
+	// Phase 1: Pool with the original image and a short reboot timeout.
+	pool := env.NewPool("bnp-reboottmo", env.NodeImageDigestedPullSpec(),
+		testutil.WithRebootTimeoutSeconds(90))
+	g.Expect(env.Client.Create(ctx, pool)).To(Succeed())
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 3*time.Minute,
+		HaveField("Booted", HaveField("ImageDigest", Equal(env.NodeImageDigest()))),
+	)
+	t.Logf("Node %q is Idle with original image", nodeName)
+
+	// Phase 2: Patch to the update image to trigger a reboot.
+	updateRef := env.NodeImageUpdateDigestedPullSpec()
+
+	patched := pool.DeepCopy()
+	patched.Spec.Image.Ref = updateRef
+	g.Expect(env.Client.Patch(ctx, patched, client.MergeFrom(pool))).To(Succeed())
+	*pool = *patched
+
+	t.Logf("Patched pool to update image %s", updateRef)
+
+	// Phase 3: Wait for the node to enter Rebooting. The daemon skips
+	// reconciliation after issuing the reboot, so this state is durable.
+	g.Eventually(func() ([]metav1.Condition, error) {
+		var bn bootcv1alpha1.BootcNode
+		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
+		return bn.Status.Conditions, err
+	}).WithTimeout(5*time.Minute).Should(ContainElement(And(
+		HaveField("Type", bootcv1alpha1.NodeIdle),
+		HaveField("Status", metav1.ConditionFalse),
+		HaveField("Reason", bootcv1alpha1.NodeReasonRebooting),
+	)), "expected node to reach Rebooting state")
+
+	// Phase 4: Power the node off so it never returns from the reboot. This is
+	// not racy against the VM actually rebooting: the daemon stops reconciling
+	// once it issues the reboot (Phase 3), so the node stays in Rebooting until
+	// it either comes back Booted or the reboot timeout trips. Powering it off
+	// here guarantees the former never happens, so the timeout path is taken.
+	env.PowerOffNode(t, nodeName)
+	t.Logf("Node %q powered off while Rebooting; awaiting reboot-timeout", nodeName)
+
+	// Phase 5: Once the reboot timeout elapses the controller must report the
+	// stuck node as degraded at the pool level (the downed node cannot
+	// self-report while it is off).
+	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).
+		WithTimeout(4*time.Minute).Should(And(
+		HaveField("DegradedCount", BeEquivalentTo(1)),
+		HaveField("Conditions", ContainElement(And(
+			HaveField("Type", bootcv1alpha1.PoolDegraded),
+			HaveField("Status", metav1.ConditionTrue),
+			HaveField("Reason", bootcv1alpha1.PoolNodeDegraded),
+		))),
+	), "expected pool to report the faulty node as degraded")
+	t.Logf("Pool reported the faulty node %q as degraded", nodeName)
+}
+
+// TestOperatorRestartResilience brings a node to steady state, simulates an
+// unexpected operator crash/restart by cycling both operator components, and
+// verifies managed nodes are not disrupted (no extra reboot, still Idle and
+// up to date) and that the operator still drives a subsequent rollout to
+// completion. Covers scenario 9 of #69 (restart resilience). Complements
+// TestOperatorUpgrade, which covers an actual version upgrade via a
+// released manifest rather than a same-version pod restart.
+func TestOperatorRestartResilience(t *testing.T) {
+	e2eutil.Providers(t, "bink")
+	g := NewWithT(t)
+	g.SetDefaultEventuallyTimeout(pollTimeout)
+	g.SetDefaultEventuallyPollingInterval(pollInterval)
+
+	env := e2eutil.New(t)
+	nodeName := env.AddNode(t)
+
+	ctx := context.Background()
+
+	// Phase 1: Reach steady state on the original image.
+	pool := env.NewPool("bnp-restartres", env.NodeImageDigestedPullSpec())
+	g.Expect(env.Client.Create(ctx, pool)).To(Succeed())
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 3*time.Minute,
+		HaveField("Booted", HaveField("ImageDigest", Equal(env.NodeImageDigest()))),
+	)
+	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).
+		Should(poolAllUpdated(1, env.NodeImageDigest()))
+	t.Logf("Node %q is Idle and pool is up to date", nodeName)
+
+	bootsBefore := getBootCount(t, env, ctx, nodeName)
+
+	// Phase 2: Simulate an operator upgrade by cycling both components.
+	testutil.RestartOperator(t, g, ctx, env.Client, nodeName)
+	t.Logf("Operator components restarted")
+
+	// Phase 3: The managed node must not be disrupted by the operator restart:
+	// it must stay on its current image without rebooting.
+	g.Consistently(func() (string, error) {
+		var bn bootcv1alpha1.BootcNode
+		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
+		if bn.Status.Booted == nil {
+			return "", err
+		}
+		return bn.Status.Booted.ImageDigest, err
+	}).WithTimeout(30*time.Second).WithPolling(3*time.Second).Should(
+		Equal(env.NodeImageDigest()),
+		"node should stay on its image across an operator restart",
+	)
+
+	bootsAfter := getBootCount(t, env, ctx, nodeName)
+	g.Expect(bootsAfter).To(Equal(bootsBefore),
+		"operator restart must not reboot the node")
+
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 2*time.Minute,
+		HaveField("Booted", HaveField("ImageDigest", Equal(env.NodeImageDigest()))),
+	)
+	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).
+		Should(poolAllUpdated(1, env.NodeImageDigest()))
+
+	// Phase 4: The restarted operator must still function — a subsequent
+	// rollout completes normally.
+	updateRef := env.NodeImageUpdateDigestedPullSpec()
+
+	patched := pool.DeepCopy()
+	patched.Spec.Image.Ref = updateRef
+	g.Expect(env.Client.Patch(ctx, patched, client.MergeFrom(pool))).To(Succeed())
+	*pool = *patched
+
+	t.Logf("Patched pool to update image %s after operator restart", updateRef)
+
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 5*time.Minute,
+		HaveField("Booted", HaveField("ImageDigest", Equal(env.NodeImageUpdateDigest()))),
+	)
+	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).
+		Should(poolAllUpdated(1, env.NodeImageUpdateDigest()))
+	t.Logf("Operator functioned normally after restart: rollout completed")
 }
