@@ -1,0 +1,9 @@
+image:
+  repository: ghcr.io/bootc-dev/bootc-operator
+  tag: ""
+  pullPolicy: ""
+
+imagePullSecrets: []
+
+controller:
+  extraArgs: []
