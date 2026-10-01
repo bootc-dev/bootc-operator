@@ -1,0 +1,39 @@
+name: Set up bink environment
+description: Configure KVM, KSM, kernel settings, and install system dependencies for running bink clusters.
+
+runs:
+  using: composite
+  steps:
+    - name: Set up KVM
+      shell: bash
+      run: sudo chmod 666 /dev/kvm
+
+    - name: Enable KSM
+      shell: bash
+      run: |
+        sudo sh -c 'echo 1 > /sys/kernel/mm/ksm/run'
+        sudo sh -c 'echo 5000 > /sys/kernel/mm/ksm/pages_to_scan'
+
+    - name: Install system dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y podman
+
+    - name: Configure kernel
+      shell: bash
+      run: |
+        sudo systemctl disable --now apparmor 2>/dev/null || true
+        sudo aa-teardown 2>/dev/null || true
+        sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+    - name: Start podman socket
+      shell: bash
+      run: systemctl --user start podman.socket
+
+    - name: Fix registries configuration
+      shell: bash
+      run: |
+        sudo tee /etc/containers/registries.conf > /dev/null <<'EOF'
+        unqualified-search-registries = ["docker.io"]
+        EOF
