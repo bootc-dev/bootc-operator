@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -18,6 +20,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
+	testutil "github.com/bootc-dev/bootc-operator/test/util"
 )
 
 var (
@@ -74,10 +77,17 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testutil.OperatorNamespaceName}}
+	if err := k8sClient.Create(context.Background(), ns); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to create event namespace: %v\n", err)
+		os.Exit(1)
+	}
+
 	testReconciler = &BootcNodePoolReconciler{
-		Client:     mgr.GetClient(),
-		Scheme:     mgr.GetScheme(),
-		KubeClient: kubeClient,
+		Client:         mgr.GetClient(),
+		Scheme:         mgr.GetScheme(),
+		KubeClient:     kubeClient,
+		EventNamespace: testutil.OperatorNamespaceName,
 	}
 	if err := testReconciler.SetupWithManager(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to setup reconciler: %v\n", err)

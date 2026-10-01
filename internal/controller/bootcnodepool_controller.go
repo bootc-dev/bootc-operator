@@ -58,6 +58,10 @@ type BootcNodePoolReconciler struct {
 	KubeClient kubernetes.Interface
 	Recorder   events.EventRecorder
 
+	// EventNamespace is the namespace where events for cluster-scoped
+	// resources are created. Without this, client-go defaults to "default".
+	EventNamespace string
+
 	TagResolver           TagResolver
 	TagResolutionInterval time.Duration
 

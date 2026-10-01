@@ -5,6 +5,7 @@ package main
 import (
 	"flag"
 	"os"
+	"strings"
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -21,10 +22,22 @@ import (
 	"github.com/bootc-dev/bootc-operator/internal/version"
 )
 
+const namespacePath = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
 )
+
+func detectNamespace() string {
+	if ns := os.Getenv("POD_NAMESPACE"); ns != "" {
+		return ns
+	}
+	if data, err := os.ReadFile(namespacePath); err == nil {
+		return strings.TrimSpace(string(data))
+	}
+	return ""
+}
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
@@ -96,6 +109,7 @@ func main() {
 		Client:                mgr.GetClient(),
 		Scheme:                mgr.GetScheme(),
 		KubeClient:            kubeClient,
+		EventNamespace:        detectNamespace(),
 		TagResolver:           &registry.GGCRResolver{AllowInsecure: allowInsecureRegistry},
 		TagResolutionInterval: tagResolutionInterval,
 	}).SetupWithManager(mgr); err != nil {

@@ -855,7 +855,7 @@ func eventsForObject(
 	if err := k8sClient.List(
 		ctx,
 		&eventList,
-		client.InNamespace(metav1.NamespaceDefault),
+		client.InNamespace(testutil.OperatorNamespaceName),
 	); err != nil {
 		return nil, err
 	}
