@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
+	"github.com/bootc-dev/bootc-operator/internal/config"
 	"github.com/bootc-dev/bootc-operator/internal/controller"
 	"github.com/bootc-dev/bootc-operator/internal/registry"
 	"github.com/bootc-dev/bootc-operator/internal/version"
@@ -34,8 +35,7 @@ func init() {
 func main() {
 	var enableLeaderElection bool
 	var probeAddr string
-	var tagResolutionInterval time.Duration
-	var allowInsecureRegistry bool
+	var options config.ControllerOptions
 	flag.StringVar(
 		&probeAddr,
 		"health-probe-bind-address",
@@ -43,13 +43,13 @@ func main() {
 		"The address the probe endpoint binds to.",
 	)
 	flag.DurationVar(
-		&tagResolutionInterval,
+		&options.TagResolutionInterval,
 		"tag-resolution-interval",
-		5*time.Minute,
+		time.Duration(bootcv1alpha1.DefaultTagResolutionPeriodSeconds)*time.Second,
 		"How often to re-resolve tag-based image refs.",
 	)
 	flag.BoolVar(
-		&allowInsecureRegistry,
+		&options.AllowInsecureRegistry,
 		"allow-insecure-registry",
 		false,
 		"Allow falling back to HTTP when resolving tag-based image refs against registries that do not serve TLS.",
@@ -62,6 +62,7 @@ func main() {
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
+	explicit := config.ExplicitFlags(flag.CommandLine)
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
@@ -75,7 +76,23 @@ func main() {
 		version.GitCommit,
 	)
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	ctx := ctrl.SetupSignalHandler()
+	restConfig := ctrl.GetConfigOrDie()
+	operatorConfig, err := config.Load(ctx, restConfig, scheme)
+	if err != nil {
+		setupLog.Error(err, "Failed to load operator configuration")
+		os.Exit(1)
+	}
+	options = config.ResolveController(operatorConfig, options, explicit)
+	config.LogSource(
+		setupLog,
+		operatorConfig,
+		explicit,
+		"allow-insecure-registry",
+		"tag-resolution-interval",
+	)
+
+	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
 		Scheme:                 scheme,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
@@ -96,8 +113,8 @@ func main() {
 		Client:                mgr.GetClient(),
 		Scheme:                mgr.GetScheme(),
 		KubeClient:            kubeClient,
-		TagResolver:           &registry.GGCRResolver{AllowInsecure: allowInsecureRegistry},
-		TagResolutionInterval: tagResolutionInterval,
+		TagResolver:           &registry.GGCRResolver{AllowInsecure: options.AllowInsecureRegistry},
+		TagResolutionInterval: options.TagResolutionInterval,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "bootcnodepool")
 		os.Exit(1)
@@ -115,7 +132,7 @@ func main() {
 	}
 
 	setupLog.Info("Starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := mgr.Start(ctx); err != nil {
 		setupLog.Error(err, "Failed to run manager")
 		os.Exit(1)
 	}

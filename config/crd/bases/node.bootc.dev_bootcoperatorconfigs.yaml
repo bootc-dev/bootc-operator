@@ -1,0 +1,88 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: bootcoperatorconfigs.node.bootc.dev
+spec:
+  group: node.bootc.dev
+  names:
+    kind: BootcOperatorConfig
+    listKind: BootcOperatorConfigList
+    plural: bootcoperatorconfigs
+    singular: bootcoperatorconfig
+  scope: Cluster
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          BootcOperatorConfig configures the controller and node daemons in a cluster.
+          The optional singleton named cluster is administrator-owned. Changes take
+          effect when the affected pods restart; explicit command-line flags take precedence.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the configuration consumed when operator processes
+              start.
+            properties:
+              controller:
+                default: {}
+                description: controller configures the controller. Omitted settings
+                  use their defaults.
+                properties:
+                  allowInsecureRegistry:
+                    default: false
+                    description: |-
+                      allowInsecureRegistry allows falling back to HTTP when accessing image
+                      registries. Enable this only for trusted registries that do not support TLS.
+                    type: boolean
+                  tagResolutionPeriodSeconds:
+                    default: 300
+                    description: |-
+                      tagResolutionPeriodSeconds is the interval in seconds between resolving
+                      image tags to digests. Defaults to 300 seconds.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                type: object
+              daemon:
+                default: {}
+                description: daemon configures all node daemons. Omitted settings
+                  use their defaults.
+                properties:
+                  statusPollPeriodSeconds:
+                    default: 300
+                    description: |-
+                      statusPollPeriodSeconds is the interval in seconds between bootc status
+                      polls when filesystem notifications are unavailable. Defaults to 300 seconds.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                type: object
+            type: object
+        required:
+        - spec
+        type: object
+        x-kubernetes-validations:
+        - message: BootcOperatorConfig must be named cluster
+          rule: self.metadata.name == 'cluster'
+    served: true
+    storage: true

@@ -54,6 +54,9 @@ kubectl apply -k https://github.com/bootc-dev/bootc-operator//config/default
 This creates the `bootc-operator` namespace and deploys the controller and
 daemon. The operator does nothing until you create a BootcNodePool.
 
+To configure the controller and daemon with a `BootcOperatorConfig` resource,
+see [Configuring the operator](docs/src/operations/configuration.md).
+
 > [!NOTE]
 > The operator namespace requires a [Pod Security Admission] exemption for the
 > `privileged` level. The daemon DaemonSet runs privileged to execute bootc

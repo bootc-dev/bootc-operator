@@ -7,6 +7,14 @@ metadata:
   name: daemon-role
 rules:
 - apiGroups:
+  - node.bootc.dev
+  resources:
+  - bootcoperatorconfigs
+  resourceNames:
+  - cluster
+  verbs:
+  - get
+- apiGroups:
   - ""
   resources:
   - secrets

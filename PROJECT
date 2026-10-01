@@ -26,4 +26,12 @@ resources:
   kind: BootcNode
   path: github.com/jlebon/bootc-operator/api/v1alpha1
   version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: false
+  domain: bootc.dev
+  group: node
+  kind: BootcOperatorConfig
+  path: github.com/bootc-dev/bootc-operator/api/v1alpha1
+  version: v1alpha1
 version: "3"

@@ -82,3 +82,11 @@ rules:
   - bootcnodes/status
   verbs:
   - get
+- apiGroups:
+  - node.bootc.dev
+  resourceNames:
+  - cluster
+  resources:
+  - bootcoperatorconfigs
+  verbs:
+  - get
