@@ -100,12 +100,21 @@ func TestSimpleRollout(t *testing.T) {
 			return node.Spec.Unschedulable, err
 		}).Should(BeTrue(), "node %s should be cordoned", name)
 
+		g.Eventually(func() (bool, error) {
+			var node corev1.Node
+			err := k8sClient.Get(ctx, client.ObjectKey{Name: name}, &node)
+			return metav1.HasAnnotation(node.ObjectMeta, karpenterDoNotRepairAnnotationKey), err
+		}).Should(BeTrue(), "node %s should get karpenter do-not-repair annotation", name)
+
 		// Verify remaining nodes are not yet touched.
 		for _, other := range nodeNames[i+1:] {
 			var node corev1.Node
 			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: other}, &node)).To(Succeed())
 			g.Expect(node.Spec.Unschedulable).To(BeFalse(),
 				"node %s should not be cordoned", other)
+			g.Expect(metav1.HasAnnotation(node.ObjectMeta, karpenterDoNotRepairAnnotationKey)).
+				To(BeFalse(),
+					"node %s should not have the karpenter do-not-repair annotation", other)
 
 			var bn bootcv1alpha1.BootcNode
 			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: other}, &bn)).To(Succeed())
@@ -134,6 +143,12 @@ func TestSimpleRollout(t *testing.T) {
 			err := k8sClient.Get(ctx, client.ObjectKey{Name: name}, &node)
 			return node.Spec.Unschedulable, err
 		}).Should(BeFalse(), "node %s should be uncordoned after reboot", name)
+
+		g.Eventually(func() (bool, error) {
+			var node corev1.Node
+			err := k8sClient.Get(ctx, client.ObjectKey{Name: name}, &node)
+			return metav1.HasAnnotation(node.ObjectMeta, karpenterDoNotRepairAnnotationKey), err
+		}).Should(BeFalse(), "node %s should not have karpenter do-not-repair annotation after reboot", name)
 	}
 }
 
@@ -661,6 +676,12 @@ func TestNodeLeavesPoolCancelsDrain(t *testing.T) {
 		return n.Spec.Unschedulable, err
 	}).Should(BeTrue())
 
+	g.Eventually(func() (bool, error) {
+		var n corev1.Node
+		err := k8sClient.Get(ctx, client.ObjectKey{Name: nodeName}, &n)
+		return metav1.HasAnnotation(n.ObjectMeta, karpenterDoNotRepairAnnotationKey), err
+	}).Should(BeTrue())
+
 	// Verify desiredImageState is still Staged (drain hasn't completed).
 	var bn bootcv1alpha1.BootcNode
 	g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)).To(Succeed())
@@ -684,6 +705,12 @@ func TestNodeLeavesPoolCancelsDrain(t *testing.T) {
 		var n corev1.Node
 		err := k8sClient.Get(ctx, client.ObjectKey{Name: nodeName}, &n)
 		return n.Spec.Unschedulable, err
+	}).Should(BeFalse())
+
+	g.Eventually(func() (bool, error) {
+		var n corev1.Node
+		err := k8sClient.Get(ctx, client.ObjectKey{Name: nodeName}, &n)
+		return metav1.HasAnnotation(n.ObjectMeta, karpenterDoNotRepairAnnotationKey), err
 	}).Should(BeFalse())
 
 	g.Eventually(func() (map[string]string, error) {
