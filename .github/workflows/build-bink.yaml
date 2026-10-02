@@ -1,0 +1,48 @@
+name: Build bink
+
+on:
+  workflow_call:
+    inputs:
+      bink-commit:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-bink:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout bink
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: bootc-dev/bink
+          ref: ${{ inputs.bink-commit }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true # zizmor: ignore[cache-poisoning]
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgpgme-dev \
+            libbtrfs-dev \
+            libdevmapper-dev \
+            pkg-config
+
+      - name: Build bink
+        run: make build-bink
+
+      - name: Upload bink binary
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bink
+          path: bink
