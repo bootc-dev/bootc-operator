@@ -72,6 +72,11 @@ spec:
           - --health-probe-bind-address=:8081
         image: ghcr.io/bootc-dev/bootc-operator:latest
         name: manager
+        env:
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
         ports:
         - containerPort: 8081
           name: health

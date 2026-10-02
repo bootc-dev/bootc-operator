@@ -420,7 +420,21 @@ func (r *BootcNodePoolReconciler) recordEvent(
 	eventType, reason, action string,
 	note EventNote,
 ) {
+	if r.EventNamespace != "" {
+		regarding = withNamespace(regarding, r.EventNamespace)
+		if related != nil {
+			related = withNamespace(related, r.EventNamespace)
+		}
+	}
 	r.Recorder.Eventf(regarding, related, eventType, reason, action, "%s", note.Note())
+}
+
+func withNamespace(obj runtime.Object, ns string) runtime.Object {
+	c := obj.DeepCopyObject()
+	if o, ok := c.(metav1.Object); ok {
+		o.SetNamespace(ns)
+	}
+	return c
 }
 
 // capNote keeps a note within the events.k8s.io/v1 1 KiB limit and never splits

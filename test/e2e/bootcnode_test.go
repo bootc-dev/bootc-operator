@@ -937,7 +937,9 @@ func fetchEvents(
 ) func() ([]eventsv1.Event, error) {
 	return func() ([]eventsv1.Event, error) {
 		var eventList eventsv1.EventList
-		if err := c.List(ctx, &eventList); err != nil {
+		if err := c.List(ctx, &eventList,
+			client.InNamespace(testutil.OperatorNamespaceName),
+		); err != nil {
 			return nil, err
 		}
 
