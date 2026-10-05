@@ -39,6 +39,7 @@ const (
 // and the node is labeled bootc.dev/managed.
 func TestControllerMembership(t *testing.T) {
 	e2eutil.Providers(t, "bink")
+	t.Parallel()
 	g := NewWithT(t)
 	g.SetDefaultEventuallyTimeout(pollTimeout)
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
@@ -104,6 +105,7 @@ func TestControllerMembership(t *testing.T) {
 // full update lifecycle: staging, reboot, and idle with the new image.
 func TestUpdateReboot(t *testing.T) {
 	e2eutil.Providers(t, "bink", "eks")
+	t.Parallel()
 	g := NewWithT(t)
 	g.SetDefaultEventuallyTimeout(pollTimeout)
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
@@ -258,6 +260,7 @@ func TestUpdateReboot(t *testing.T) {
 // and verifies re-resolution triggers a rollout.
 func TestTagResolution(t *testing.T) {
 	e2eutil.Providers(t, "bink")
+	t.Parallel()
 	g := NewWithT(t)
 	g.SetDefaultEventuallyTimeout(pollTimeout)
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
@@ -344,6 +347,7 @@ func TestTagResolution(t *testing.T) {
 // first update image.
 func TestMidRolloutImageChange(t *testing.T) {
 	e2eutil.Providers(t, "bink")
+	t.Parallel()
 	g := NewWithT(t)
 	g.SetDefaultEventuallyTimeout(pollTimeout)
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
@@ -521,6 +525,7 @@ func getBootCount(t *testing.T, env *e2eutil.Env, ctx context.Context, nodeName 
 // and verifies the update completes.
 func TestPauseResume(t *testing.T) {
 	e2eutil.Providers(t, "bink")
+	t.Parallel()
 	g := NewWithT(t)
 	g.SetDefaultEventuallyTimeout(pollTimeout)
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
@@ -626,6 +631,7 @@ func TestPauseResume(t *testing.T) {
 // node enters degraded state and the update does not proceed.
 func TestNonExistingImage(t *testing.T) {
 	e2eutil.Providers(t, "bink")
+	t.Parallel()
 	g := NewWithT(t)
 	g.SetDefaultEventuallyTimeout(pollTimeout)
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
@@ -704,6 +710,7 @@ func TestNonExistingImage(t *testing.T) {
 // so the update image is already available at both endpoints.
 func TestPullSecretAuth(t *testing.T) {
 	e2eutil.Providers(t, "bink", "eks")
+	t.Parallel()
 	g := NewWithT(t)
 	g.SetDefaultEventuallyTimeout(pollTimeout)
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
@@ -949,6 +956,7 @@ func poolAllUpdated(nodeCount int32, deployedDigest string) types.GomegaMatcher 
 // roll-out).
 func TestDaemonRecovery(t *testing.T) {
 	e2eutil.Providers(t, "bink")
+	t.Parallel()
 	g := NewWithT(t)
 	g.SetDefaultEventuallyTimeout(pollTimeout)
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
@@ -1016,6 +1024,7 @@ func TestDaemonRecovery(t *testing.T) {
 // that fails to come back after the reboot).
 func TestRebootTimeoutDegraded(t *testing.T) {
 	e2eutil.Providers(t, "bink")
+	t.Parallel()
 	g := NewWithT(t)
 	g.SetDefaultEventuallyTimeout(pollTimeout)
 	g.SetDefaultEventuallyPollingInterval(pollInterval)

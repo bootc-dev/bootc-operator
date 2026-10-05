@@ -19,6 +19,7 @@ import (
 // Note more comprehensive CRD round-trip tests exist in the unit tests.
 func TestCRDSmoke(t *testing.T) {
 	e2eutil.Providers(t, "bink")
+	t.Parallel()
 	env := e2eutil.New(t)
 
 	ctx := context.Background()
