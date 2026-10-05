@@ -1,0 +1,15 @@
+apiVersion: v2
+name: bootc-operator
+description: Kubernetes operator for managing bootc-based node OS images
+type: application
+version: 0.1.0
+appVersion: "v0.1.1"
+kubeVersion: ">= 1.34.0"
+home: https://github.com/bootc-dev/bootc-operator
+sources:
+  - https://github.com/bootc-dev/bootc-operator
+keywords:
+  - bootc
+  - operator
+  - os-update
+  - node-management
