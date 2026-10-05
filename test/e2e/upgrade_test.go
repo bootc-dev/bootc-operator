@@ -64,6 +64,7 @@ func TestOperatorUpgrade(t *testing.T) {
 	var origDeploy appsv1.Deployment
 	g.Expect(env.Client.Get(ctx, operatorDeployKey(), &origDeploy)).To(Succeed())
 	currentImg := containerImage(t, origDeploy.Spec.Template.Spec.Containers, "manager")
+	currentArgs := containerArgs(t, origDeploy.Spec.Template.Spec.Containers, "manager")
 	t.Logf("Current operator image: %s", currentImg)
 	t.Logf("Released operator tag: %s, image: %s", releaseTag, releasedImg)
 
@@ -73,7 +74,7 @@ func TestOperatorUpgrade(t *testing.T) {
 
 	t.Cleanup(func() {
 		t.Logf("Restoring operator to current version...")
-		applyCurrentManifests(t, currentImg)
+		applyCurrentManifests(t, currentImg, currentArgs)
 		waitForOperatorReady(t, g, ctx, env.Client)
 		t.Logf("Operator restored")
 	})
@@ -89,7 +90,7 @@ func TestOperatorUpgrade(t *testing.T) {
 	t.Logf("Node %q is Idle with released operator", nodeName)
 
 	// Phase 3: Upgrade by applying the current manifests on top.
-	applyCurrentManifests(t, currentImg)
+	applyCurrentManifests(t, currentImg, currentArgs)
 	waitForOperatorReady(t, g, ctx, env.Client)
 
 	t.Logf("Upgraded operator to current version via manifest apply")
@@ -138,7 +139,7 @@ func installReleasedOperator(
 	deleteCurrentOperator(t, g, ctx, env)
 
 	manifest := downloadReleaseManifest(t, releaseTag)
-	patchedManifest := patchManifestImage(t, manifest, releasedImg)
+	patchedManifest := patchManifestImage(t, manifest, releasedImg, nil)
 
 	kubectlApply(t, patchedManifest)
 	waitForOperatorReady(t, g, ctx, env.Client)
@@ -235,7 +236,12 @@ func downloadReleaseManifest(t *testing.T, tag string) []byte {
 
 // patchManifestImage replaces container image references in
 // Deployment (manager) and DaemonSet (daemon) documents.
-func patchManifestImage(t *testing.T, manifest []byte, img string) []byte {
+func patchManifestImage(
+	t *testing.T,
+	manifest []byte,
+	img string,
+	managerArgs []string,
+) []byte {
 	t.Helper()
 
 	var out bytes.Buffer
@@ -263,6 +269,9 @@ func patchManifestImage(t *testing.T, manifest []byte, img string) []byte {
 		switch kind {
 		case "Deployment":
 			setContainerImage(t, obj, "manager", img)
+			if len(managerArgs) > 0 {
+				setContainerArgs(t, obj, "manager", managerArgs)
+			}
 		case "DaemonSet":
 			setContainerImage(t, obj, "daemon", img)
 		}
@@ -302,6 +311,35 @@ func setContainerImage(t *testing.T, obj map[string]interface{}, containerName, 
 	t.Fatalf("container %q not found in %s", containerName, obj["kind"])
 }
 
+// setContainerArgs replaces the args of a named container in a
+// Deployment or DaemonSet manifest map.
+func setContainerArgs(
+	t *testing.T,
+	obj map[string]interface{},
+	containerName string,
+	args []string,
+) {
+	t.Helper()
+
+	spec, _ := obj["spec"].(map[string]interface{})
+	template, _ := spec["template"].(map[string]interface{})
+	podSpec, _ := template["spec"].(map[string]interface{})
+	containers, _ := podSpec["containers"].([]interface{})
+
+	for _, c := range containers {
+		container, _ := c.(map[string]interface{})
+		if name, _ := container["name"].(string); name == containerName {
+			ifaceArgs := make([]interface{}, len(args))
+			for i, a := range args {
+				ifaceArgs[i] = a
+			}
+			container["args"] = ifaceArgs
+			return
+		}
+	}
+	t.Fatalf("container %q not found in %s", containerName, obj["kind"])
+}
+
 // kubectlApply applies the given manifest bytes via kubectl.
 func kubectlApply(t *testing.T, manifest []byte) {
 	t.Helper()
@@ -325,7 +363,11 @@ func kubectlApply(t *testing.T, manifest []byte) {
 
 // applyCurrentManifests runs the equivalent of "make deploy" for the
 // current version: kustomize build + image patch + kubectl apply.
-func applyCurrentManifests(t *testing.T, img string) {
+func applyCurrentManifests(
+	t *testing.T,
+	img string,
+	managerArgs []string,
+) {
 	t.Helper()
 
 	repoRoot := findRepoRoot(t)
@@ -341,7 +383,7 @@ func applyCurrentManifests(t *testing.T, img string) {
 		t.Fatalf("kustomize build failed: %v\n%s", err, manifest)
 	}
 
-	manifest = patchManifestImage(t, manifest, img)
+	manifest = patchManifestImage(t, manifest, img, managerArgs)
 	kubectlApply(t, manifest)
 }
 
@@ -411,4 +453,15 @@ func containerImage(t *testing.T, containers []corev1.Container, name string) st
 	}
 	t.Fatalf("container %q not found in pod spec", name)
 	return ""
+}
+
+func containerArgs(t *testing.T, containers []corev1.Container, name string) []string {
+	t.Helper()
+	for _, c := range containers {
+		if c.Name == name {
+			return c.Args
+		}
+	}
+	t.Fatalf("container %q not found in pod spec", name)
+	return nil
 }
