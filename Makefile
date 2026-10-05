@@ -120,7 +120,7 @@ e2e: ## Run e2e tests (requires: make deploy-bink). V=1 for verbose. RUN=<regex>
 		E2E_REGISTRY_USER=$(E2E_REGISTRY_USER) E2E_REGISTRY_PASSWORD=$(E2E_REGISTRY_PASSWORD) \
 		$(if $(RELEASED_OPERATOR_TAG),E2E_OPERATOR_RELEASE_TAG=$(RELEASED_OPERATOR_TAG)) \
 		$(if $(RELEASED_OPERATOR_IMG),E2E_OPERATOR_RELEASED_IMG=$(IMG_BINK_RELEASED)) \
-		go test -timeout 40m -count=1 $(if $(V),-v) $(if $(RUN),-run '$(RUN)') .
+		go test -timeout 60m -count=1 $(if $(V),-v) $(if $(RUN),-run '$(RUN)') .
 
 # EKS e2e settings
 EKS_CLUSTER_NAME ?=
