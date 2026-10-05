@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"sync"
+
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	. "github.com/onsi/gomega" //nolint:staticcheck
@@ -518,17 +520,21 @@ func sanitizeTestName(name string) string {
 	return name
 }
 
+var registerSchemes sync.Once
+
 // buildClient creates a controller-runtime client from the kubeconfig
 // with the bootc CRD scheme registered.
 func buildClient(t *testing.T, kubeconfigPath string) client.Client {
 	t.Helper()
 
-	if err := bootcv1alpha1.AddToScheme(scheme.Scheme); err != nil {
-		t.Fatalf("adding bootc scheme: %v", err)
-	}
-	if err := apiextensionsv1.AddToScheme(scheme.Scheme); err != nil {
-		t.Fatalf("adding apiextensions scheme: %v", err)
-	}
+	registerSchemes.Do(func() {
+		if err := bootcv1alpha1.AddToScheme(scheme.Scheme); err != nil {
+			t.Fatalf("adding bootc scheme: %v", err)
+		}
+		if err := apiextensionsv1.AddToScheme(scheme.Scheme); err != nil {
+			t.Fatalf("adding apiextensions scheme: %v", err)
+		}
+	})
 
 	cfg, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
 	if err != nil {
