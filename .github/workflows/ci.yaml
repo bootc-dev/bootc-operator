@@ -8,12 +8,7 @@ on:
     branches: [main, release-*]
 
 env:
-<<<<<<< HEAD
-  BINK_COMMIT: e7d4574fdc610a9fd9bd067aff984516ec7c507d
-=======
   BINK_COMMIT: c7c4013e1275f07fe6ee90be92b61d256117460f
-  RELEASED_OPERATOR_TAG: v0.1.1
->>>>>>> d21934e (ci: Test Kubernetes 1.37 with current bink images)
 
 permissions: {}
 
