@@ -9,9 +9,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sync"
 )
 
 var _ NodeProvider = (*binkProvider)(nil)
+
+// binkNodeMu serializes bink node add/remove calls. Bink uses a
+// mkdir-based DNS lock that does not support concurrent access.
+var binkNodeMu sync.Mutex
 
 // binkProvider provisions nodes using bink (KVM-based local clusters).
 type binkProvider struct {
@@ -58,6 +63,9 @@ func (p *binkProvider) AddNode(
 	}
 	args = append(args, "--target-imgref", p.targetImgRef)
 
+	binkNodeMu.Lock()
+	defer binkNodeMu.Unlock()
+
 	cmd := exec.CommandContext(ctx, "bink", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -71,6 +79,9 @@ func (p *binkProvider) RemoveNode(
 	ctx context.Context,
 	nodeName string,
 ) error {
+	binkNodeMu.Lock()
+	defer binkNodeMu.Unlock()
+
 	cmd := exec.CommandContext(
 		ctx,
 		"bink", "node", "remove", nodeName,
