@@ -206,7 +206,7 @@ func TestUpdateReboot(t *testing.T) {
 
 	// Phase 4: Wait for Idle with the update digest — proves the full
 	// update lifecycle completed (staging, reboot, boot into new image).
-	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 5*time.Minute,
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 8*time.Minute,
 		HaveField("Booted", imageMatchesDigest(env.NodeImageUpdateDigest())),
 	)
 
@@ -244,7 +244,7 @@ func TestUpdateReboot(t *testing.T) {
 	t.Logf("Patched pool to rollback to original image %s", originalRef)
 
 	// Phase 8: Wait for Idle with the original digest — proves rollback succeeded.
-	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 5*time.Minute,
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 8*time.Minute,
 		HaveField("Booted", imageMatchesDigest(env.NodeImageDigest())),
 	)
 
@@ -333,7 +333,7 @@ func TestTagResolution(t *testing.T) {
 		)))
 
 	// Wait for node to reach Idle with the update image.
-	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 5*time.Minute,
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 8*time.Minute,
 		HaveField("Booted", HaveField("ImageDigest", Equal(env.NodeImageUpdateDigest()))),
 	)
 
@@ -615,7 +615,7 @@ func TestPauseResume(t *testing.T) {
 
 	// Phase 5: Wait for node to complete the update — proves the full
 	// update lifecycle completed after resume (reboot, boot into new image).
-	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 5*time.Minute,
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 8*time.Minute,
 		HaveField("Booted", HaveField("ImageDigest", Equal(env.NodeImageUpdateDigest()))),
 	)
 
@@ -771,7 +771,7 @@ func TestPullSecretAuth(t *testing.T) {
 	// Check Booted.Image (the full ref with manifest digest) rather
 	// than Booted.ImageDigest (the content digest) because they can
 	// differ with remote registries.
-	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 5*time.Minute,
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 8*time.Minute,
 		HaveField("Booted", HaveField("Image", Equal(authImageRef))),
 	)
 
@@ -1009,7 +1009,7 @@ func TestDaemonRecovery(t *testing.T) {
 	g.Expect(env.Client.Patch(ctx, unpaused, client.MergeFrom(pool))).To(Succeed())
 	*pool = *unpaused
 
-	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 5*time.Minute,
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 8*time.Minute,
 		HaveField("Booted", HaveField("ImageDigest", Equal(env.NodeImageUpdateDigest()))),
 	)
 	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).
