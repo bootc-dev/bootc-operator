@@ -83,6 +83,12 @@ rules:
   - bootcnodes/status
   verbs:
   - get
+- apiGroups:
+  - node.bootc.dev
+  resources:
+  - bootcoperatorconfigs
+  verbs:
+  - list
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
