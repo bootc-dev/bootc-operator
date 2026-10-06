@@ -56,7 +56,8 @@ gen_workload() {
         .metadata.namespace = \"HELM_NAMESPACE\" |
         .spec.template.spec.serviceAccountName = \"HELM_FULLNAME-${name}\" |
         .spec.template.spec.containers[0].image = \"HELM_IMAGE\" |
-        del(.metadata.labels.\"app.kubernetes.io/managed-by\") |
+        del(.metadata.labels) |
+        .metadata.labels.HELM_LABELS_PLACEHOLDER = true |
         del(.spec.template.spec.containers[0].volumeMounts | select(length == 0)) |
         del(.spec.template.spec.volumes | select(length == 0)) |
         ... comments=\"\"
@@ -64,6 +65,7 @@ gen_workload() {
         -e 's/HELM_FULLNAME/{{ include "bootc-operator.fullname" . }}/g' \
         -e 's/HELM_NAMESPACE/{{ .Release.Namespace }}/g' \
         -e 's/HELM_IMAGE/{{ include "bootc-operator.image" . }}/g' \
+        -e '/HELM_LABELS_PLACEHOLDER/c\    {{- include "bootc-operator.labels" . | nindent 4 }}' \
     > "$output"
 
     sed -i '/image: {{ include "bootc-operator\.image" \. }}/a\
@@ -105,11 +107,14 @@ gen_binding() {
 
     "$YQ" -I2 "
         .metadata.name = \"HELM_FULLNAME-${name}\" |
-        del(.metadata.labels.\"app.kubernetes.io/managed-by\") |
+        del(.metadata.labels) |
+        .metadata.labels.HELM_LABELS_PLACEHOLDER = true |
         .roleRef.name = \"HELM_FULLNAME-${role_suffix}\" |
         .subjects[0].name = \"HELM_FULLNAME-${sa_suffix}\" |
         .subjects[0].namespace = \"HELM_NAMESPACE\"
-    " "$source" | helm_sed > "$output"
+    " "$source" | helm_sed | sed \
+        -e '/HELM_LABELS_PLACEHOLDER/c\    {{- include "bootc-operator.labels" . | nindent 4 }}' \
+    > "$output"
 }
 
 gen_binding "$CONFIG_DIR/rbac/role_binding.yaml" \
@@ -129,8 +134,11 @@ gen_sa() {
     "$YQ" -I2 "
         .metadata.name = \"HELM_FULLNAME-${name}\" |
         .metadata.namespace = \"HELM_NAMESPACE\" |
-        del(.metadata.labels.\"app.kubernetes.io/managed-by\")
-    " "$source" | helm_sed > "$output"
+        del(.metadata.labels) |
+        .metadata.labels.HELM_LABELS_PLACEHOLDER = true
+    " "$source" | helm_sed | sed \
+        -e '/HELM_LABELS_PLACEHOLDER/c\    {{- include "bootc-operator.labels" . | nindent 4 }}' \
+    > "$output"
 }
 
 gen_sa "$CONFIG_DIR/rbac/controller_service_account.yaml" \
