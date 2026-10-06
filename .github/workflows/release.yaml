@@ -113,6 +113,20 @@ jobs:
           TAG: ${{ steps.version.outputs.tag }}
         run: make release-manifest IMG="${IMAGE}:${TAG}"
 
+      - name: Package and push Helm chart
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          make helm
+          ./bin/yq -i ".version = \"${VERSION}\"" chart/bootc-operator/Chart.yaml
+          ./bin/yq -i ".appVersion = \"${TAG}\"" chart/bootc-operator/Chart.yaml
+          helm package chart/bootc-operator
+          helm registry login -u "${ACTOR}" -p "${GH_TOKEN}" ghcr.io
+          helm push "bootc-operator-${VERSION}.tgz" oci://ghcr.io/${{ github.repository }}/charts
+
       - name: Create release
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -120,9 +134,16 @@ jobs:
         run: |
           {
             printf '## Installation\n\n'
+            printf '### kubectl\n\n'
             printf '```bash\n'
             printf 'kubectl apply -f https://github.com/%s/releases/download/%s/install.yaml\n' \
               "${GITHUB_REPOSITORY}" "${TAG}"
+            printf '```\n\n'
+            printf '### Helm\n\n'
+            printf '```bash\n'
+            printf 'helm install bootc-operator oci://ghcr.io/%s/charts/bootc-operator --version %s \\\n' \
+              "${GITHUB_REPOSITORY}" "${TAG#v}"
+            printf '  --create-namespace --namespace bootc-operator\n'
             printf '```\n'
           } > notes.md
           gh release create "${TAG}" \
