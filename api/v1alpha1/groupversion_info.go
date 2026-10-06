@@ -30,6 +30,7 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(SchemeGroupVersion,
 		&BootcNode{}, &BootcNodeList{},
 		&BootcNodePool{}, &BootcNodePoolList{},
+		&BootcOperatorConfig{}, &BootcOperatorConfigList{},
 	)
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)
 	return nil
