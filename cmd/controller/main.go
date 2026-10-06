@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
+	"github.com/bootc-dev/bootc-operator/internal/config"
 	"github.com/bootc-dev/bootc-operator/internal/controller"
 	"github.com/bootc-dev/bootc-operator/internal/registry"
 	"github.com/bootc-dev/bootc-operator/internal/version"
@@ -61,19 +62,19 @@ func main() {
 	)
 	flag.DurationVar(
 		&tagResolutionInterval,
-		"tag-resolution-interval",
-		5*time.Minute,
+		config.TagResolutionIntervalFlag,
+		time.Duration(bootcv1alpha1.DefaultTagResolutionPeriodSeconds)*time.Second,
 		"How often to re-resolve tag-based image refs.",
 	)
 	flag.BoolVar(
 		&allowInsecureRegistry,
-		"allow-insecure-registry",
+		config.AllowInsecureRegistryFlag,
 		false,
 		"Allow falling back to HTTP when resolving tag-based image refs against registries that do not serve TLS.",
 	)
 	flag.StringVar(
 		&pullSecretNamespacesFlag,
-		"pull-secret-namespaces",
+		config.PullSecretNamespacesFlag,
 		"",
 		"Comma-separated extra namespaces that pools may reference pull secrets from. "+
 			"The operator namespace is always allowed.",
@@ -91,6 +92,7 @@ func main() {
 		fmt.Println(version.String())
 		return
 	}
+	explicit := config.ExplicitFlags(flag.CommandLine)
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
@@ -104,23 +106,43 @@ func main() {
 		version.GitCommit,
 	)
 
+	ctx := ctrl.SetupSignalHandler()
+	restConfig := ctrl.GetConfigOrDie()
+	operatorConfig, err := config.Load(ctx, restConfig, scheme)
+	if err != nil {
+		setupLog.Error(err, "Failed to load operator configuration")
+		os.Exit(1)
+	}
+	if err := config.ApplyToFlags(flag.CommandLine, operatorConfig); err != nil {
+		setupLog.Error(err, "Failed to apply operator configuration")
+		os.Exit(1)
+	}
 	operatorNamespace := detectNamespace()
 	pullSecretNamespaces, err := controller.ParsePullSecretNamespaces(
 		pullSecretNamespacesFlag,
 		operatorNamespace,
 	)
 	if err != nil {
-		setupLog.Error(err, "Invalid --pull-secret-namespaces")
+		setupLog.Error(err, "Invalid pull secret namespace configuration")
 		os.Exit(1)
 	}
 	if len(pullSecretNamespaces) == 0 {
 		setupLog.Error(nil, "No pull secret namespaces configured and operator namespace unknown; "+
-			"set --pull-secret-namespaces or POD_NAMESPACE")
+			"set spec.controller.pullSecretNamespaces, --pull-secret-namespaces, or POD_NAMESPACE")
 		os.Exit(1)
 	}
 	setupLog.Info("Pull secret namespaces", "namespaces", pullSecretNamespaces)
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	config.LogSource(
+		setupLog,
+		operatorConfig,
+		explicit,
+		config.AllowInsecureRegistryFlag,
+		config.TagResolutionIntervalFlag,
+		config.PullSecretNamespacesFlag,
+	)
+
+	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
 		Scheme:                 scheme,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
@@ -165,7 +187,7 @@ func main() {
 	}
 
 	setupLog.Info("Starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := mgr.Start(ctx); err != nil {
 		setupLog.Error(err, "Failed to run manager")
 		os.Exit(1)
 	}
