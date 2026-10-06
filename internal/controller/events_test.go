@@ -14,6 +14,7 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	eventsv1 "k8s.io/api/events/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -394,6 +395,52 @@ func TestRecordPoolEvents(t *testing.T) {
 			g.Expect(recorder.events).To(Equal(tt.wantEvents))
 		})
 	}
+}
+
+func TestResolveTargetDigestDeferredPreservesDegraded(t *testing.T) {
+	g := NewWithT(t)
+	pool := testutil.NewPool(
+		"bad-tag",
+		testutil.ImageTaggedRef,
+		testutil.WithWorkerSelector(),
+	)
+	// Simulate a prior failed resolution: NextTagResolutionTime is set
+	// in the future but TargetDigest was never populated.
+	future := metav1.NewTime(time.Now().Add(time.Hour))
+	pool.Status.NextTagResolutionTime = &future
+
+	// Set the degraded condition from a previous reconcile directly
+	// on the pool (no blanket reset, so it persists naturally).
+	origMessage := "dial tcp: lookup registry.example.com: no such host"
+	origTransition := metav1.NewTime(time.Now().Add(-10 * time.Minute))
+	apimeta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
+		Type:               bootcv1alpha1.PoolDegraded,
+		Status:             metav1.ConditionTrue,
+		Reason:             bootcv1alpha1.PoolTagResolutionError,
+		Message:            origMessage,
+		LastTransitionTime: origTransition,
+	})
+
+	reconciler := &BootcNodePoolReconciler{
+		TagResolver:           staticTagResolver{digest: testDigestA},
+		TagResolutionInterval: time.Hour,
+	}
+
+	result, changed, err := reconciler.resolveTargetDigest(
+		context.Background(),
+		pool,
+		nil,
+	)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(changed).To(BeFalse())
+	g.Expect(result.RequeueAfter).To(BeNumerically(">", 0))
+	degraded := apimeta.FindStatusCondition(pool.Status.Conditions, bootcv1alpha1.PoolDegraded)
+	g.Expect(degraded).NotTo(BeNil())
+	g.Expect(degraded.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(degraded.Reason).To(Equal(bootcv1alpha1.PoolTagResolutionError))
+	g.Expect(degraded.Message).To(Equal(origMessage))
+	g.Expect(degraded.LastTransitionTime).To(Equal(origTransition))
 }
 
 func TestResolveTargetDigestReportsTagChange(t *testing.T) {
