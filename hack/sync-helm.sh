@@ -16,6 +16,8 @@ command -v "$YQ" >/dev/null 2>&1 || { echo "error: yq required (run: make yq)" >
 # --- CRDs (separate chart) ---
 mkdir -p "$CRD_CHART_DIR/templates"
 cp "$CONFIG_DIR"/crd/bases/*.yaml "$CRD_CHART_DIR/templates/"
+# Remove generated CRDs from the old layout to avoid packaging them twice.
+rm -rf -- "$CHART_DIR/crds"
 echo "Synced CRDs"
 
 # --- RBAC ---
@@ -89,9 +91,11 @@ gen_workload() {
 gen_workload "$CONFIG_DIR/manager/manager.yaml" Deployment controller \
     "$CHART_DIR/templates/controller-deployment.yaml"
 
-# Inject --pull-secret-namespaces and controller.extraArgs into the args list
+# Supply CLI namespace settings only when explicitly configured in Helm.
 sed -i '/^          image: {{ include "bootc-operator\.image" \. }}/i\
+            {{- if .Values.pullSecretNamespaces }}\
             - {{ printf "--pull-secret-namespaces=%s" (include "bootc-operator.pullSecretNamespaces" .) | quote }}\
+            {{- end }}\
             {{- range .Values.controller.extraArgs }}\
             - {{ . | quote }}\
             {{- end }}' "$CHART_DIR/templates/controller-deployment.yaml"
