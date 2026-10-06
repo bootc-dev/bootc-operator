@@ -92,6 +92,21 @@ jobs:
           git tag -s -m "Release ${TAG}" "${TAG}"
           git push origin "${TAG}"
 
+      - name: Create release branch
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          BRANCH="release-${VERSION%.*}"
+          if gh api "repos/${GITHUB_REPOSITORY}/branches/${BRANCH}" >/dev/null 2>&1; then
+            echo "Branch ${BRANCH} already exists, skipping"
+          else
+            SHA=$(git rev-parse HEAD)
+            gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f "ref=refs/heads/${BRANCH}" \
+              -f "sha=${SHA}"
+          fi
+
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
