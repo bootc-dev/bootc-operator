@@ -7,6 +7,23 @@
 
 ## Install
 
+Install from the OCI registry:
+
+```bash
+helm install bootc-operator oci://ghcr.io/bootc-dev/bootc-operator/charts/bootc-operator \
+  --create-namespace --namespace bootc-operator
+```
+
+To install a specific version:
+
+```bash
+helm install bootc-operator oci://ghcr.io/bootc-dev/bootc-operator/charts/bootc-operator \
+  --version 0.1.0 \
+  --create-namespace --namespace bootc-operator
+```
+
+Alternatively, install from a local checkout:
+
 ```bash
 helm install bootc-operator ./chart/bootc-operator \
   --create-namespace --namespace bootc-operator
