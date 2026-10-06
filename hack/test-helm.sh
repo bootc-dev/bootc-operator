@@ -19,18 +19,18 @@ render() {
     "$HELM" template test "$CHART_DIR" --namespace "$NS" --kube-version 1.34.0 "$@"
 }
 
-# check MANIFESTS FLAG_VALUE NAMESPACES...
-#   Asserts that the controller flag is FLAG_VALUE, that each namespace has
+# check MANIFESTS FLAG_ARGUMENTS NAMESPACES...
+#   Asserts the namespace flag arguments in order (empty means absent), each namespace has
 #   exactly one secret-reading Role bound to the controller ServiceAccount,
 #   and that the controller ClusterRole does not grant access to secrets.
 check() {
     local manifests="$1" flag="$2"; shift 2
-    local want got
+    local want got roles
     want=$(printf '%s\n' "$@" | sort)
 
     got=$(echo "$manifests" | "$YQ" -N 'select(.kind == "Deployment") |
         .spec.template.spec.containers[0].args[] | select(test("^--pull-secret-namespaces="))')
-    [ "$got" = "--pull-secret-namespaces=$flag" ] || fail "controller flag is [$got]"
+    [ "$got" = "$flag" ] || fail "controller flag is [$got]"
 
     roles=$(echo "$manifests" | "$YQ" -N 'select(.kind == "Role") |
         select(.rules | any_c(.resources | any_c(. == "secrets"))) |
@@ -52,10 +52,17 @@ check() {
 
 "$HELM" dependency build "$CHART_DIR" >/dev/null
 
-check "$(render)" "$NS" "$NS"
+check "$(render)" "" "$NS"
 # Duplicates and the release namespace itself must not produce extra RBAC.
 check "$(render --set "pullSecretNamespaces={team-a,$NS,team-b,team-a}")" \
-    "$NS,team-a,team-b" "$NS" team-a team-b
+    "--pull-secret-namespaces=$NS,team-a,team-b" "$NS" team-a team-b
+
+# Explicit extra arguments follow Helm-derived flags; CR fields still take precedence.
+check "$(render --set-string 'controller.extraArgs[0]=--pull-secret-namespaces=')" \
+    "--pull-secret-namespaces=" "$NS"
+check "$(render --set 'pullSecretNamespaces={team-a}' \
+    --set-string 'controller.extraArgs[0]=--pull-secret-namespaces=')" \
+    "$(printf '%s\n' "--pull-secret-namespaces=$NS,team-a" "--pull-secret-namespaces=")" "$NS" team-a
 
 for bad in "pullSecretNamespaces=team-a" "pullSecretNamespaces={team-a,}" \
     "pullSecretNamespaces={Team-A}"; do
