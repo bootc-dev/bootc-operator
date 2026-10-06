@@ -45,6 +45,9 @@ jobs:
       - name: Helm template tests
         run: make helm-test
 
+      - name: Check release assets
+        run: make verify-release-manifest
+
       - name: Vet
         run: make vet
 
