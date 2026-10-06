@@ -200,11 +200,12 @@ buildimg: ## Build container image.
 		-t $(IMG) .
 
 .PHONY: release-manifest
-release-manifest: kustomize yq ## Build install manifest (override IMG to set the image reference).
+release-manifest: kustomize yq ## Build install manifest and optional configuration asset (override IMG).
 	"$(KUSTOMIZE)" build config/default | \
 		"$(YQ)" '(select(.kind == "Deployment") | .spec.template.spec.containers[] | select(.name == "manager")).image = "$(IMG)"' | \
 		"$(YQ)" '(select(.kind == "DaemonSet") | .spec.template.spec.containers[] | select(.name == "daemon")).image = "$(IMG)"' \
 		> install.yaml
+	cp config/samples/bootc_v1alpha1_bootcoperatorconfig.yaml operator-config.yaml
 
 .PHONY: build-update-image
 build-update-image: ## Build derived node images for update testing and push to bink registry.
