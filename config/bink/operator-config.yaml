@@ -1,0 +1,8 @@
+apiVersion: node.bootc.dev/v1alpha1
+kind: BootcOperatorConfig
+metadata:
+  name: cluster
+spec:
+  controller:
+    allowInsecureRegistry: true
+    tagResolutionPeriodSeconds: 10
