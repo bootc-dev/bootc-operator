@@ -98,13 +98,16 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           BRANCH="release-${VERSION%.*}"
-          if gh api "repos/${GITHUB_REPOSITORY}/branches/${BRANCH}" >/dev/null 2>&1; then
+          SHA=$(git rev-parse HEAD)
+          if gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f "ref=refs/heads/${BRANCH}" \
+              -f "sha=${SHA}" 2>/dev/null; then
+            echo "Created branch ${BRANCH}"
+          elif gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${BRANCH}" >/dev/null 2>&1; then
             echo "Branch ${BRANCH} already exists, skipping"
           else
-            SHA=$(git rev-parse HEAD)
-            gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
-              -f "ref=refs/heads/${BRANCH}" \
-              -f "sha=${SHA}"
+            echo "::error::Failed to create branch ${BRANCH}"
+            exit 1
           fi
 
       - name: Set up Go
