@@ -311,14 +311,6 @@ func (r *BootcNodePoolReconciler) Reconcile(
 	// emit events only for persisted transitions.
 	statusOrig := pool.Status.DeepCopy()
 
-	// Start with conditions in a healthy state; sync functions only set
-	// degraded conditions when something is wrong.
-	apimeta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
-		Type:   bootcv1alpha1.PoolDegraded,
-		Status: metav1.ConditionFalse,
-		Reason: bootcv1alpha1.PoolHealthy,
-	})
-
 	// From this point on, let's not re-Get() the pool again and just reuse
 	// `pool` so that we have a consistent view for this reconciliation run.
 	// Status writes to `pool` are also permitted; we Update() back once at
@@ -333,7 +325,13 @@ func (r *BootcNodePoolReconciler) Reconcile(
 		}
 		return ctrl.Result{}, nil
 	}
-	resolveResult, tagTargetChanged, err := r.resolveTargetDigest(ctx, &pool, secretData)
+	clearPoolDegradedReason(&pool, bootcv1alpha1.PoolSecretError)
+
+	resolveResult, tagTargetChanged, err := r.resolveTargetDigest(
+		ctx,
+		&pool,
+		secretData,
+	)
 	if err != nil {
 		if isInvalidSpecError(err) {
 			return r.setInvalidSpecCondition(ctx, &pool, statusOrig, err)
@@ -355,6 +353,14 @@ func (r *BootcNodePoolReconciler) Reconcile(
 		// First tag resolution failed — nothing to roll out yet.
 		return complete(resolveResult)
 	}
+
+	// Clear stale rollout-path degraded conditions so the checks below
+	// can re-evaluate from scratch. SecretError and TagResolutionError
+	// are managed by their own checks above and must not be cleared here.
+	clearPoolDegradedReason(&pool, bootcv1alpha1.PoolNodeConflict)
+	clearPoolDegradedReason(&pool, bootcv1alpha1.PoolNodeDegraded)
+	clearPoolDegradedReason(&pool, bootcv1alpha1.PoolRolloutHalted)
+	clearPoolDegradedReason(&pool, bootcv1alpha1.PoolInvalidSpec)
 
 	// Sync pool membership and retrieve BootcNodes we own.
 	ownedBootcNodes, err := r.syncMembership(ctx, &pool)
@@ -470,6 +476,7 @@ func (r *BootcNodePoolReconciler) resolveTargetDigest(
 		// Reset the NextTagResolutionTime in case we pass from a tag referenced image to a digested one.
 		// Otherwise, it simply a nop
 		pool.Status.NextTagResolutionTime = nil
+		clearPoolDegradedReason(pool, bootcv1alpha1.PoolTagResolutionError)
 		return ctrl.Result{}, false, nil
 	}
 
@@ -493,6 +500,7 @@ func (r *BootcNodePoolReconciler) resolveTargetDigest(
 			log.Info("Resolved tag to new digest", "ref", pool.Spec.Image.Ref, "digest", digest)
 		}
 		pool.Status.TargetDigest = digest
+		clearPoolDegradedReason(pool, bootcv1alpha1.PoolTagResolutionError)
 	}
 
 	next := metav1.NewTime(now.Add(r.TagResolutionInterval))
@@ -916,14 +924,14 @@ var poolDegradedPrecedence = map[string]int{
 }
 
 // setPoolDegraded sets the Degraded condition on the pool, but only if the new
-// reason has higher precedence than the current one. This prevents e.g.
-// RolloutHalted from overwriting NodeConflict. Unknown reasons get precedence
-// 0 (map zero-value), so they silently no-op. Keep poolDegradedPrecedence in
-// sync with the API constants.
+// reason has equal or higher precedence than the current one. Equal precedence
+// allows message updates (e.g. a new error string for the same reason) without
+// changing LastTransitionTime (SetStatusCondition preserves it when the status
+// is unchanged). Keep poolDegradedPrecedence in sync with the API constants.
 func setPoolDegraded(pool *bootcv1alpha1.BootcNodePool, reason, message string) {
 	current := apimeta.FindStatusCondition(pool.Status.Conditions, bootcv1alpha1.PoolDegraded)
 	if current != nil && current.Status == metav1.ConditionTrue {
-		if poolDegradedPrecedence[reason] <= poolDegradedPrecedence[current.Reason] {
+		if poolDegradedPrecedence[reason] < poolDegradedPrecedence[current.Reason] {
 			return
 		}
 	}
@@ -932,5 +940,20 @@ func setPoolDegraded(pool *bootcv1alpha1.BootcNodePool, reason, message string) 
 		Status:  metav1.ConditionTrue,
 		Reason:  reason,
 		Message: message,
+	})
+}
+
+// clearPoolDegradedReason clears the Degraded condition to Healthy, but only
+// if the current reason matches. This allows each check to clear its own
+// degraded reason on success without affecting conditions set by other checks.
+func clearPoolDegradedReason(pool *bootcv1alpha1.BootcNodePool, reason string) {
+	current := apimeta.FindStatusCondition(pool.Status.Conditions, bootcv1alpha1.PoolDegraded)
+	if current == nil || current.Status != metav1.ConditionTrue || current.Reason != reason {
+		return
+	}
+	apimeta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
+		Type:   bootcv1alpha1.PoolDegraded,
+		Status: metav1.ConditionFalse,
+		Reason: bootcv1alpha1.PoolHealthy,
 	})
 }
