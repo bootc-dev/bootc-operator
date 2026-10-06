@@ -207,6 +207,15 @@ release-manifest: kustomize yq ## Build install manifest and optional configurat
 		> install.yaml
 	cp config/samples/bootc_v1alpha1_bootcoperatorconfig.yaml operator-config.yaml
 
+.PHONY: verify-release-manifest
+verify-release-manifest: release-manifest ## Check the generated release assets.
+	@cmp -s config/samples/bootc_v1alpha1_bootcoperatorconfig.yaml operator-config.yaml || \
+		{ echo "operator-config.yaml differs from the validated example"; exit 1; }
+	@test "$$("$(YQ)" ea '[.] | map(select(.kind == "CustomResourceDefinition" and .metadata.name == "bootcoperatorconfigs.node.bootc.dev")) | length' install.yaml)" -eq 1 || \
+		{ echo "install.yaml must contain the BootcOperatorConfig CRD exactly once"; exit 1; }
+	@test "$$("$(YQ)" ea '[.] | map(select(.kind == "BootcOperatorConfig")) | length' install.yaml)" -eq 0 || \
+		{ echo "install.yaml must not create an administrator-owned BootcOperatorConfig"; exit 1; }
+
 .PHONY: build-update-image
 build-update-image: ## Build derived node images for update testing and push to bink registry.
 	@printf 'FROM localhost:5000/node:latest\nRUN touch /usr/share/update-marker\n' | \
