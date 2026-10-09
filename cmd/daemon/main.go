@@ -20,6 +20,7 @@ import (
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
 	"github.com/bootc-dev/bootc-operator/internal/bootc"
+	"github.com/bootc-dev/bootc-operator/internal/config"
 	"github.com/bootc-dev/bootc-operator/internal/daemon"
 	"github.com/bootc-dev/bootc-operator/internal/version"
 )
@@ -39,7 +40,7 @@ func main() {
 	flag.DurationVar(
 		&pollInterval,
 		"bootc-poll-interval",
-		5*time.Minute,
+		time.Duration(bootcv1alpha1.DefaultStatusPollPeriodSeconds)*time.Second,
 		"Interval for polling bootc status as a fallback to fsnotify",
 	)
 
@@ -48,6 +49,7 @@ func main() {
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
+	explicit := config.ExplicitFlags(flag.CommandLine)
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
@@ -70,7 +72,20 @@ func main() {
 		os.Exit(1)
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	ctx := ctrl.SetupSignalHandler()
+	restConfig := ctrl.GetConfigOrDie()
+	operatorConfig, err := config.Load(ctx, restConfig, scheme)
+	if err != nil {
+		setupLog.Error(err, "Failed to load operator configuration")
+		os.Exit(1)
+	}
+	if err := config.ApplyToFlags(flag.CommandLine, operatorConfig); err != nil {
+		setupLog.Error(err, "Failed to apply operator configuration")
+		os.Exit(1)
+	}
+	config.LogSource(setupLog, operatorConfig, explicit, "bootc-poll-interval")
+
+	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
 		Scheme: scheme,
 		// Only cache the BootcNode object for this node to avoid unnecessary watches.
 		Cache: cache.Options{
@@ -115,7 +130,7 @@ func main() {
 	}
 
 	setupLog.Info("Starting daemon", "node", nodeName, "pollInterval", pollInterval)
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := mgr.Start(ctx); err != nil {
 		setupLog.Error(err, "Failed to run daemon")
 		os.Exit(1)
 	}

@@ -19,6 +19,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	sigsyaml "sigs.k8s.io/yaml"
@@ -35,6 +36,7 @@ const (
 var operatorCRDNames = []string{
 	"bootcnodepools.node.bootc.dev",
 	"bootcnodes.node.bootc.dev",
+	"bootcoperatorconfigs.node.bootc.dev",
 }
 
 // TestOperatorUpgrade installs the released version of the operator
@@ -68,16 +70,23 @@ func TestOperatorUpgrade(t *testing.T) {
 	t.Logf("Current operator image: %s", currentImg)
 	t.Logf("Released operator tag: %s, image: %s", releaseTag, releasedImg)
 
-	// Phase 1: Delete the current operator and install the released
-	// version from its published manifest.
-	installReleasedOperator(t, g, ctx, env, releaseTag, releasedImg)
-
+	originalConfig, err := readOperatorConfig(ctx, env.Client)
+	g.Expect(err).NotTo(HaveOccurred())
+	// Register recovery before deleting anything: release download or install
+	// can fail after the current CRDs (and their configuration) are removed.
 	t.Cleanup(func() {
 		t.Logf("Restoring operator to current version...")
 		applyCurrentManifests(t, currentImg, currentArgs)
-		waitForOperatorReady(t, g, ctx, env.Client)
+		waitForOperatorConfigCRD(t, g, ctx, env.Client)
+		g.Expect(restoreOperatorConfig(ctx, env.Client, originalConfig)).To(Succeed(),
+			"restore administrator-owned operator configuration")
+		restartOperator(t)
 		t.Logf("Operator restored")
 	})
+
+	// Phase 1: Delete the current operator and install the released
+	// version from its published manifest.
+	installReleasedOperator(t, g, ctx, env, releaseTag, releasedImg)
 
 	// Phase 2: Verify the released version works.
 	nodeName := env.AddNode(t)
@@ -91,7 +100,11 @@ func TestOperatorUpgrade(t *testing.T) {
 
 	// Phase 3: Upgrade by applying the current manifests on top.
 	applyCurrentManifests(t, currentImg, currentArgs)
+	waitForOperatorConfigCRD(t, g, ctx, env.Client)
 	waitForOperatorReady(t, g, ctx, env.Client)
+	config, err := readOperatorConfig(ctx, env.Client)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(config).To(BeNil(), "installation must not create a configuration instance")
 
 	t.Logf("Upgraded operator to current version via manifest apply")
 
@@ -186,9 +199,12 @@ func deleteCurrentOperator(
 
 	for _, crdName := range operatorCRDNames {
 		var crd apiextensionsv1.CustomResourceDefinition
-		if err := env.Client.Get(ctx, client.ObjectKey{Name: crdName}, &crd); err == nil {
-			g.Expect(env.Client.Delete(ctx, &crd)).To(Succeed())
+		err := env.Client.Get(ctx, client.ObjectKey{Name: crdName}, &crd)
+		if apierrors.IsNotFound(err) {
+			continue
 		}
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(env.Client.Delete(ctx, &crd)).To(Succeed())
 	}
 
 	g.Eventually(func(g Gomega) {
@@ -425,6 +441,106 @@ func waitForOperatorReady(
 		g.Expect(d.Status.AvailableReplicas).To(Equal(int32(1)))
 	}).WithTimeout(3*time.Minute).Should(Succeed(),
 		"expected operator deployment to be ready")
+}
+
+// readOperatorConfig returns the optional administrator-owned instance. An
+// ambiguous configuration should fail the upgrade instead of being discarded.
+func readOperatorConfig(
+	ctx context.Context,
+	c client.Client,
+) (*bootcv1alpha1.BootcOperatorConfig, error) {
+	var configs bootcv1alpha1.BootcOperatorConfigList
+	if err := c.List(ctx, &configs); err != nil {
+		return nil, fmt.Errorf("list operator configurations: %w", err)
+	}
+	switch len(configs.Items) {
+	case 0:
+		return nil, nil
+	case 1:
+		return configs.Items[0].DeepCopy(), nil
+	default:
+		return nil, fmt.Errorf(
+			"expected at most one operator configuration, found %d",
+			len(configs.Items),
+		)
+	}
+}
+
+// restoreOperatorConfig restores only administrator-owned fields after CRD
+// deletion. A different instance name is an error rather than an implicit rename.
+func restoreOperatorConfig(
+	ctx context.Context,
+	c client.Client,
+	original *bootcv1alpha1.BootcOperatorConfig,
+) error {
+	current, err := readOperatorConfig(ctx, c)
+	if err != nil {
+		return err
+	}
+	if original == nil {
+		if current == nil {
+			return nil
+		}
+		return c.Delete(ctx, current)
+	}
+	if current != nil && current.Name != original.Name {
+		return fmt.Errorf(
+			"restore operator configuration %q: unexpected current instance %q",
+			original.Name,
+			current.Name,
+		)
+	}
+	if current == nil {
+		restored := original.DeepCopy()
+		restored.ObjectMeta = metav1.ObjectMeta{
+			Name:        original.Name,
+			Labels:      original.Labels,
+			Annotations: original.Annotations,
+		}
+		return c.Create(ctx, restored)
+	}
+	current.Spec = original.Spec
+	current.Labels = original.Labels
+	current.Annotations = original.Annotations
+	return c.Update(ctx, current)
+}
+
+func waitForOperatorConfigCRD(t *testing.T, g Gomega, ctx context.Context, c client.Client) {
+	t.Helper()
+	g.Eventually(func() ([]apiextensionsv1.CustomResourceDefinitionCondition, error) {
+		var crd apiextensionsv1.CustomResourceDefinition
+		err := c.Get(ctx, client.ObjectKey{Name: "bootcoperatorconfigs.node.bootc.dev"}, &crd)
+		return crd.Status.Conditions, err
+	}).WithTimeout(time.Minute).Should(ContainElement(And(
+		HaveField("Type", apiextensionsv1.Established),
+		HaveField("Status", apiextensionsv1.ConditionTrue),
+	)), "waiting for the operator configuration API to be established")
+}
+
+// Both components may have started with defaults before configuration was
+// restored. Restart and await each workload so later tests see the saved values.
+func restartOperator(t *testing.T) {
+	t.Helper()
+	workloads := []string{
+		"deployment/" + operatorDeployKey().Name,
+		"daemonset/" + operatorDaemonSetKey().Name,
+	}
+	for _, workload := range workloads {
+		for _, command := range [][]string{
+			{"rollout", "restart", workload},
+			{"rollout", "status", workload, "--timeout=3m"},
+		} {
+			ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+			args := append([]string{
+				"--kubeconfig", os.Getenv("KUBECONFIG"), "-n", testutil.OperatorNamespaceName,
+			}, command...)
+			out, err := exec.CommandContext(ctx, "kubectl", args...).CombinedOutput()
+			cancel()
+			if err != nil {
+				t.Fatalf("restart operator workload %s: %v\n%s", workload, err, out)
+			}
+		}
+	}
 }
 
 // operatorDeployKey returns the namespaced name of the operator Deployment.

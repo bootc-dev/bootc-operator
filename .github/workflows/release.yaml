@@ -81,6 +81,17 @@ jobs:
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
           echo "tag=v${VERSION}" >> "${GITHUB_OUTPUT}"
 
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true # zizmor: ignore[cache-poisoning]
+
+      - name: Build and check release manifests
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: make verify-release-manifest IMG="${IMAGE}:${TAG}"
+
       - name: Create and push tag
         env:
           TAG: ${{ steps.version.outputs.tag }}
@@ -107,12 +118,6 @@ jobs:
               -f "sha=${SHA}"
           fi
 
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: true # zizmor: ignore[cache-poisoning]
-
       - name: Build and push container image
         env:
           TAG: ${{ steps.version.outputs.tag }}
@@ -122,11 +127,6 @@ jobs:
           make buildimg IMG="${IMAGE}:${TAG}"
           podman login -u "${ACTOR}" -p "${GH_TOKEN}" ghcr.io
           podman push "${IMAGE}:${TAG}"
-
-      - name: Build install manifest
-        env:
-          TAG: ${{ steps.version.outputs.tag }}
-        run: make release-manifest IMG="${IMAGE}:${TAG}"
 
       - name: Package and push Helm chart
         env:
@@ -154,6 +154,11 @@ jobs:
             printf 'kubectl apply -f https://github.com/%s/releases/download/%s/install.yaml\n' \
               "${GITHUB_REPOSITORY}" "${TAG}"
             printf '```\n\n'
+            printf 'Optional configuration example: [operator-config.yaml](https://github.com/%s/releases/download/%s/operator-config.yaml). ' \
+              "${GITHUB_REPOSITORY}" "${TAG}"
+            printf 'Before applying it, check for an existing instance; see the [configuration guide](https://github.com/%s/blob/%s/docs/src/operations/configuration.md).\n' \
+              "${GITHUB_REPOSITORY}" "${TAG}"
+            printf '\n'
             printf '### Helm\n\n'
             printf '```bash\n'
             printf 'helm install bootc-operator oci://ghcr.io/%s/charts/bootc-operator --version %s \\\n' \
@@ -166,4 +171,4 @@ jobs:
             --notes-file notes.md \
             --generate-notes \
             --draft \
-            install.yaml
+            install.yaml operator-config.yaml

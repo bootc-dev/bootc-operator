@@ -43,6 +43,9 @@ jobs:
       - name: Unit tests
         run: make unit
 
+      - name: Check release assets
+        run: make verify-release-manifest
+
       - name: Vet
         run: make vet
 

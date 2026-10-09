@@ -37,6 +37,7 @@ run "k-describe-pods.txt"         kubectl describe pods -n bootc-operator
 run "k-get-deployment.yaml"       kubectl get deployment -n bootc-operator -o yaml
 run "k-describe-bootcnodepools.txt" kubectl describe bootcnodepools
 run "k-describe-bootcnodes.txt"   kubectl describe bootcnodes
+run "k-get-operator-config.yaml" kubectl get bootcoperatorconfigs.node.bootc.dev -o yaml
 run "k-get-events.txt"            kubectl get events -n bootc-operator --sort-by=.lastTimestamp
 
 # Pod logs

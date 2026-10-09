@@ -24,14 +24,41 @@ helm install bootc-operator oci://ghcr.io/bootc-dev/bootc-operator/charts/bootc-
 
 Alternatively, install from a local checkout:
 
+For a source checkout, generate the chart's CRDs and templates first:
+
+```bash
+make helm
+```
+
 ```bash
 helm install bootc-operator ./chart/bootc-operator \
   --create-namespace --namespace bootc-operator
 ```
 
+The chart installs the configuration CRD and the operator's read permissions.
+It does not create a `BootcOperatorConfig` instance. See
+[Configuring the operator](operations/configuration.md) to add one.
+
 By default the chart uses the image
 `ghcr.io/bootc-dev/bootc-operator:<appVersion>` where `appVersion` is
 defined in `Chart.yaml`.
+
+## Upgrade
+
+Helm installs CRDs in `crds/` on initial installation but does not upgrade
+them. Apply the CRDs from the new chart before upgrading, especially when
+upgrading an installation that predates `BootcOperatorConfig`:
+
+```bash
+make helm
+kubectl apply -f chart/bootc-operator/crds/
+kubectl wait --for=condition=Established crd/bootcoperatorconfigs.node.bootc.dev --timeout=1m
+helm upgrade bootc-operator ./chart/bootc-operator --namespace bootc-operator
+```
+
+The CRD must exist before the new controller and daemon pods start; both read
+configuration during startup. The chart upgrade leaves any administrator-owned
+configuration instance alone.
 
 ## Custom image
 
