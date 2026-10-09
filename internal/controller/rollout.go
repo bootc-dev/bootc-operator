@@ -34,6 +34,18 @@ import (
 // https://github.com/bootc-dev/bootc-operator/issues/99.
 const unhealthySlotHaltThreshold = 2
 
+// Karpenter integration constants. The controller checks for a NodeClaim owner
+// reference and manages karpenter.sh/do-not-repair and
+// karpenter.sh/do-not-disrupt to prevent Karpenter from replacing or
+// voluntarily disrupting a node while it is being updated.
+// See docs/src/operations/karpenter.md.
+const (
+	karpenterDoNotRepairAnnotationKey  = "karpenter.sh/do-not-repair"
+	karpenterDoNotDisruptAnnotationKey = "karpenter.sh/do-not-disrupt"
+	karpenterNodeClaimAPIVersion       = "karpenter.sh/v1"
+	karpenterNodeClaimKind             = "NodeClaim"
+)
+
 // rolloutState holds the classified BootcNodes for a single reconcile
 // pass.
 type rolloutState struct {
@@ -188,6 +200,17 @@ func (r *BootcNodePoolReconciler) driveRollout(
 	return rs, nil
 }
 
+// nodeIsOwnedByKarpenterNodeClaim reports whether the K8s Node has an owner
+// reference pointing to a Karpenter NodeClaim (karpenter.sh/v1).
+func nodeIsOwnedByKarpenterNodeClaim(node *corev1.Node) bool {
+	for _, ref := range node.OwnerReferences {
+		if ref.APIVersion == karpenterNodeClaimAPIVersion && ref.Kind == karpenterNodeClaimKind {
+			return true
+		}
+	}
+	return false
+}
+
 // assignRebootSlot marks a BootcNode as occupying a reboot slot and
 // cordons the corresponding K8s Node. It sets the in-reboot-slot
 // annotation on the BootcNode, records prior cordon state in the
@@ -200,7 +223,18 @@ func (r *BootcNodePoolReconciler) assignRebootSlot(
 ) error {
 	log := logf.FromContext(ctx)
 
-	// Set annotations on the BootcNode if not already present.
+	// Determine Karpenter intent once so both patch blocks stay consistent.
+	// shouldOwn* is true when the node is Karpenter-managed and the respective
+	// annotation is not already present (set by an external actor). In that
+	// case, the controller adds the annotation and records ownership so it can
+	// be cleaned up on slot free.
+	karpenterOwned := nodeIsOwnedByKarpenterNodeClaim(node)
+	shouldOwnDoNotRepair := karpenterOwned &&
+		!metav1.HasAnnotation(node.ObjectMeta, karpenterDoNotRepairAnnotationKey)
+	shouldOwnDoNotDisrupt := karpenterOwned &&
+		!metav1.HasAnnotation(node.ObjectMeta, karpenterDoNotDisruptAnnotationKey)
+
+	// Patch the BootcNode with slot annotations if not already present.
 	if !metav1.HasAnnotation(bn.ObjectMeta, bootcv1alpha1.AnnotationInRebootSlot) {
 		log.Info("Assigning reboot slot", "node", bn.Name)
 		modifiedBN := bn.DeepCopy()
@@ -214,19 +248,44 @@ func (r *BootcNodePoolReconciler) assignRebootSlot(
 		} else {
 			modifiedBN.Annotations[bootcv1alpha1.AnnotationWasCordoned] = "false"
 		}
+		// Track Karpenter annotation ownership so freeRebootSlot knows
+		// whether to remove the annotations from the Node.
+		if shouldOwnDoNotRepair {
+			modifiedBN.Annotations[bootcv1alpha1.AnnotationOwnsKarpenterDoNotRepair] = "true"
+		}
+		if shouldOwnDoNotDisrupt {
+			modifiedBN.Annotations[bootcv1alpha1.AnnotationOwnsKarpenterDoNotDisrupt] = "true"
+		}
 		if err := r.Patch(ctx, modifiedBN, client.MergeFrom(bn)); err != nil {
 			return fmt.Errorf("annotating BootcNode: %w", err)
 		}
 		*bn = *modifiedBN
 	}
 
-	// Cordon the K8s Node if not already cordoned.
-	if !node.Spec.Unschedulable {
-		log.Info("Cordoning node", "node", node.Name)
+	// Patch the K8s Node: cordon it and, when we own the Karpenter
+	// annotations, set them. All are idempotent; we combine them into a
+	// single patch to minimise API calls.
+	if !node.Spec.Unschedulable || shouldOwnDoNotRepair || shouldOwnDoNotDisrupt {
 		modifiedNode := node.DeepCopy()
-		modifiedNode.Spec.Unschedulable = true
+		if !node.Spec.Unschedulable {
+			log.Info("Cordoning node", "node", node.Name)
+			modifiedNode.Spec.Unschedulable = true
+		}
+		if shouldOwnDoNotRepair || shouldOwnDoNotDisrupt {
+			if modifiedNode.Annotations == nil {
+				modifiedNode.Annotations = map[string]string{}
+			}
+			if shouldOwnDoNotRepair {
+				log.Info("Setting karpenter.sh/do-not-repair on node", "node", node.Name)
+				modifiedNode.Annotations[karpenterDoNotRepairAnnotationKey] = "true"
+			}
+			if shouldOwnDoNotDisrupt {
+				log.Info("Setting karpenter.sh/do-not-disrupt on node", "node", node.Name)
+				modifiedNode.Annotations[karpenterDoNotDisruptAnnotationKey] = "true"
+			}
+		}
 		if err := r.Patch(ctx, modifiedNode, client.StrategicMergeFrom(node)); err != nil {
-			return fmt.Errorf("cordoning node: %w", err)
+			return fmt.Errorf("patching node: %w", err)
 		}
 		*node = *modifiedNode
 	}
@@ -272,12 +331,46 @@ func (r *BootcNodePoolReconciler) freeRebootSlot(
 	bn *bootcv1alpha1.BootcNode,
 	node *corev1.Node,
 ) error {
+	log := logf.FromContext(ctx)
+
+	// Remove karpenter.sh/do-not-repair and karpenter.sh/do-not-disrupt from
+	// the Node if the controller added them. We check the tracking annotations
+	// on the BootcNode rather than inspecting the Node directly, so an external
+	// actor who later removes the annotations doesn't cause spurious patches.
+	// Both removals are combined into a single Node patch when needed.
+	ownsRepair := metav1.HasAnnotation(
+		bn.ObjectMeta,
+		bootcv1alpha1.AnnotationOwnsKarpenterDoNotRepair,
+	)
+	ownsDisrupt := metav1.HasAnnotation(
+		bn.ObjectMeta,
+		bootcv1alpha1.AnnotationOwnsKarpenterDoNotDisrupt,
+	)
+	if ownsRepair || ownsDisrupt {
+		modifiedNode := node.DeepCopy()
+		if ownsRepair {
+			log.Info("Removing karpenter.sh/do-not-repair from node", "node", node.Name)
+			delete(modifiedNode.Annotations, karpenterDoNotRepairAnnotationKey)
+		}
+		if ownsDisrupt {
+			log.Info("Removing karpenter.sh/do-not-disrupt from node", "node", node.Name)
+			delete(modifiedNode.Annotations, karpenterDoNotDisruptAnnotationKey)
+		}
+		if err := r.Patch(ctx, modifiedNode, client.StrategicMergeFrom(node)); err != nil {
+			return fmt.Errorf("removing karpenter annotations from node: %w", err)
+		}
+		*node = *modifiedNode
+	}
+
 	if err := r.restoreCordonState(ctx, bn, node); err != nil {
 		return err
 	}
 
-	// Remove both reboot slot annotations from the BootcNode.
+	// Remove all reboot slot annotations from the BootcNode, including the
+	// Karpenter ownership trackers if present.
 	modified := bn.DeepCopy()
+	delete(modified.Annotations, bootcv1alpha1.AnnotationOwnsKarpenterDoNotRepair)
+	delete(modified.Annotations, bootcv1alpha1.AnnotationOwnsKarpenterDoNotDisrupt)
 	delete(modified.Annotations, bootcv1alpha1.AnnotationWasCordoned)
 	delete(modified.Annotations, bootcv1alpha1.AnnotationInRebootSlot)
 	if err := r.Patch(ctx, modified, client.MergeFrom(bn)); err != nil {

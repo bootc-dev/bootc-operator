@@ -30,4 +30,20 @@ const (
 	// state for which the controller considered emitting an event. It is
 	// observability bookkeeping only and is never used to drive reconciliation.
 	AnnotationLastObservedState = "bootc.dev/last-observed-state"
+
+	// AnnotationOwnsKarpenterDoNotRepair is set on a BootcNode to record that
+	// the controller added the karpenter.sh/do-not-repair annotation to the K8s
+	// Node during slot assignment. When present, the controller removes the
+	// karpenter.sh/do-not-repair annotation from the Node when the slot is freed.
+	// It is not set when the annotation was already present before slot assignment
+	// (externally set), so the controller never removes an annotation it did not add.
+	AnnotationOwnsKarpenterDoNotRepair = "bootc.dev/owns-karpenter-do-not-repair"
+
+	// AnnotationOwnsKarpenterDoNotDisrupt is set on a BootcNode to record that
+	// the controller added the karpenter.sh/do-not-disrupt annotation to the K8s
+	// Node during slot assignment. When present, the controller removes the
+	// karpenter.sh/do-not-disrupt annotation from the Node when the slot is freed.
+	// It is not set when the annotation was already present before slot assignment
+	// (externally set), so the controller never removes an annotation it did not add.
+	AnnotationOwnsKarpenterDoNotDisrupt = "bootc.dev/owns-karpenter-do-not-disrupt"
 )
