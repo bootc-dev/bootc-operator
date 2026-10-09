@@ -1,0 +1,46 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "schedule": ["before 9am on Monday"],
+  "minimumReleaseAge": "7 days",
+  "platformAutomerge": true,
+  "automergeStrategy": "rebase",
+  "packageRules": [
+    {
+      "description": "Group and automerge minor/patch Go module updates",
+      "matchManagers": ["gomod"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "groupName": "go-deps",
+      "automerge": true,
+      "commitMessagePrefix": "deps:"
+    },
+    {
+      "description": "Do not automerge major Go module updates",
+      "matchManagers": ["gomod"],
+      "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "commitMessagePrefix": "deps:"
+    },
+    {
+      "description": "Group and automerge non-major GitHub Actions updates",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "groupName": "actions",
+      "automerge": true,
+      "commitMessagePrefix": "ci:"
+    },
+    {
+      "description": "Do not automerge major GitHub Actions updates",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "commitMessagePrefix": "ci:"
+    },
+    {
+      "description": "Containerfile base images, no automerge",
+      "matchManagers": ["dockerfile"],
+      "automerge": false,
+      "commitMessagePrefix": "deps:"
+    }
+  ]
+}
