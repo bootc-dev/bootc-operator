@@ -50,6 +50,15 @@ rules:
   verbs:
   - get
 - apiGroups:
+  - karpenter.sh
+  resources:
+  - nodeclaims
+  verbs:
+  - get
+  - list
+  - patch
+  - watch
+- apiGroups:
   - node.bootc.dev
   resources:
   - bootcnodepools
