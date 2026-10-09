@@ -34,7 +34,7 @@ func bootcSwitchArgs(image string) []string {
 }
 
 func bootcApplyUpdateArgs(softReboot bool) []string {
-	args := []string{"bootc", "upgrade", "--from-downloaded", "--apply"}
+	args := []string{"bootc", "switch", "--from-downloaded", "--apply"}
 	if softReboot {
 		args = append(args, "--soft-reboot=auto")
 	}
