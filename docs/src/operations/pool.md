@@ -100,6 +100,57 @@ To resume:
 kubectl patch bootcnodepool workers --type merge -p '{"spec":{"rollout":{"paused":false}}}'
 ```
 
+## Using a pull secret
+
+If the OS image is hosted in a private registry that requires authentication,
+create a Kubernetes Secret of type `kubernetes.io/dockerconfigjson` and
+reference it from the pool:
+
+```shell
+kubectl create secret docker-registry my-pull-secret \
+  --namespace=bootc-operator \
+  --docker-server=registry.example.com \
+  --docker-username=user \
+  --docker-password=pass
+```
+
+```yaml
+apiVersion: node.bootc.dev/v1alpha1
+kind: BootcNodePool
+metadata:
+  name: workers
+spec:
+  nodeSelector:
+    matchLabels:
+      node-role.kubernetes.io/worker: ""
+  image:
+    ref: registry.example.com/my-org/node:latest
+  pullSecretRef:
+    name: my-pull-secret
+    namespace: bootc-operator
+```
+
+Both `name` and `namespace` are required in `pullSecretRef`.
+
+The operator uses the secret in two places:
+
+- **Tag resolution**: the controller authenticates against the registry when
+  resolving a tag to a digest.
+- **Node pull**: the daemon writes the credentials to `/run/ostree/auth.json`
+  on each managed node, which is the highest-priority path in bootc's auth
+  search order. Because `/run` is a tmpfs, the credentials do not persist
+  across reboots; the daemon re-writes them on every reconcile.
+
+If the referenced secret is missing or does not contain the
+`.dockerconfigjson` key, the pool is marked `Degraded` with reason
+`SecretError` and no nodes are created or updated until the secret is
+available.
+
+The operator watches the secret for changes. When the secret content is
+updated (for example, after a credential rotation), the new credentials are
+automatically propagated to all managed nodes without requiring any change
+to the pool.
+
 ## Rolling back
 
 To roll back, change `spec.image.ref` to the previous digest. Nodes already
