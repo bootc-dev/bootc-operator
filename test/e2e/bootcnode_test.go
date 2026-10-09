@@ -1012,6 +1012,7 @@ func readBootID(t *testing.T, ctx context.Context, env *e2eutil.Env, nodeName st
 	kubeconfigPath := os.Getenv("KUBECONFIG")
 	cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath,
 		"-n", "bootc-operator", "exec", podName, "--",
+		"nsenter", "--target", "1", "--mount", "--pid", "--",
 		"cat", "/proc/sys/kernel/random/boot_id")
 	out, err := cmd.CombinedOutput()
 	g.Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("failed to read boot_id: %s", string(out)))
