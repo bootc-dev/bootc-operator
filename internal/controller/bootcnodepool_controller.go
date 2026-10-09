@@ -859,8 +859,8 @@ func (r *BootcNodePoolReconciler) removeBootcNode(
 	if err := r.Get(ctx, types.NamespacedName{Name: bn.Name}, &node); err == nil {
 		// No point in cleaning up the Node object if it's going away anyway...
 		if node.DeletionTimestamp == nil {
-			if err := r.restoreCordonState(ctx, bn, &node); err != nil {
-				return fmt.Errorf("restoring cordon state: %w", err)
+			if err := r.restoreNodeState(ctx, bn, &node); err != nil {
+				return fmt.Errorf("restoring node state: %w", err)
 			}
 			if err := r.ensureManagedLabel(ctx, &node, false); err != nil {
 				return fmt.Errorf("removing managed label: %w", err)
@@ -877,21 +877,43 @@ func (r *BootcNodePoolReconciler) removeBootcNode(
 	return nil
 }
 
-// restoreCordonState uncordons the Node if the BootcNode's was-cordoned
-// annotation indicates the operator cordoned it. If the annotation is absent
-// or "true" (node was already cordoned before us), this is a no-op.
-func (r *BootcNodePoolReconciler) restoreCordonState(
+// restoreNodeState removes any Karpenter annotations the controller owns and
+// restores the node's cordon state, combining both into a single patch when
+// needed. Karpenter annotation ownership is tracked via BootcNode annotations
+// rather than inspecting the Node directly, so an external actor removing them
+// doesn't cause spurious patches. The cordon is only removed if the was-cordoned
+// annotation records that the operator was the one who cordoned it.
+func (r *BootcNodePoolReconciler) restoreNodeState(
 	ctx context.Context,
 	bn *bootcv1alpha1.BootcNode,
 	node *corev1.Node,
 ) error {
-	if bn.Annotations[bootcv1alpha1.AnnotationWasCordoned] != "false" {
+	log := logf.FromContext(ctx)
+	modified := node.DeepCopy()
+	changed := false
+
+	if metav1.HasAnnotation(bn.ObjectMeta, bootcv1alpha1.AnnotationOwnsKarpenterDoNotRepair) {
+		log.Info("Removing karpenter.sh/do-not-repair from node", "node", node.Name)
+		delete(modified.Annotations, karpenterDoNotRepairAnnotationKey)
+		changed = true
+	}
+	if metav1.HasAnnotation(bn.ObjectMeta, bootcv1alpha1.AnnotationOwnsKarpenterDoNotDisrupt) {
+		log.Info("Removing karpenter.sh/do-not-disrupt from node", "node", node.Name)
+		delete(modified.Annotations, karpenterDoNotDisruptAnnotationKey)
+		changed = true
+	}
+	if metav1.HasAnnotation(bn.ObjectMeta, bootcv1alpha1.AnnotationWasCordoned) &&
+		bn.Annotations[bootcv1alpha1.AnnotationWasCordoned] == "false" {
+		log.Info("Uncordoning node", "node", node.Name)
+		modified.Spec.Unschedulable = false
+		changed = true
+	}
+
+	if !changed {
 		return nil
 	}
-	modified := node.DeepCopy()
-	modified.Spec.Unschedulable = false
 	if err := r.Patch(ctx, modified, client.StrategicMergeFrom(node)); err != nil {
-		return fmt.Errorf("uncordoning node: %w", err)
+		return fmt.Errorf("restoring node state: %w", err)
 	}
 	*node = *modified
 	return nil

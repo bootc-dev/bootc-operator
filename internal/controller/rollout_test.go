@@ -3,17 +3,61 @@
 package controller
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
 	testutil "github.com/bootc-dev/bootc-operator/test/util"
 )
+
+// patchCountingClient wraps a client.Client and counts Patch calls to the
+// Node object (by GVK). Used to assert that freeRebootSlot doesn't
+// double-patch the Node.
+type patchCountingClient struct {
+	client.Client
+	nodePatches int
+}
+
+func (c *patchCountingClient) Patch(
+	ctx context.Context,
+	obj client.Object,
+	patch client.Patch,
+	opts ...client.PatchOption,
+) error {
+	if _, ok := obj.(*corev1.Node); ok {
+		c.nodePatches++
+	}
+	return c.Client.Patch(ctx, obj, patch, opts...)
+}
+
+// newFakeReconciler builds a BootcNodePoolReconciler backed by a fake
+// client pre-seeded with the given objects. It also returns the counting
+// wrapper so callers can assert the number of Node patches.
+func newFakeReconciler(objs ...client.Object) (*BootcNodePoolReconciler, *patchCountingClient) {
+	sc := runtime.NewScheme()
+	_ = scheme.AddToScheme(sc)
+	_ = bootcv1alpha1.AddToScheme(sc)
+
+	base := fake.NewClientBuilder().
+		WithScheme(sc).
+		WithObjects(objs...).
+		Build()
+
+	counting := &patchCountingClient{Client: base}
+	r := &BootcNodePoolReconciler{Client: counting}
+	return r, counting
+}
 
 func TestBuildRolloutState(t *testing.T) {
 	const (
@@ -521,4 +565,419 @@ func TestFindUnhealthySlots(t *testing.T) {
 
 		g.Expect(findUnhealthySlots(rs, targetDigest)).To(BeEmpty())
 	})
+}
+
+// TestRestoreNodeState verifies that restoreNodeState removes owned Karpenter
+// annotations and restores cordon state in a single patch, covering all
+// combinations of ownership and cordon state.
+func TestRestoreNodeState(t *testing.T) {
+	tests := []struct {
+		name            string
+		ownsRepair      bool
+		ownsDisrupt     bool
+		wasCordoned     string // "true", "false", or "" (absent)
+		nodeCordoned    bool
+		nodeAnnotations map[string]string
+
+		wantNodePatches    int
+		wantCordoned       bool
+		wantRepairPresent  bool
+		wantDisruptPresent bool
+	}{
+		{
+			name:         "owns both annotations, operator cordoned: single patch removes all",
+			ownsRepair:   true,
+			ownsDisrupt:  true,
+			wasCordoned:  "false",
+			nodeCordoned: true,
+			nodeAnnotations: map[string]string{
+				karpenterDoNotRepairAnnotationKey:  "true",
+				karpenterDoNotDisruptAnnotationKey: "true",
+			},
+			wantNodePatches:    1,
+			wantCordoned:       false,
+			wantRepairPresent:  false,
+			wantDisruptPresent: false,
+		},
+		{
+			name:         "owns both annotations, pre-cordoned: single patch, cordon preserved",
+			ownsRepair:   true,
+			ownsDisrupt:  true,
+			wasCordoned:  "true",
+			nodeCordoned: true,
+			nodeAnnotations: map[string]string{
+				karpenterDoNotRepairAnnotationKey:  "true",
+				karpenterDoNotDisruptAnnotationKey: "true",
+			},
+			wantNodePatches:    1,
+			wantCordoned:       true,
+			wantRepairPresent:  false,
+			wantDisruptPresent: false,
+		},
+		{
+			name:         "owns only do-not-disrupt: removes only that one",
+			ownsRepair:   false,
+			ownsDisrupt:  true,
+			wasCordoned:  "true",
+			nodeCordoned: true,
+			nodeAnnotations: map[string]string{
+				karpenterDoNotRepairAnnotationKey:  "true",
+				karpenterDoNotDisruptAnnotationKey: "true",
+			},
+			wantNodePatches:    1,
+			wantCordoned:       true,
+			wantRepairPresent:  true,
+			wantDisruptPresent: false,
+		},
+		{
+			name:            "no karpenter ownership, operator cordoned: single uncordon patch",
+			ownsRepair:      false,
+			ownsDisrupt:     false,
+			wasCordoned:     "false",
+			nodeCordoned:    true,
+			wantNodePatches: 1,
+			wantCordoned:    false,
+		},
+		{
+			name:            "no karpenter ownership, pre-cordoned: no patch needed",
+			ownsRepair:      false,
+			ownsDisrupt:     false,
+			wasCordoned:     "true",
+			nodeCordoned:    true,
+			wantNodePatches: 0,
+			wantCordoned:    true,
+		},
+		{
+			name:            "nothing to do: zero patches",
+			ownsRepair:      false,
+			ownsDisrupt:     false,
+			wasCordoned:     "",
+			nodeCordoned:    false,
+			wantNodePatches: 0,
+			wantCordoned:    false,
+		},
+		{
+			// Karpenter annotations present on the node but set by an external
+			// actor, not the operator. The operator must not touch them.
+			name:         "annotations present but not owned: zero patches, annotations preserved",
+			ownsRepair:   false,
+			ownsDisrupt:  false,
+			wasCordoned:  "false",
+			nodeCordoned: true,
+			nodeAnnotations: map[string]string{
+				karpenterDoNotRepairAnnotationKey:  "true",
+				karpenterDoNotDisruptAnnotationKey: "true",
+			},
+			wantNodePatches:    1, // uncordon only
+			wantCordoned:       false,
+			wantRepairPresent:  true,
+			wantDisruptPresent: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			ctx := context.Background()
+
+			bnAnnotations := map[string]string{}
+			if tc.wasCordoned != "" {
+				bnAnnotations[bootcv1alpha1.AnnotationWasCordoned] = tc.wasCordoned
+			}
+			if tc.ownsRepair {
+				bnAnnotations[bootcv1alpha1.AnnotationOwnsKarpenterDoNotRepair] = "true"
+			}
+			if tc.ownsDisrupt {
+				bnAnnotations[bootcv1alpha1.AnnotationOwnsKarpenterDoNotDisrupt] = "true"
+			}
+			bn := testutil.NewNode("test-node", testImageDigestRefA)
+			bn.Annotations = bnAnnotations
+
+			k8sNode := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "test-node",
+					Annotations: tc.nodeAnnotations,
+				},
+				Spec: corev1.NodeSpec{Unschedulable: tc.nodeCordoned},
+			}
+
+			r, counting := newFakeReconciler(bn, k8sNode)
+
+			err := r.restoreNodeState(ctx, bn, k8sNode)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(counting.nodePatches).To(Equal(tc.wantNodePatches), "node patch count")
+
+			var finalNode corev1.Node
+			g.Expect(counting.Client.Get(ctx, client.ObjectKey{Name: "test-node"}, &finalNode)).
+				To(Succeed())
+			g.Expect(finalNode.Spec.Unschedulable).To(Equal(tc.wantCordoned), "cordon state")
+			if tc.wantRepairPresent {
+				g.Expect(finalNode.Annotations).To(HaveKey(karpenterDoNotRepairAnnotationKey))
+			} else {
+				g.Expect(finalNode.Annotations).NotTo(HaveKey(karpenterDoNotRepairAnnotationKey))
+			}
+			if tc.wantDisruptPresent {
+				g.Expect(finalNode.Annotations).To(HaveKey(karpenterDoNotDisruptAnnotationKey))
+			} else {
+				g.Expect(finalNode.Annotations).NotTo(HaveKey(karpenterDoNotDisruptAnnotationKey))
+			}
+		})
+	}
+}
+
+// TestAssignRebootSlotNodePatchCount verifies that assignRebootSlot issues at
+// most one patch to the corev1.Node regardless of Karpenter ownership and
+// prior cordon state.
+func TestAssignRebootSlotNodePatchCount(t *testing.T) {
+	karpenterOwnerRef := metav1.OwnerReference{
+		APIVersion: karpenterNodeClaimAPIVersion,
+		Kind:       karpenterNodeClaimKind,
+		Name:       "test-claim",
+		UID:        "test-claim-uid",
+	}
+
+	tests := []struct {
+		name                string
+		karpenterOwned      bool
+		preExistAnnotations map[string]string // annotations already on the Node
+		preCordoned         bool
+
+		wantNodePatches    int
+		wantCordoned       bool
+		wantRepairPresent  bool
+		wantDisruptPresent bool
+	}{
+		{
+			name:               "karpenter owned, not cordoned: one patch for cordon + both annotations",
+			karpenterOwned:     true,
+			wantNodePatches:    1,
+			wantCordoned:       true,
+			wantRepairPresent:  true,
+			wantDisruptPresent: true,
+		},
+		{
+			name:               "karpenter owned, pre-cordoned: one patch for annotations only",
+			karpenterOwned:     true,
+			preCordoned:        true,
+			wantNodePatches:    1,
+			wantCordoned:       true,
+			wantRepairPresent:  true,
+			wantDisruptPresent: true,
+		},
+		{
+			name:           "karpenter owned, both annotations pre-existing: zero node patches",
+			karpenterOwned: true,
+			preCordoned:    true,
+			preExistAnnotations: map[string]string{
+				karpenterDoNotRepairAnnotationKey:  "true",
+				karpenterDoNotDisruptAnnotationKey: "true",
+			},
+			wantNodePatches:    0,
+			wantCordoned:       true,
+			wantRepairPresent:  true,
+			wantDisruptPresent: true,
+		},
+		{
+			name:            "non-karpenter, not cordoned: one patch for cordon only",
+			karpenterOwned:  false,
+			wantNodePatches: 1,
+			wantCordoned:    true,
+		},
+		{
+			name:            "non-karpenter, pre-cordoned: zero node patches",
+			karpenterOwned:  false,
+			preCordoned:     true,
+			wantNodePatches: 0,
+			wantCordoned:    true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			ctx := context.Background()
+
+			bn := testutil.NewNode("test-node", testImageDigestRefA)
+
+			k8sNode := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "test-node",
+					Annotations: tc.preExistAnnotations,
+				},
+				Spec: corev1.NodeSpec{Unschedulable: tc.preCordoned},
+			}
+			if tc.karpenterOwned {
+				k8sNode.OwnerReferences = []metav1.OwnerReference{karpenterOwnerRef}
+			}
+
+			r, counting := newFakeReconciler(bn, k8sNode)
+
+			err := r.assignRebootSlot(ctx, bn, k8sNode)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(counting.nodePatches).To(Equal(tc.wantNodePatches), "node patch count")
+
+			var finalNode corev1.Node
+			g.Expect(counting.Client.Get(ctx, client.ObjectKey{Name: "test-node"}, &finalNode)).
+				To(Succeed())
+			g.Expect(finalNode.Spec.Unschedulable).To(Equal(tc.wantCordoned), "cordon state")
+			if tc.wantRepairPresent {
+				g.Expect(finalNode.Annotations).To(HaveKey(karpenterDoNotRepairAnnotationKey))
+			} else {
+				g.Expect(finalNode.Annotations).NotTo(HaveKey(karpenterDoNotRepairAnnotationKey))
+			}
+			if tc.wantDisruptPresent {
+				g.Expect(finalNode.Annotations).To(HaveKey(karpenterDoNotDisruptAnnotationKey))
+			} else {
+				g.Expect(finalNode.Annotations).NotTo(HaveKey(karpenterDoNotDisruptAnnotationKey))
+			}
+
+			// The BootcNode must always have the slot annotation.
+			var finalBN bootcv1alpha1.BootcNode
+			g.Expect(counting.Client.Get(ctx, client.ObjectKey{Name: "test-node"}, &finalBN)).
+				To(Succeed())
+			g.Expect(finalBN.Annotations).To(HaveKey(bootcv1alpha1.AnnotationInRebootSlot))
+		})
+	}
+}
+
+// TestFreeRebootSlotNodePatchCount verifies that freeRebootSlot issues at most
+// one patch to the corev1.Node regardless of which combination of Karpenter
+// annotations and cordon state are in play.
+func TestFreeRebootSlotNodePatchCount(t *testing.T) {
+	tests := []struct {
+		name string
+
+		// BootcNode annotation state
+		ownsRepair  bool
+		ownsDisrupt bool
+		wasCordoned string // "true", "false", or "" (absent)
+
+		// Node state
+		nodeCordoned    bool
+		nodeAnnotations map[string]string
+
+		// Expected outcomes
+		wantNodePatches    int
+		wantCordoned       bool
+		wantRepairPresent  bool
+		wantDisruptPresent bool
+	}{
+		{
+			// Karpenter annotations owned + operator cordoned: remove both
+			// annotations and uncordon in a single patch.
+			name:         "karpenter owned, operator cordoned: one patch",
+			ownsRepair:   true,
+			ownsDisrupt:  true,
+			wasCordoned:  "false",
+			nodeCordoned: true,
+			nodeAnnotations: map[string]string{
+				karpenterDoNotRepairAnnotationKey:  "true",
+				karpenterDoNotDisruptAnnotationKey: "true",
+			},
+			wantNodePatches:    1,
+			wantCordoned:       false,
+			wantRepairPresent:  false,
+			wantDisruptPresent: false,
+		},
+		{
+			// Karpenter annotations owned + node was pre-cordoned: remove
+			// annotations but leave the cordon, still a single patch.
+			name:         "karpenter owned, pre-cordoned: one patch, cordon preserved",
+			ownsRepair:   true,
+			ownsDisrupt:  true,
+			wasCordoned:  "true",
+			nodeCordoned: true,
+			nodeAnnotations: map[string]string{
+				karpenterDoNotRepairAnnotationKey:  "true",
+				karpenterDoNotDisruptAnnotationKey: "true",
+			},
+			wantNodePatches:    1,
+			wantCordoned:       true,
+			wantRepairPresent:  false,
+			wantDisruptPresent: false,
+		},
+		{
+			// No Karpenter ownership + operator cordoned: single uncordon patch.
+			name:            "no karpenter, operator cordoned: one patch",
+			ownsRepair:      false,
+			ownsDisrupt:     false,
+			wasCordoned:     "false",
+			nodeCordoned:    true,
+			wantNodePatches: 1,
+			wantCordoned:    false,
+		},
+		{
+			// No Karpenter ownership + node was pre-cordoned: no node patch needed.
+			name:            "no karpenter, pre-cordoned: zero patches",
+			ownsRepair:      false,
+			ownsDisrupt:     false,
+			wasCordoned:     "true",
+			nodeCordoned:    true,
+			wantNodePatches: 0,
+			wantCordoned:    true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			ctx := context.Background()
+
+			// Build the BootcNode with the appropriate slot annotations.
+			bnAnnotations := map[string]string{
+				bootcv1alpha1.AnnotationInRebootSlot: "",
+			}
+			if tc.wasCordoned != "" {
+				bnAnnotations[bootcv1alpha1.AnnotationWasCordoned] = tc.wasCordoned
+			}
+			if tc.ownsRepair {
+				bnAnnotations[bootcv1alpha1.AnnotationOwnsKarpenterDoNotRepair] = "true"
+			}
+			if tc.ownsDisrupt {
+				bnAnnotations[bootcv1alpha1.AnnotationOwnsKarpenterDoNotDisrupt] = "true"
+			}
+			bn := testutil.NewNode("test-node", testImageDigestRefA)
+			bn.Annotations = bnAnnotations
+
+			// Build the corev1.Node.
+			k8sNode := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "test-node",
+					Annotations: tc.nodeAnnotations,
+				},
+				Spec: corev1.NodeSpec{Unschedulable: tc.nodeCordoned},
+			}
+
+			r, counting := newFakeReconciler(bn, k8sNode)
+
+			err := r.freeRebootSlot(ctx, bn, k8sNode)
+			g.Expect(err).NotTo(HaveOccurred())
+
+			g.Expect(counting.nodePatches).To(Equal(tc.wantNodePatches),
+				"unexpected number of Node patches")
+
+			// Verify the final node state from the fake store.
+			var finalNode corev1.Node
+			g.Expect(counting.Client.Get(ctx, client.ObjectKey{Name: "test-node"}, &finalNode)).
+				To(Succeed())
+			g.Expect(finalNode.Spec.Unschedulable).To(Equal(tc.wantCordoned), "cordon state")
+			if tc.ownsRepair {
+				g.Expect(finalNode.Annotations).NotTo(HaveKey(karpenterDoNotRepairAnnotationKey))
+			}
+			if tc.ownsDisrupt {
+				g.Expect(finalNode.Annotations).NotTo(HaveKey(karpenterDoNotDisruptAnnotationKey))
+			}
+
+			// Verify slot annotations are cleared from the BootcNode.
+			var finalBN bootcv1alpha1.BootcNode
+			g.Expect(counting.Client.Get(ctx, client.ObjectKey{Name: "test-node"}, &finalBN)).
+				To(Succeed())
+			g.Expect(finalBN.Annotations).NotTo(HaveKey(bootcv1alpha1.AnnotationInRebootSlot))
+			g.Expect(finalBN.Annotations).NotTo(HaveKey(bootcv1alpha1.AnnotationWasCordoned))
+			g.Expect(finalBN.Annotations).
+				NotTo(HaveKey(bootcv1alpha1.AnnotationOwnsKarpenterDoNotRepair))
+			g.Expect(finalBN.Annotations).
+				NotTo(HaveKey(bootcv1alpha1.AnnotationOwnsKarpenterDoNotDisrupt))
+		})
+	}
 }

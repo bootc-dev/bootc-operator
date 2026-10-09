@@ -8,3 +8,4 @@
 - [Helm Chart](helm.md)
 - [Operations](operations/index.md)
   - [Managing a pool](operations/pool.md)
+  - [Karpenter integration](operations/karpenter.md)
