@@ -6,18 +6,18 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.47.1
 	github.com/aws/aws-sdk-go-v2/config v1.33.6
 	github.com/aws/aws-sdk-go-v2/service/autoscaling v1.78.1
-	github.com/aws/aws-sdk-go-v2/service/ec2 v1.336.1
+	github.com/aws/aws-sdk-go-v2/service/ec2 v1.338.1
 	github.com/distribution/reference v0.6.0
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-logr/logr v1.4.4
 	github.com/google/go-containerregistry v0.22.1
 	github.com/onsi/gomega v1.44.0
 	k8s.io/api v0.37.1
-	k8s.io/apiextensions-apiserver v0.37.0
+	k8s.io/apiextensions-apiserver v0.37.1
 	k8s.io/apimachinery v0.37.1
 	k8s.io/client-go v0.37.1
 	k8s.io/kubectl v0.37.1
-	sigs.k8s.io/controller-runtime v0.25.1
+	sigs.k8s.io/controller-runtime v0.25.2
 	sigs.k8s.io/yaml v1.6.0
 )
 
