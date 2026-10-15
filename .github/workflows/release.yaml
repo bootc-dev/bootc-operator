@@ -131,7 +131,7 @@ jobs:
           TAG: ${{ steps.version.outputs.tag }}
         run: make release-manifest IMG="${IMAGE}:${TAG}"
 
-      - name: Package and push Helm chart
+      - name: Package and push Helm charts
         env:
           VERSION: ${{ steps.version.outputs.version }}
           TAG: ${{ steps.version.outputs.tag }}
@@ -139,10 +139,18 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           make helm
+          helm registry login -u "${ACTOR}" -p "${GH_TOKEN}" ghcr.io
+
+          ./bin/yq -i ".version = \"${VERSION}\"" chart/bootc-operator-crds/Chart.yaml
+          ./bin/yq -i ".appVersion = \"${TAG}\"" chart/bootc-operator-crds/Chart.yaml
+          helm package chart/bootc-operator-crds
+          helm push "bootc-operator-crds-${VERSION}.tgz" oci://ghcr.io/${{ github.repository }}/charts
+
           ./bin/yq -i ".version = \"${VERSION}\"" chart/bootc-operator/Chart.yaml
           ./bin/yq -i ".appVersion = \"${TAG}\"" chart/bootc-operator/Chart.yaml
+          ./bin/yq -i ".dependencies[0].version = \"${VERSION}\"" chart/bootc-operator/Chart.yaml
+          helm dependency build chart/bootc-operator
           helm package chart/bootc-operator
-          helm registry login -u "${ACTOR}" -p "${GH_TOKEN}" ghcr.io
           helm push "bootc-operator-${VERSION}.tgz" oci://ghcr.io/${{ github.repository }}/charts
 
       - name: Create release
