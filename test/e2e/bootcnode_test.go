@@ -708,6 +708,7 @@ func TestNonExistingImage(t *testing.T) {
 
 func TestSoftReboot(t *testing.T) {
 	g := NewWithT(t)
+	e2eutil.Providers(t, "bink")
 	g.SetDefaultEventuallyTimeout(pollTimeout)
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
 
