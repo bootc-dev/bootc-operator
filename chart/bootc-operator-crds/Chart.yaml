@@ -1,0 +1,14 @@
+apiVersion: v2
+name: bootc-operator-crds
+description: CRDs for the bootc-operator
+type: application
+version: 0.1.0
+appVersion: "v0.1.1"
+kubeVersion: ">= 1.34.0"
+home: https://github.com/bootc-dev/bootc-operator
+sources:
+  - https://github.com/bootc-dev/bootc-operator
+keywords:
+  - bootc
+  - operator
+  - crd

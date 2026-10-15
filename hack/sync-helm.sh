@@ -7,14 +7,15 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CHART_DIR="$REPO_ROOT/chart/bootc-operator"
+CRD_CHART_DIR="$REPO_ROOT/chart/bootc-operator-crds"
 CONFIG_DIR="$REPO_ROOT/config"
 YQ="${YQ:-yq}"
 
 command -v "$YQ" >/dev/null 2>&1 || { echo "error: yq required (run: make yq)" >&2; exit 1; }
 
-# --- CRDs ---
-mkdir -p "$CHART_DIR/crds"
-cp "$CONFIG_DIR"/crd/bases/*.yaml "$CHART_DIR/crds/"
+# --- CRDs (separate chart) ---
+mkdir -p "$CRD_CHART_DIR/templates"
+cp "$CONFIG_DIR"/crd/bases/*.yaml "$CRD_CHART_DIR/templates/"
 echo "Synced CRDs"
 
 # --- RBAC ---
