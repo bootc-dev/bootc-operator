@@ -7,6 +7,11 @@
 
 ## Install
 
+The operator chart includes the CRDs as a
+[dependency](https://helm.sh/docs/helm/helm_dependency/). CRDs are
+installed in a sub-chart (instead of the `crds/` directory) so that
+`helm upgrade` can update them.
+
 Install from the OCI registry:
 
 ```bash
@@ -18,15 +23,24 @@ To install a specific version:
 
 ```bash
 helm install bootc-operator oci://ghcr.io/bootc-dev/bootc-operator/charts/bootc-operator \
-  --version 0.1.0 \
-  --create-namespace --namespace bootc-operator
+  --version 0.1.0 --create-namespace --namespace bootc-operator
 ```
 
 Alternatively, install from a local checkout:
 
 ```bash
+helm dependency build ./chart/bootc-operator
 helm install bootc-operator ./chart/bootc-operator \
   --create-namespace --namespace bootc-operator
+```
+
+To manage CRDs separately (e.g. with a GitOps tool), disable the
+dependency and install the CRD chart on its own:
+
+```bash
+helm install bootc-operator-crds oci://ghcr.io/bootc-dev/bootc-operator/charts/bootc-operator-crds
+helm install bootc-operator oci://ghcr.io/bootc-dev/bootc-operator/charts/bootc-operator \
+  --create-namespace --namespace bootc-operator --set crds.install=false
 ```
 
 By default the chart uses the image
@@ -88,6 +102,16 @@ kubectl create secret generic my-pull-secret \
   --type=kubernetes.io/dockerconfigjson
 ```
 
+## Upgrade
+
+```bash
+helm upgrade bootc-operator oci://ghcr.io/bootc-dev/bootc-operator/charts/bootc-operator \
+  --version <version> --namespace bootc-operator
+```
+
+Replace `<version>` with the chart version (e.g. `0.2.0`). The CRD
+sub-chart is upgraded automatically.
+
 ## Regenerating the chart
 
 Most Helm templates are generated from the kustomize manifests. After
@@ -102,6 +126,7 @@ make helm
 
 | Key | Default | Description |
 |-----|---------|-------------|
+| `crds.install` | `true` | Install the CRD sub-chart |
 | `image.repository` | `ghcr.io/bootc-dev/bootc-operator` | Operator image repository |
 | `image.tag` | `""` (uses `appVersion`) | Operator image tag |
 | `image.pullPolicy` | not set | Kubernetes image pull policy |
