@@ -345,7 +345,7 @@ func kubectlApply(t *testing.T, manifest []byte) {
 	t.Helper()
 
 	kubeconfigPath := os.Getenv("KUBECONFIG")
-	args := []string{"apply", "--server-side", "-f", "-"}
+	args := []string{"apply", "--server-side", "--force-conflicts", "-f", "-"}
 	if kubeconfigPath != "" {
 		args = append([]string{"--kubeconfig", kubeconfigPath}, args...)
 	}
@@ -431,7 +431,7 @@ func waitForOperatorReady(
 func operatorDeployKey() client.ObjectKey {
 	return client.ObjectKey{
 		Namespace: testutil.OperatorNamespaceName,
-		Name:      "bootc-operator-controller-manager",
+		Name:      "bootc-operator-controller",
 	}
 }
 

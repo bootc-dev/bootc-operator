@@ -245,17 +245,19 @@ start-bink: seed-node-image ## Start a bink cluster (idempotent).
 	kubectl --kubeconfig $(KUBECONFIG_BINK) wait --for=condition=Ready node/controller --timeout=5m
 
 .PHONY: deploy-bink
-deploy-bink: start-bink build-update-image $(if $(RELEASED_OPERATOR_IMG),push-released-operator-image) kustomize ## Deploy to a bink cluster (requires: buildimg).
+deploy-bink: start-bink build-update-image $(if $(RELEASED_OPERATOR_IMG),push-released-operator-image) helm ## Deploy to a bink cluster (requires: buildimg).
 	podman push --tls-verify=false $(IMG) localhost:5000/bootc-operator-e2e:latest
-	# On re-deploy, restart the rollout to force a re-pull of the :latest tag.
-	# On fresh deploy, skip the restart -- the pod is already pulling the correct image.
-	@existed=$$(kubectl --kubeconfig $(KUBECONFIG_BINK) -n bootc-operator get deploy bootc-operator-controller-manager -o name 2>/dev/null || true) && \
-	$(MAKE) deploy KUBECONFIG=$(abspath $(KUBECONFIG_BINK)) IMG=$(IMG_BINK) \
-		MANAGER_EXTRA_ARGS='"--allow-insecure-registry","--tag-resolution-interval=10s"' && \
-	if [ -n "$$existed" ]; then \
-		kubectl --kubeconfig $(KUBECONFIG_BINK) -n bootc-operator rollout restart deployment/bootc-operator-controller-manager; \
-	fi
-	kubectl --kubeconfig $(KUBECONFIG_BINK) -n bootc-operator rollout status deployment/bootc-operator-controller-manager --timeout=3m
+	helm dependency build ./chart/bootc-operator
+	img="$(IMG_BINK)" && \
+	helm upgrade --install bootc-operator ./chart/bootc-operator \
+		--kubeconfig $(abspath $(KUBECONFIG_BINK)) \
+		--create-namespace --namespace bootc-operator \
+		--set image.repository="$${img%:*}" \
+		--set image.tag="$${img##*:}" \
+		--set image.pullPolicy=Always \
+		--set-json 'controller.extraArgs=["--allow-insecure-registry","--tag-resolution-interval=10s"]'
+	kubectl --kubeconfig $(KUBECONFIG_BINK) -n bootc-operator rollout restart deployment/bootc-operator-controller
+	kubectl --kubeconfig $(KUBECONFIG_BINK) -n bootc-operator rollout status deployment/bootc-operator-controller --timeout=3m
 
 .PHONY: gather-bink
 gather-bink: ## Gather diagnostic logs from the bink cluster.
