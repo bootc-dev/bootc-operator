@@ -13,3 +13,8 @@ keywords:
   - operator
   - os-update
   - node-management
+dependencies:
+  - name: bootc-operator-crds
+    version: "0.1.0"
+    repository: "file://../bootc-operator-crds"
+    condition: crds.install

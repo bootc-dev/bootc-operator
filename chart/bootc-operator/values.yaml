@@ -1,3 +1,6 @@
+crds:
+  install: true
+
 image:
   repository: ghcr.io/bootc-dev/bootc-operator
   tag: ""

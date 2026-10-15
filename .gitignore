@@ -5,6 +5,9 @@ kubeconfig-*
 docs/book/
 user-docs
 chart/bootc-operator/crds/
+chart/bootc-operator/charts/
+chart/bootc-operator/Chart.lock
+chart/bootc-operator-crds/templates/
 chart/bootc-operator/templates/controller-clusterrole.yaml
 chart/bootc-operator/templates/daemon-clusterrole.yaml
 chart/bootc-operator/templates/leader-election-role.yaml
