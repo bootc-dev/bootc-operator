@@ -77,8 +77,9 @@ jobs:
       - name: Generate Helm chart
         run: make helm
 
-      - name: Install Helm chart
+      - name: Install Helm charts
         run: |
+          helm dependency build ./chart/bootc-operator
           helm install bootc-operator ./chart/bootc-operator \
             --kubeconfig $(pwd)/kubeconfig-e2e \
             --create-namespace --namespace bootc-operator \
