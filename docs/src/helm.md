@@ -112,6 +112,15 @@ helm upgrade bootc-operator oci://ghcr.io/bootc-dev/bootc-operator/charts/bootc-
 Replace `<version>` with the chart version (e.g. `0.2.0`). The CRD
 sub-chart is upgraded automatically.
 
+## Uninstall
+
+```bash
+helm uninstall bootc-operator --namespace bootc-operator
+```
+
+> **Warning**: uninstalling the chart also removes the CRDs and all
+> their instances cluster-wide.
+
 ## Regenerating the chart
 
 Most Helm templates are generated from the kustomize manifests. After
