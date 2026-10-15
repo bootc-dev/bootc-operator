@@ -3,14 +3,12 @@
 package e2e
 
 import (
-	"bytes"
 	"context"
-	"fmt"
-	"io"
-	"net/http"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,18 +17,14 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	sigsyaml "sigs.k8s.io/yaml"
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
 	"github.com/bootc-dev/bootc-operator/test/e2e/e2eutil"
 	testutil "github.com/bootc-dev/bootc-operator/test/util"
 )
 
-const (
-	releaseManifestURL = "https://github.com/bootc-dev/bootc-operator/releases/download/%s/install.yaml"
-)
+const helmReleaseName = "bootc-operator"
 
 var operatorCRDNames = []string{
 	"bootcnodepools.node.bootc.dev",
@@ -38,9 +32,9 @@ var operatorCRDNames = []string{
 }
 
 // TestOperatorUpgrade installs the released version of the operator
-// from its published manifest, verifies basic functionality, then
-// upgrades by re-applying the current manifests (including CRDs) on
-// top and verifies the operator still works.
+// via Helm, verifies basic functionality, then upgrades by running
+// helm upgrade with the current image and verifies the operator still
+// works.
 func TestOperatorUpgrade(t *testing.T) {
 	e2eutil.Providers(t, "bink")
 
@@ -60,21 +54,29 @@ func TestOperatorUpgrade(t *testing.T) {
 	env := e2eutil.New(t)
 	ctx := context.Background()
 
-	// Capture the current operator image before we replace it.
+	repoRoot := findRepoRoot(t)
+	chartPath := filepath.Join(repoRoot, "chart", "bootc-operator")
+
+	// Capture the current operator image and extra args before we
+	// replace it.
 	var origDeploy appsv1.Deployment
 	g.Expect(env.Client.Get(ctx, operatorDeployKey(), &origDeploy)).To(Succeed())
 	currentImg := containerImage(t, origDeploy.Spec.Template.Spec.Containers, "manager")
-	currentArgs := containerArgs(t, origDeploy.Spec.Template.Spec.Containers, "manager")
+	extraArgs := controllerExtraArgs(t, origDeploy.Spec.Template.Spec.Containers)
 	t.Logf("Current operator image: %s", currentImg)
 	t.Logf("Released operator tag: %s, image: %s", releaseTag, releasedImg)
 
-	// Phase 1: Delete the current operator and install the released
-	// version from its published manifest.
-	installReleasedOperator(t, g, ctx, env, releaseTag, releasedImg)
+	// Phase 1: Uninstall the current operator and re-install with
+	// the released image via Helm.
+	uninstallOperator(t, g, ctx, env)
+	helmInstallOperator(t, chartPath, releasedImg, extraArgs)
+	waitForOperatorReady(t, g, ctx, env.Client)
+
+	t.Logf("Released operator %s installed via Helm", releaseTag)
 
 	t.Cleanup(func() {
 		t.Logf("Restoring operator to current version...")
-		applyCurrentManifests(t, currentImg, currentArgs)
+		helmUpgradeOperator(t, chartPath, currentImg, extraArgs)
 		waitForOperatorReady(t, g, ctx, env.Client)
 		t.Logf("Operator restored")
 	})
@@ -89,11 +91,11 @@ func TestOperatorUpgrade(t *testing.T) {
 
 	t.Logf("Node %q is Idle with released operator", nodeName)
 
-	// Phase 3: Upgrade by applying the current manifests on top.
-	applyCurrentManifests(t, currentImg, currentArgs)
+	// Phase 3: Upgrade via helm upgrade to the current version.
+	helmUpgradeOperator(t, chartPath, currentImg, extraArgs)
 	waitForOperatorReady(t, g, ctx, env.Client)
 
-	t.Logf("Upgraded operator to current version via manifest apply")
+	t.Logf("Upgraded operator to current version via Helm")
 
 	// Verify the pre-existing pool and node survived the upgrade.
 	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 3*time.Minute)
@@ -124,33 +126,11 @@ func TestOperatorUpgrade(t *testing.T) {
 		Should(poolAllUpdated(1, env.NodeImageUpdateDigest()))
 }
 
-// installReleasedOperator deletes the current operator, downloads the
-// released install manifest, patches the image reference, and applies
-// it.
-func installReleasedOperator(
-	t *testing.T,
-	g Gomega,
-	ctx context.Context,
-	env *e2eutil.Env,
-	releaseTag, releasedImg string,
-) {
-	t.Helper()
-
-	deleteCurrentOperator(t, g, ctx, env)
-
-	manifest := downloadReleaseManifest(t, releaseTag)
-	patchedManifest := patchManifestImage(t, manifest, releasedImg, nil)
-
-	kubectlApply(t, patchedManifest)
-	waitForOperatorReady(t, g, ctx, env.Client)
-
-	t.Logf("Released operator %s installed from manifest", releaseTag)
-}
-
-// deleteCurrentOperator deletes custom resources (while the operator
-// is still running so it can handle finalizer removal), then removes
-// the operator Deployment, DaemonSet, and CRDs.
-func deleteCurrentOperator(
+// uninstallOperator removes the operator via Helm uninstall, then
+// deletes CRDs (which Helm does not manage on uninstall).  Custom
+// resources are deleted first while the operator is still running so
+// it can handle finalizer removal.
+func uninstallOperator(
 	t *testing.T,
 	g Gomega,
 	ctx context.Context,
@@ -158,9 +138,6 @@ func deleteCurrentOperator(
 ) {
 	t.Helper()
 
-	// Delete CRs first while the operator is running so it can
-	// remove finalizers. If CRs with finalizers remain when the
-	// controller is gone, CRD deletion hangs indefinitely.
 	t.Logf("Deleting custom resources...")
 	g.Expect(env.Client.DeleteAllOf(ctx, &bootcv1alpha1.BootcNodePool{})).To(Succeed())
 	g.Expect(env.Client.DeleteAllOf(ctx, &bootcv1alpha1.BootcNode{})).To(Succeed())
@@ -175,28 +152,16 @@ func deleteCurrentOperator(
 	}).WithTimeout(2*time.Minute).Should(Succeed(),
 		"expected all custom resources to be deleted")
 
-	var deploy appsv1.Deployment
-	g.Expect(env.Client.Get(ctx, operatorDeployKey(), &deploy)).To(Succeed())
-	var ds appsv1.DaemonSet
-	g.Expect(env.Client.Get(ctx, operatorDaemonSetKey(), &ds)).To(Succeed())
-
-	t.Logf("Deleting operator deployment, daemonset, and CRDs...")
-	g.Expect(env.Client.Delete(ctx, &deploy)).To(Succeed())
-	g.Expect(env.Client.Delete(ctx, &ds)).To(Succeed())
-
-	for _, crdName := range operatorCRDNames {
-		var crd apiextensionsv1.CustomResourceDefinition
-		if err := env.Client.Get(ctx, client.ObjectKey{Name: crdName}, &crd); err == nil {
-			g.Expect(env.Client.Delete(ctx, &crd)).To(Succeed())
-		}
-	}
+	t.Logf("Uninstalling Helm release...")
+	helmRun(t, "uninstall", helmReleaseName,
+		"--namespace", testutil.OperatorNamespaceName)
 
 	g.Eventually(func(g Gomega) {
 		var d appsv1.Deployment
 		err := env.Client.Get(ctx, operatorDeployKey(), &d)
 		g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
-		var dset appsv1.DaemonSet
-		err = env.Client.Get(ctx, operatorDaemonSetKey(), &dset)
+		var ds appsv1.DaemonSet
+		err = env.Client.Get(ctx, operatorDaemonSetKey(), &ds)
 		g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
 		for _, crdName := range operatorCRDNames {
 			var crd apiextensionsv1.CustomResourceDefinition
@@ -206,207 +171,98 @@ func deleteCurrentOperator(
 	}).WithTimeout(2*time.Minute).Should(Succeed(),
 		"expected operator resources to be deleted")
 
-	t.Logf("Operator deployment, daemonset, and CRDs deleted")
+	t.Logf("Operator uninstalled")
 }
 
-// downloadReleaseManifest fetches install.yaml from a GitHub release.
-func downloadReleaseManifest(t *testing.T, tag string) []byte {
+// helmInstallOperator installs the operator via helm install.
+func helmInstallOperator(t *testing.T, chartPath, img string, extraArgs []string) {
 	t.Helper()
-
-	url := fmt.Sprintf(releaseManifestURL, tag)
-	t.Logf("Downloading release manifest from %s", url)
-
-	resp, err := http.Get(url) //nolint:gosec
-	if err != nil {
-		t.Fatalf("downloading release manifest: %v", err)
+	args := []string{
+		"install", helmReleaseName, chartPath,
+		"--namespace", testutil.OperatorNamespaceName,
+		"--create-namespace",
 	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("downloading release manifest: HTTP %d", resp.StatusCode)
-	}
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("reading release manifest body: %v", err)
-	}
-
-	return data
+	args = append(args, helmImageArgs(img, extraArgs)...)
+	helmRun(t, args...)
 }
 
-// patchManifestImage replaces container image references in
-// Deployment (manager) and DaemonSet (daemon) documents.
-func patchManifestImage(
-	t *testing.T,
-	manifest []byte,
-	img string,
-	managerArgs []string,
-) []byte {
+// helmUpgradeOperator upgrades the operator via helm upgrade.
+func helmUpgradeOperator(t *testing.T, chartPath, img string, extraArgs []string) {
 	t.Helper()
+	args := []string{
+		"upgrade", helmReleaseName, chartPath,
+		"--namespace", testutil.OperatorNamespaceName,
+	}
+	args = append(args, helmImageArgs(img, extraArgs)...)
+	helmRun(t, args...)
+}
 
-	var out bytes.Buffer
-	reader := utilyaml.NewDocumentDecoder(io.NopCloser(bytes.NewReader(manifest)))
-	defer func() { _ = reader.Close() }()
-
-	first := true
-	for {
-		buf := make([]byte, len(manifest)+256)
-		n, err := reader.Read(buf)
+// helmImageArgs returns the --set flags for image and controller args.
+func helmImageArgs(img string, extraArgs []string) []string {
+	repo, tag := splitImage(img)
+	args := []string{
+		"--set", "image.repository=" + repo,
+		"--set", "image.tag=" + tag,
+		"--set", "image.pullPolicy=Always",
+	}
+	if len(extraArgs) > 0 {
+		j, err := json.Marshal(extraArgs)
 		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			t.Fatalf("reading YAML document: %v", err)
+			panic("marshaling extraArgs: " + err.Error())
 		}
-		doc := buf[:n]
-
-		var obj map[string]interface{}
-		if err := sigsyaml.Unmarshal(doc, &obj); err != nil {
-			t.Fatalf("unmarshaling YAML document: %v", err)
-		}
-
-		kind, _ := obj["kind"].(string)
-		switch kind {
-		case "Deployment":
-			setContainerImage(t, obj, "manager", img)
-			if len(managerArgs) > 0 {
-				setContainerArgs(t, obj, "manager", managerArgs)
-			}
-		case "DaemonSet":
-			setContainerImage(t, obj, "daemon", img)
-		}
-
-		patched, err := sigsyaml.Marshal(obj)
-		if err != nil {
-			t.Fatalf("marshaling patched %s: %v", kind, err)
-		}
-
-		if !first {
-			out.WriteString("---\n")
-		}
-		out.Write(patched)
-		first = false
+		args = append(args, "--set-json", "controller.extraArgs="+string(j))
 	}
-
-	return out.Bytes()
+	return args
 }
 
-// setContainerImage patches the image field of a named container in a
-// Deployment or DaemonSet manifest map.
-func setContainerImage(t *testing.T, obj map[string]interface{}, containerName, img string) {
+// helmRun executes a helm command, adding --kubeconfig if set.
+func helmRun(t *testing.T, args ...string) {
 	t.Helper()
 
-	spec, _ := obj["spec"].(map[string]interface{})
-	template, _ := spec["template"].(map[string]interface{})
-	podSpec, _ := template["spec"].(map[string]interface{})
-	containers, _ := podSpec["containers"].([]interface{})
-
-	for _, c := range containers {
-		container, _ := c.(map[string]interface{})
-		if name, _ := container["name"].(string); name == containerName {
-			container["image"] = img
-			return
-		}
-	}
-	t.Fatalf("container %q not found in %s", containerName, obj["kind"])
-}
-
-// setContainerArgs replaces the args of a named container in a
-// Deployment or DaemonSet manifest map.
-func setContainerArgs(
-	t *testing.T,
-	obj map[string]interface{},
-	containerName string,
-	args []string,
-) {
-	t.Helper()
-
-	spec, _ := obj["spec"].(map[string]interface{})
-	template, _ := spec["template"].(map[string]interface{})
-	podSpec, _ := template["spec"].(map[string]interface{})
-	containers, _ := podSpec["containers"].([]interface{})
-
-	for _, c := range containers {
-		container, _ := c.(map[string]interface{})
-		if name, _ := container["name"].(string); name == containerName {
-			ifaceArgs := make([]interface{}, len(args))
-			for i, a := range args {
-				ifaceArgs[i] = a
-			}
-			container["args"] = ifaceArgs
-			return
-		}
-	}
-	t.Fatalf("container %q not found in %s", containerName, obj["kind"])
-}
-
-// kubectlApply applies the given manifest bytes via kubectl.
-func kubectlApply(t *testing.T, manifest []byte) {
-	t.Helper()
-
-	kubeconfigPath := os.Getenv("KUBECONFIG")
-	args := []string{"apply", "--server-side", "--force-conflicts", "-f", "-"}
-	if kubeconfigPath != "" {
-		args = append([]string{"--kubeconfig", kubeconfigPath}, args...)
+	subcmd := args[0]
+	if kc := os.Getenv("KUBECONFIG"); kc != "" {
+		args = append([]string{"--kubeconfig", kc}, args...)
 	}
 
-	cmd := exec.Command("kubectl", args...)
-	cmd.Stdin = bytes.NewReader(manifest)
-
+	cmd := exec.Command("helm", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("kubectl apply failed: %v\n%s", err, out)
+		t.Fatalf("helm %s failed: %v\n%s", subcmd, err, out)
 	}
-
-	t.Logf("kubectl apply:\n%s", out)
+	t.Logf("helm %s:\n%s", subcmd, out)
 }
 
-// applyCurrentManifests runs the equivalent of "make deploy" for the
-// current version: kustomize build + image patch + kubectl apply.
-func applyCurrentManifests(
-	t *testing.T,
-	img string,
-	managerArgs []string,
-) {
-	t.Helper()
-
-	repoRoot := findRepoRoot(t)
-
-	kustomize := filepath.Join(repoRoot, "bin", "kustomize")
-	if _, err := os.Stat(kustomize); err != nil {
-		kustomize = "kustomize"
+// splitImage splits a container image reference into repository and tag.
+func splitImage(ref string) (repo, tag string) {
+	lastSlash := strings.LastIndex(ref, "/")
+	lastColon := strings.LastIndex(ref, ":")
+	if lastColon > lastSlash {
+		return ref[:lastColon], ref[lastColon+1:]
 	}
-
-	cmd := exec.Command(kustomize, "build", filepath.Join(repoRoot, "config", "default"))
-	manifest, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("kustomize build failed: %v\n%s", err, manifest)
-	}
-
-	manifest = patchManifestImage(t, manifest, img, managerArgs)
-	kubectlApply(t, manifest)
+	return ref, "latest"
 }
 
-// findRepoRoot walks up from the test directory to find the repository
-// root (containing go.mod).
-func findRepoRoot(t *testing.T) string {
+// controllerExtraArgs returns the controller's extra arguments,
+// filtering out the flags that the Helm chart always includes.
+func controllerExtraArgs(t *testing.T, containers []corev1.Container) []string {
 	t.Helper()
-
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getting working directory: %v", err)
-	}
-
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
+	for _, c := range containers {
+		if c.Name != "manager" {
+			continue
 		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatal("could not find repository root (go.mod)")
+		var extra []string
+		for _, arg := range c.Args {
+			switch {
+			case arg == "--leader-elect",
+				strings.HasPrefix(arg, "--health-probe-bind-address="):
+			default:
+				extra = append(extra, arg)
+			}
 		}
-		dir = parent
+		return extra
 	}
+	t.Fatalf("container %q not found in pod spec", "manager")
+	return nil
 }
 
 // waitForOperatorReady polls until the operator deployment has one available and up-to-date replica.
@@ -455,13 +311,24 @@ func containerImage(t *testing.T, containers []corev1.Container, name string) st
 	return ""
 }
 
-func containerArgs(t *testing.T, containers []corev1.Container, name string) []string {
+// findRepoRoot walks up from the test directory to find the repository
+// root (containing go.mod).
+func findRepoRoot(t *testing.T) string {
 	t.Helper()
-	for _, c := range containers {
-		if c.Name == name {
-			return c.Args
-		}
+
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getting working directory: %v", err)
 	}
-	t.Fatalf("container %q not found in pod spec", name)
-	return nil
+
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("could not find repository root (go.mod)")
+		}
+		dir = parent
+	}
 }
