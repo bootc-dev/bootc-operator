@@ -78,6 +78,7 @@ type BootcNodePoolReconciler struct {
 }
 
 // +kubebuilder:rbac:groups=node.bootc.dev,resources=bootcnodepools,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=node.bootc.dev,resources=bootcoperatorconfigs,verbs=list
 // +kubebuilder:rbac:groups=node.bootc.dev,resources=bootcnodepools/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=node.bootc.dev,resources=bootcnodepools/finalizers,verbs=update
 // +kubebuilder:rbac:groups=node.bootc.dev,resources=bootcnodes,verbs=get;list;watch;create;update;patch;delete

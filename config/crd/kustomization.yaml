@@ -1,4 +1,5 @@
 resources:
 - bases/node.bootc.dev_bootcnodepools.yaml
 - bases/node.bootc.dev_bootcnodes.yaml
+- bases/node.bootc.dev_bootcoperatorconfigs.yaml
 # +kubebuilder:scaffold:crdkustomizeresource

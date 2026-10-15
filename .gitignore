@@ -4,6 +4,8 @@ bin/
 kubeconfig-*
 docs/book/
 user-docs
+/install.yaml
+/operator-config.yaml
 chart/bootc-operator/crds/
 chart/bootc-operator/templates/controller-clusterrole.yaml
 chart/bootc-operator/templates/daemon-clusterrole.yaml

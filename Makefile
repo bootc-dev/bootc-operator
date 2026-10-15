@@ -169,11 +169,21 @@ buildimg: ## Build container image.
 	$(CONTAINER_TOOL) build -t $(IMG) .
 
 .PHONY: release-manifest
-release-manifest: kustomize yq ## Build install manifest (override IMG to set the image reference).
+release-manifest: kustomize yq ## Build install manifest and optional configuration asset (override IMG).
 	"$(KUSTOMIZE)" build config/default | \
 		"$(YQ)" '(select(.kind == "Deployment") | .spec.template.spec.containers[] | select(.name == "manager")).image = "$(IMG)"' | \
 		"$(YQ)" '(select(.kind == "DaemonSet") | .spec.template.spec.containers[] | select(.name == "daemon")).image = "$(IMG)"' \
 		> install.yaml
+	cp config/samples/bootc_v1alpha1_bootcoperatorconfig.yaml operator-config.yaml
+
+.PHONY: verify-release-manifest
+verify-release-manifest: release-manifest ## Check the generated release assets.
+	@cmp -s config/samples/bootc_v1alpha1_bootcoperatorconfig.yaml operator-config.yaml || \
+		{ echo "operator-config.yaml differs from the validated example"; exit 1; }
+	@test "$$("$(YQ)" ea '[.] | map(select(.kind == "CustomResourceDefinition" and .metadata.name == "bootcoperatorconfigs.node.bootc.dev")) | length' install.yaml)" -eq 1 || \
+		{ echo "install.yaml must contain the BootcOperatorConfig CRD exactly once"; exit 1; }
+	@test "$$("$(YQ)" ea '[.] | map(select(.kind == "BootcOperatorConfig")) | length' install.yaml)" -eq 0 || \
+		{ echo "install.yaml must not create an administrator-owned BootcOperatorConfig"; exit 1; }
 
 .PHONY: build-update-image
 build-update-image: ## Build derived node images for update testing and push to bink registry.
@@ -245,17 +255,13 @@ start-bink: seed-node-image ## Start a bink cluster (idempotent).
 	kubectl --kubeconfig $(KUBECONFIG_BINK) wait --for=condition=Ready node/controller --timeout=5m
 
 .PHONY: deploy-bink
-deploy-bink: start-bink build-update-image $(if $(RELEASED_OPERATOR_IMG),push-released-operator-image) kustomize ## Deploy to a bink cluster (requires: buildimg).
+deploy-bink: start-bink kustomize yq ## Deploy to a bink cluster (requires: buildimg).
+	$(MAKE) build-update-image
+	$(if $(RELEASED_OPERATOR_IMG),$(MAKE) push-released-operator-image)
 	podman push --tls-verify=false $(IMG) localhost:5000/bootc-operator-e2e:latest
-	# On re-deploy, restart the rollout to force a re-pull of the :latest tag.
-	# On fresh deploy, skip the restart -- the pod is already pulling the correct image.
-	@existed=$$(kubectl --kubeconfig $(KUBECONFIG_BINK) -n bootc-operator get deploy bootc-operator-controller-manager -o name 2>/dev/null || true) && \
-	$(MAKE) deploy KUBECONFIG=$(abspath $(KUBECONFIG_BINK)) IMG=$(IMG_BINK) \
-		MANAGER_EXTRA_ARGS='"--allow-insecure-registry","--tag-resolution-interval=10s"' && \
-	if [ -n "$$existed" ]; then \
-		kubectl --kubeconfig $(KUBECONFIG_BINK) -n bootc-operator rollout restart deployment/bootc-operator-controller-manager; \
-	fi
-	kubectl --kubeconfig $(KUBECONFIG_BINK) -n bootc-operator rollout status deployment/bootc-operator-controller-manager --timeout=3m
+	$(MAKE) install KUBECONFIG="$(abspath $(KUBECONFIG_BINK))"
+	KUBECONFIG="$(abspath $(KUBECONFIG_BINK))" IMG="$(IMG_BINK)" \
+		KUBECTL="$(KUBECTL)" YQ="$(YQ)" MAKE="$(MAKE)" ./hack/deploy-bink.sh
 
 .PHONY: gather-bink
 gather-bink: ## Gather diagnostic logs from the bink cluster.
