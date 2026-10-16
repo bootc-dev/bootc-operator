@@ -17,13 +17,10 @@ BINK_NODE_DISK_IMAGE ?= ghcr.io/bootc-dev/bink/node:v$(DEFAULT_KUBE_MINOR)-fedor
 BINK_LOCAL_REGISTRY_NODE_IMAGE ?= registry.cluster.local:5000/node
 E2E_REGISTRY_USER ?= e2e-user
 E2E_REGISTRY_PASSWORD ?= e2e-password
-# Released operator for upgrade testing (set to run TestOperatorUpgrade).
-# RELEASED_OPERATOR_TAG: GitHub release tag to download install.yaml from.
-# RELEASED_OPERATOR_IMG: container image to use (defaults to upstream, override for downstream).
-# Example: RELEASED_OPERATOR_TAG=v0.1.0
-#          RELEASED_OPERATOR_IMG=ghcr.io/bootc-dev/bootc-operator:v0.1.0
-RELEASED_OPERATOR_TAG ?=
-RELEASED_OPERATOR_IMG ?=
+# Released operator for upgrade testing (TestOperatorUpgrade).
+# Override RELEASED_OPERATOR_IMG for downstream images.
+RELEASED_OPERATOR_TAG ?= v0.2.1
+RELEASED_OPERATOR_IMG ?= ghcr.io/bootc-dev/bootc-operator:$(RELEASED_OPERATOR_TAG)
 IMG_BINK_RELEASED ?= registry.cluster.local:5000/bootc-operator-released:latest
 # YEAR defines the year value used for substituting the YEAR placeholder in the boilerplate header.
 YEAR ?= $(shell date +%Y)
