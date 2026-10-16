@@ -877,6 +877,131 @@ func TestPullSecretAuth(t *testing.T) {
 		Should(poolAllUpdated(1, digest))
 }
 
+// TestPullSecretRotation verifies that the daemon picks up rotated
+// registry credentials. It creates a pool targeting the auth registry,
+// waits for the initial upgrade, then rotates the auth registry's
+// credentials via bink, updates the K8s Secret to match, and triggers
+// a second upgrade. The second upgrade succeeding proves the daemon
+// re-reads the secret and authenticates with the new credentials.
+//
+// Not parallel: this test modifies the shared auth registry.
+func TestPullSecretRotation(t *testing.T) {
+	e2eutil.Providers(t, "bink")
+	g := NewWithT(t)
+	g.SetDefaultEventuallyTimeout(pollTimeout)
+	g.SetDefaultEventuallyPollingInterval(pollInterval)
+
+	env := e2eutil.New(t)
+	if env.RegistryUser() == "" || env.RegistryPassword() == "" {
+		t.Skip("E2E_REGISTRY_USER / E2E_REGISTRY_PASSWORD not set")
+	}
+
+	ctx := context.Background()
+	nodeName := env.AddNode(t)
+
+	registryHost := env.RegistryHost()
+	authUpdateRef := env.AuthImageRef()
+	authUpdate2Ref := registryHost + "/node@" + env.NodeImageUpdate2Digest()
+
+	// Phase 1: Create pull secret and pool targeting the auth update
+	// image. The daemon must pull through the authenticated registry.
+	authStr := base64.StdEncoding.EncodeToString(
+		[]byte(env.RegistryUser() + ":" + env.RegistryPassword()),
+	)
+	dockerCfg := fmt.Sprintf(
+		`{"auths":{%q:{"auth":"%s"}}}`,
+		registryHost, authStr,
+	)
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      env.TestID() + "-pull-secret",
+			Namespace: testutil.OperatorNamespaceName,
+		},
+		Type: corev1.SecretTypeDockerConfigJson,
+		Data: map[string][]byte{
+			corev1.DockerConfigJsonKey: []byte(dockerCfg),
+		},
+	}
+	g.Expect(env.Client.Create(ctx, secret)).To(Succeed())
+	t.Cleanup(func() { _ = env.Client.Delete(ctx, secret) })
+
+	pool := env.NewPool("pull-rotate", authUpdateRef,
+		testutil.WithPullSecret(secret.Name, secret.Namespace),
+	)
+	g.Expect(env.Client.Create(ctx, pool)).To(Succeed())
+
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 8*time.Minute,
+		HaveField("Booted", HaveField("Image", Equal(authUpdateRef))),
+	)
+
+	t.Logf("Node %q reached Idle with auth update image", nodeName)
+
+	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).
+		Should(poolAllUpdated(1, env.NodeImageUpdateDigest()))
+
+	// Phase 2: Rotate the auth registry credentials via bink and
+	// update the K8s Secret to match.
+	rotatedUser := "rotated"
+	rotatedPass := "rotated-pass"
+
+	t.Cleanup(func() {
+		cmd := exec.Command("bink", "registry", "update-credentials",
+			"--registry-user", env.RegistryUser(),
+			"--registry-password", env.RegistryPassword(),
+		)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			t.Logf("WARNING: restoring auth registry credentials: %v", err)
+		}
+	})
+
+	rotateCmd := exec.Command("bink", "registry", "update-credentials",
+		"--registry-user", rotatedUser,
+		"--registry-password", rotatedPass,
+	)
+	rotateCmd.Stdout = os.Stdout
+	rotateCmd.Stderr = os.Stderr
+	g.Expect(rotateCmd.Run()).To(Succeed(), "rotating auth registry credentials")
+
+	t.Logf("Rotated auth registry to user=%s", rotatedUser)
+
+	var current corev1.Secret
+	g.Expect(env.Client.Get(ctx, client.ObjectKeyFromObject(secret), &current)).To(Succeed())
+
+	rotatedAuthStr := base64.StdEncoding.EncodeToString(
+		[]byte(rotatedUser + ":" + rotatedPass),
+	)
+	rotatedCfg := fmt.Sprintf(
+		`{"auths":{%q:{"auth":"%s"}}}`,
+		registryHost, rotatedAuthStr,
+	)
+	current.Data[corev1.DockerConfigJsonKey] = []byte(rotatedCfg)
+	g.Expect(env.Client.Update(ctx, &current)).To(Succeed())
+
+	t.Logf("Updated pull secret %q with rotated credentials", secret.Name)
+
+	// Phase 3: Patch pool to a different auth image to trigger an
+	// upgrade that exercises the rotated credentials.
+	modified := pool.DeepCopy()
+	modified.Spec.Image.Ref = authUpdate2Ref
+	g.Expect(env.Client.Patch(ctx, modified, client.MergeFrom(pool))).To(Succeed())
+	*pool = *modified
+
+	t.Logf("Patched pool to auth update2 image %s", authUpdate2Ref)
+
+	// Phase 4: The upgrade completing proves the daemon re-read the
+	// rotated secret and authenticated with the new registry credentials.
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 8*time.Minute,
+		HaveField("Booted", HaveField("Image", Equal(authUpdate2Ref))),
+	)
+
+	t.Logf("Node %q upgraded with rotated credentials", nodeName)
+
+	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).
+		Should(poolAllUpdated(1, env.NodeImageUpdate2Digest()))
+}
+
 // TestControllerRecovery provisions a worker node, starts a rollout, and
 // scales the controller deployment to zero while that rollout is actively in
 // progress (the node is staging and cannot reboot until the controller drains
