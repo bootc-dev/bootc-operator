@@ -17,13 +17,10 @@ BINK_NODE_DISK_IMAGE ?= ghcr.io/bootc-dev/bink/node:v$(DEFAULT_KUBE_MINOR)-fedor
 BINK_LOCAL_REGISTRY_NODE_IMAGE ?= registry.cluster.local:5000/node
 E2E_REGISTRY_USER ?= e2e-user
 E2E_REGISTRY_PASSWORD ?= e2e-password
-# Released operator for upgrade testing (set to run TestOperatorUpgrade).
-# RELEASED_OPERATOR_TAG: GitHub release tag to download install.yaml from.
-# RELEASED_OPERATOR_IMG: container image to use (defaults to upstream, override for downstream).
-# Example: RELEASED_OPERATOR_TAG=v0.1.0
-#          RELEASED_OPERATOR_IMG=ghcr.io/bootc-dev/bootc-operator:v0.1.0
-RELEASED_OPERATOR_TAG ?=
-RELEASED_OPERATOR_IMG ?=
+# Released operator for upgrade testing (TestOperatorUpgrade).
+# Override RELEASED_OPERATOR_IMG for downstream images.
+RELEASED_OPERATOR_TAG ?= v0.2.1
+RELEASED_OPERATOR_IMG ?= ghcr.io/bootc-dev/bootc-operator:$(RELEASED_OPERATOR_TAG)
 IMG_BINK_RELEASED ?= registry.cluster.local:5000/bootc-operator-released:latest
 # YEAR defines the year value used for substituting the YEAR placeholder in the boilerplate header.
 YEAR ?= $(shell date +%Y)
@@ -245,17 +242,19 @@ start-bink: seed-node-image ## Start a bink cluster (idempotent).
 	kubectl --kubeconfig $(KUBECONFIG_BINK) wait --for=condition=Ready node/controller --timeout=5m
 
 .PHONY: deploy-bink
-deploy-bink: start-bink build-update-image $(if $(RELEASED_OPERATOR_IMG),push-released-operator-image) kustomize ## Deploy to a bink cluster (requires: buildimg).
+deploy-bink: start-bink build-update-image $(if $(RELEASED_OPERATOR_IMG),push-released-operator-image) helm ## Deploy to a bink cluster (requires: buildimg).
 	podman push --tls-verify=false $(IMG) localhost:5000/bootc-operator-e2e:latest
-	# On re-deploy, restart the rollout to force a re-pull of the :latest tag.
-	# On fresh deploy, skip the restart -- the pod is already pulling the correct image.
-	@existed=$$(kubectl --kubeconfig $(KUBECONFIG_BINK) -n bootc-operator get deploy bootc-operator-controller-manager -o name 2>/dev/null || true) && \
-	$(MAKE) deploy KUBECONFIG=$(abspath $(KUBECONFIG_BINK)) IMG=$(IMG_BINK) \
-		MANAGER_EXTRA_ARGS='"--allow-insecure-registry","--tag-resolution-interval=10s"' && \
-	if [ -n "$$existed" ]; then \
-		kubectl --kubeconfig $(KUBECONFIG_BINK) -n bootc-operator rollout restart deployment/bootc-operator-controller-manager; \
-	fi
-	kubectl --kubeconfig $(KUBECONFIG_BINK) -n bootc-operator rollout status deployment/bootc-operator-controller-manager --timeout=3m
+	helm dependency build ./chart/bootc-operator
+	img="$(IMG_BINK)" && \
+	helm upgrade --install bootc-operator ./chart/bootc-operator \
+		--kubeconfig $(abspath $(KUBECONFIG_BINK)) \
+		--create-namespace --namespace bootc-operator \
+		--set image.repository="$${img%:*}" \
+		--set image.tag="$${img##*:}" \
+		--set image.pullPolicy=Always \
+		--set-json 'controller.extraArgs=["--allow-insecure-registry","--tag-resolution-interval=10s"]'
+	kubectl --kubeconfig $(KUBECONFIG_BINK) -n bootc-operator rollout restart deployment/bootc-operator-controller
+	kubectl --kubeconfig $(KUBECONFIG_BINK) -n bootc-operator rollout status deployment/bootc-operator-controller --timeout=3m
 
 .PHONY: gather-bink
 gather-bink: ## Gather diagnostic logs from the bink cluster.

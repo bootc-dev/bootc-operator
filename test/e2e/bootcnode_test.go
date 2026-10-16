@@ -970,7 +970,7 @@ func scaleController(t *testing.T, env *e2eutil.Env, ctx context.Context, replic
 	g := NewWithT(t)
 	deployKey := client.ObjectKey{
 		Namespace: testutil.OperatorNamespaceName,
-		Name:      "bootc-operator-controller-manager",
+		Name:      "bootc-operator-controller",
 	}
 
 	var deploy appsv1.Deployment
