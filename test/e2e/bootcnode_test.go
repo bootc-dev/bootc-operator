@@ -21,6 +21,7 @@ import (
 	meta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
@@ -1292,4 +1293,145 @@ func TestOperatorRestartResilience(t *testing.T) {
 	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).
 		Should(poolAllUpdated(1, env.NodeImageUpdateDigest()))
 	t.Logf("Operator functioned normally after restart: rollout completed")
+}
+
+// TestMultiNodeRollout provisions a pool of multiple worker nodes
+// (COS-5185: scale testing for bootc-operator) and verifies a rollout
+// updates every node in the pool, respecting maxUnavailable, and that
+// the pool status correctly reflects all nodes once the rollout
+// completes. Unlike TestMidRolloutImageChange (bink-only, 2 nodes,
+// exercises mid-rollout image switches), this test targets a larger
+// pool and runs on EKS to validate behavior on real cloud nodes rather
+// than the simulated bink provider, since upstream CI's GitHub runners
+// cannot afford enough memory/CPU for multi-node scale testing.
+func TestMultiNodeRollout(t *testing.T) {
+	e2eutil.Providers(t, "bink", "eks")
+	t.Parallel()
+	g := NewWithT(t)
+	g.SetDefaultEventuallyTimeout(pollTimeout)
+	g.SetDefaultEventuallyPollingInterval(pollInterval)
+
+	env := e2eutil.New(t)
+
+	const nodeCount = 3
+	nodes := make([]string, nodeCount)
+	for i := range nodes {
+		nodes[i] = env.AddNode(t)
+	}
+
+	ctx := context.Background()
+
+	// Phase 1: Create pool with original image and wait for all nodes Idle.
+	// maxUnavailable=1 means rollout must proceed one node at a time.
+	pool := env.NewPool("scale", env.NodeImageDigestedPullSpec(),
+		testutil.WithMaxUnavailable(intstr.FromInt(1)))
+	g.Expect(env.Client.Create(ctx, pool)).To(Succeed())
+
+	// Verify the daemon pod actually reaches Running on every node before
+	// waiting for Idle - a pod stuck in e.g. ImagePullBackOff would
+	// otherwise just show up as a confusing Idle-wait timeout below.
+	for _, nodeName := range nodes {
+		g.Eventually(func() ([]corev1.Pod, error) {
+			var pods corev1.PodList
+			err := env.Client.List(ctx, &pods,
+				client.InNamespace(testutil.OperatorNamespaceName),
+				client.MatchingFields{"spec.nodeName": nodeName},
+				client.MatchingLabels{
+					"app.kubernetes.io/name":      "bootc-operator",
+					"app.kubernetes.io/component": "daemon",
+				},
+			)
+			return pods.Items, err
+		}).WithTimeout(3*time.Minute).Should(ConsistOf(And(
+			HaveField("Spec.NodeName", nodeName),
+			HaveField("Status.Phase", corev1.PodRunning),
+		)), "expected exactly one running daemon pod on %s", nodeName)
+	}
+
+	for _, nodeName := range nodes {
+		testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 3*time.Minute)
+	}
+
+	t.Logf("All %d nodes are Idle with original image", nodeCount)
+
+	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).
+		Should(poolAllUpdated(nodeCount, env.NodeImageDigest()))
+
+	// Phase 2: Patch pool to the update image.
+	updateRef := env.NodeImageUpdateDigestedPullSpec()
+
+	modified := pool.DeepCopy()
+	modified.Spec.Image.Ref = updateRef
+	g.Expect(env.Client.Patch(ctx, modified, client.MergeFrom(pool))).To(Succeed())
+	*pool = *modified
+
+	t.Logf("Patched pool to update image %s", updateRef)
+
+	// Phase 3: Wait for every node to be Idle on the update digest - proves
+	// the rollout reached the full pool, not just a subset - while
+	// continuously enforcing maxUnavailable. Both checks share one polling
+	// loop so the invariant is sampled throughout the rollout rather than
+	// once before it starts, and so the wait ends as soon as the rollout
+	// does.
+	//
+	// A node that stays Degraded aborts the wait early and reports the
+	// daemon's own error message. The daemon clears Degraded on the next
+	// successful reconcile, so a retried transient error must not fail the
+	// test; only a node degraded for longer than degradedGrace does.
+	const degradedGrace = 90 * time.Second
+	degradedSince := make(map[string]time.Time)
+
+	g.Eventually(func(g Gomega) {
+		var p bootcv1alpha1.BootcNodePool
+		g.Expect(env.Client.Get(ctx, client.ObjectKeyFromObject(pool), &p)).To(Succeed())
+
+		// An exceeded maxUnavailable is a violated invariant, not a state
+		// to wait out - retrying would let a later poll mask it.
+		if p.Status.UpdatingCount > 1 {
+			StopTrying(fmt.Sprintf(
+				"maxUnavailable=1 violated: %d nodes updating simultaneously",
+				p.Status.UpdatingCount,
+			)).Now()
+		}
+
+		for _, nodeName := range nodes {
+			var bn bootcv1alpha1.BootcNode
+			g.Expect(env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)).To(Succeed())
+
+			if cond := meta.FindStatusCondition(
+				bn.Status.Conditions, bootcv1alpha1.NodeDegraded,
+			); cond != nil && cond.Status == metav1.ConditionTrue {
+				first, seen := degradedSince[nodeName]
+				switch {
+				case !seen:
+					degradedSince[nodeName] = time.Now()
+				case time.Since(first) > degradedGrace:
+					StopTrying(fmt.Sprintf(
+						"node %s degraded for over %s during rollout: %s: %s",
+						nodeName, degradedGrace, cond.Reason, cond.Message,
+					)).Now()
+				}
+			} else {
+				delete(degradedSince, nodeName)
+			}
+
+			g.Expect(bn.Status.Conditions).To(ContainElement(And(
+				HaveField("Type", bootcv1alpha1.NodeIdle),
+				HaveField("Status", metav1.ConditionTrue),
+				HaveField("Reason", bootcv1alpha1.NodeReasonIdle),
+			)), "node %s is not Idle yet", nodeName)
+
+			g.Expect(bn.Status.Booted).NotTo(BeNil())
+			g.Expect(bn.Status.Booted).To(
+				imageMatchesDigest(env.NodeImageUpdateDigest()),
+				"node %s has not booted the update digest yet", nodeName,
+			)
+		}
+	}).WithTimeout(20 * time.Minute).Should(Succeed())
+
+	t.Logf("All %d nodes are Idle with update image", nodeCount)
+
+	// Phase 4: Verify final pool status reflects all nodes updated.
+	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).
+		Should(poolAllUpdated(nodeCount, env.NodeImageUpdateDigest()))
 }
