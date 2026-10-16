@@ -7,7 +7,7 @@ on:
     branches: [main, release-*]
 
 env:
-  BINK_COMMIT: c7c4013e1275f07fe6ee90be92b61d256117460f
+  BINK_COMMIT: be7df01f53d044b859a773dcc33ec30af4e51d1f
 
 permissions:
   contents: read
