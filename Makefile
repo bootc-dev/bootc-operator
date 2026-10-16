@@ -314,16 +314,27 @@ $(YQ): $(LOCALBIN)
 # $1 - target path with name of binary
 # $2 - package url which can be installed
 # $3 - specific version of package
+#
+# If the target binary already exists as a regular file (not a symlink), it
+# is assumed to be pre-installed by the caller (e.g. a hermetic/offline CI
+# build that sets CONTROLLER_GEN= or YQ= to a binary it already provisioned),
+# so it is used as-is and no download/version check is performed. The symlink
+# managed by this macro for the default LOCALBIN-based path is excluded from
+# this check so that bumping the pinned version still triggers a re-download
+# there.
 define go-install-tool
-@[ -f "$(1)-$(3)" ] && [ "$$(readlink -- "$(1)" 2>/dev/null)" = "$(1)-$(3)" ] || { \
+@binary="$(1)"; \
+versioned_binary="$(1)-$(3)"; \
+package="$(2)@$(3)"; \
+[ -f "$$binary" ] && [ ! -L "$$binary" ] && exit 0; \
+[ -f "$$versioned_binary" ] && [ "$$(readlink -- "$$binary" 2>/dev/null)" = "$$versioned_binary" ] || { \
 set -e; \
-package=$(2)@$(3) ;\
-echo "Downloading $${package}" ;\
-rm -f "$(1)" ;\
-GOBIN="$(LOCALBIN)" go install $${package} ;\
-mv "$(LOCALBIN)/$$(basename "$(1)")" "$(1)-$(3)" ;\
-} ;\
-ln -sf "$$(realpath "$(1)-$(3)")" "$(1)"
+echo "Downloading $$package"; \
+rm -f "$$binary"; \
+GOBIN="$(LOCALBIN)" go install $$package; \
+mv "$(LOCALBIN)/$$(basename "$$binary")" "$$versioned_binary"; \
+}; \
+ln -sf "$$(realpath "$$versioned_binary")" "$$binary"
 endef
 
 define gomodver
