@@ -54,11 +54,13 @@ jobs:
         with:
           client-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          permission-contents: write
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
           token: ${{ steps.app-token.outputs.token }}
 
       - name: Import GPG key
@@ -84,12 +86,14 @@ jobs:
       - name: Create and push tag
         env:
           TAG: ${{ steps.version.outputs.tag }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           if git rev-parse "${TAG}" >/dev/null 2>&1; then
             echo "::error::Tag ${TAG} already exists"
             exit 1
           fi
           git tag -s -m "Release ${TAG}" "${TAG}"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git push origin "${TAG}"
 
       - name: Create release branch
