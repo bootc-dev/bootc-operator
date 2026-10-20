@@ -190,7 +190,7 @@ func helmInstallOperator(t *testing.T, chartPath, img string, extraArgs []string
 func helmUpgradeOperator(t *testing.T, chartPath, img string, extraArgs []string) {
 	t.Helper()
 	args := []string{
-		"upgrade", helmReleaseName, chartPath,
+		"upgrade", "--install", helmReleaseName, chartPath,
 		"--namespace", testutil.OperatorNamespaceName,
 	}
 	args = append(args, helmImageArgs(t, img, extraArgs)...)
