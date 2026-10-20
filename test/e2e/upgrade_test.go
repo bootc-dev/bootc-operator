@@ -36,7 +36,7 @@ var operatorCRDNames = []string{
 // helm upgrade with the current image and verifies the operator still
 // works.
 func TestOperatorUpgrade(t *testing.T) {
-	e2eutil.Providers(t, "bink")
+	e2eutil.Providers(t, "bink", "eks")
 
 	releaseTag := os.Getenv("E2E_OPERATOR_RELEASE_TAG")
 	if releaseTag == "" {
@@ -205,6 +205,9 @@ func helmImageArgs(t *testing.T, img string, extraArgs []string) []string {
 		"--set-string", "image.repository=" + repo,
 		"--set-string", "image.tag=" + tag,
 		"--set-string", "image.pullPolicy=Always",
+	}
+	if secret := os.Getenv("E2E_IMAGE_PULL_SECRET"); secret != "" {
+		args = append(args, "--set", "imagePullSecrets[0].name="+secret)
 	}
 	if len(extraArgs) > 0 {
 		j, err := json.Marshal(extraArgs)
