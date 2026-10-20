@@ -117,7 +117,7 @@ func TestOperatorUpgrade(t *testing.T) {
 	t.Logf("Patched pool to update image %s", updateRef)
 
 	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 5*time.Minute,
-		HaveField("Booted", HaveField("ImageDigest", env.NodeImageUpdateDigest())),
+		HaveField("Booted", imageMatchesDigest(env.NodeImageUpdateDigest())),
 	)
 
 	t.Logf("Node %q completed update with upgraded operator", nodeName)
