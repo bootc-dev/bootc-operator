@@ -126,10 +126,10 @@ func TestOperatorUpgrade(t *testing.T) {
 		Should(poolAllUpdated(1, env.NodeImageUpdateDigest()))
 }
 
-// uninstallOperator removes the operator via Helm uninstall, then
-// deletes CRDs (which Helm does not manage on uninstall).  Custom
-// resources are deleted first while the operator is still running so
-// it can handle finalizer removal.
+// uninstallOperator removes the operator. Custom resources are deleted
+// first while the operator is still running so it can handle finalizer
+// removal. CRDs are bundled as a subchart dependency so they are
+// removed together with the main release.
 func uninstallOperator(
 	t *testing.T,
 	g Gomega,
@@ -152,7 +152,7 @@ func uninstallOperator(
 	}).WithTimeout(2*time.Minute).Should(Succeed(),
 		"expected all custom resources to be deleted")
 
-	t.Logf("Uninstalling Helm release...")
+	t.Logf("Uninstalling Helm releases...")
 	helmRun(t, "uninstall", helmReleaseName,
 		"--namespace", testutil.OperatorNamespaceName)
 
@@ -177,6 +177,7 @@ func uninstallOperator(
 // helmInstallOperator installs the operator via helm install.
 func helmInstallOperator(t *testing.T, chartPath, img string, extraArgs []string) {
 	t.Helper()
+	helmRun(t, "dependency", "build", chartPath)
 	args := []string{
 		"install", helmReleaseName, chartPath,
 		"--namespace", testutil.OperatorNamespaceName,
