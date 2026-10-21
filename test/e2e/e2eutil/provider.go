@@ -15,15 +15,20 @@ type NodeProvider interface {
 	RemoveNode(ctx context.Context, nodeName string) error
 }
 
+// ProviderName returns the active E2E_PROVIDER, defaulting to bink.
+func ProviderName() string {
+	if p := os.Getenv("E2E_PROVIDER"); p != "" {
+		return p
+	}
+	return "bink"
+}
+
 // Providers skips the test if the current E2E_PROVIDER is not in the
 // supported list. Call at the top of each test function.
 func Providers(t *testing.T, supported ...string) {
 	t.Helper()
 
-	provider := os.Getenv("E2E_PROVIDER")
-	if provider == "" {
-		provider = "bink"
-	}
+	provider := ProviderName()
 	for _, s := range supported {
 		if s == provider {
 			return

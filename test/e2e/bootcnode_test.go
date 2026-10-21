@@ -1307,7 +1307,13 @@ func TestOperatorRestartResilience(t *testing.T) {
 // cannot afford enough memory/CPU for multi-node scale testing.
 func TestMultiNodeRollout(t *testing.T) {
 	e2eutil.Providers(t, "bink", "eks")
-	t.Parallel()
+	// Serial on bink: this pool's three nodes plus any concurrently
+	// running test's nodes contend for the GitHub runner's memory. On
+	// EKS the nodes are real cloud VMs, so the test stays parallel
+	// there to keep the suite's wall time down.
+	if e2eutil.ProviderName() != "bink" {
+		t.Parallel()
+	}
 	g := NewWithT(t)
 	g.SetDefaultEventuallyTimeout(pollTimeout)
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
