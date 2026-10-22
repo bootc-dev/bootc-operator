@@ -153,8 +153,15 @@ func uninstallOperator(
 		"expected all custom resources to be deleted")
 
 	t.Logf("Uninstalling Helm releases...")
+	crdsRelease := helmReleaseName + "-crds"
+	hasCRDsRelease := helmReleaseExists(t, crdsRelease)
 	helmRun(t, "uninstall", helmReleaseName,
 		"--namespace", testutil.OperatorNamespaceName)
+	if hasCRDsRelease {
+		t.Logf("Uninstalling standalone CRDs release...")
+		helmRun(t, "uninstall", crdsRelease,
+			"--namespace", testutil.OperatorNamespaceName)
+	}
 
 	g.Eventually(func(g Gomega) {
 		var d appsv1.Deployment
@@ -218,6 +225,28 @@ func helmImageArgs(t *testing.T, img string, extraArgs []string) []string {
 		args = append(args, "--set-json", "controller.extraArgs="+string(j))
 	}
 	return args
+}
+
+// helmReleaseExists returns true if the named Helm release exists in
+// the operator namespace. Any error other than "release: not found"
+// fails the test.
+func helmReleaseExists(t *testing.T, name string) bool {
+	t.Helper()
+	args := []string{"status", name,
+		"--namespace", testutil.OperatorNamespaceName}
+	if kc := os.Getenv("KUBECONFIG"); kc != "" {
+		args = append([]string{"--kubeconfig", kc}, args...)
+	}
+	cmd := exec.Command("helm", args...)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return true
+	}
+	if strings.Contains(string(out), "release: not found") {
+		return false
+	}
+	t.Fatalf("helm status %s failed: %v\n%s", name, err, out)
+	return false
 }
 
 // helmRun executes a helm command, adding --kubeconfig if set.
