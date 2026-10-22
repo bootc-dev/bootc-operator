@@ -141,7 +141,7 @@ func New(t *testing.T) *Env {
 	case "eks":
 		nodeImageRef = requireEnv(t, "E2E_NODE_IMAGE_REF")
 		updateRef = requireEnv(t, "E2E_NODE_IMAGE_UPDATE_REF")
-		update2Ref = os.Getenv("E2E_NODE_IMAGE_UPDATE2_REF")
+		update2Ref = requireEnv(t, "E2E_NODE_IMAGE_UPDATE2_REF")
 		registryHost = os.Getenv("E2E_REGISTRY_HOST")
 		if registryHost == "" {
 			registryHost = extractRegistryHost(updateRef)
