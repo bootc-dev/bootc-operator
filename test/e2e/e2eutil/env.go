@@ -108,10 +108,7 @@ func New(t *testing.T) *Env {
 
 	k8sClient := buildClient(t, kubeconfigPath)
 
-	providerName := os.Getenv("E2E_PROVIDER")
-	if providerName == "" {
-		providerName = "bink"
-	}
+	providerName := ProviderName()
 
 	var (
 		provider     NodeProvider
