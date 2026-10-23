@@ -5,6 +5,7 @@ package e2e
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
@@ -29,6 +31,7 @@ const helmReleaseName = "bootc-operator"
 var operatorCRDNames = []string{
 	"bootcnodepools.node.bootc.dev",
 	"bootcnodes.node.bootc.dev",
+	"bootcoperatorconfigs.node.bootc.dev",
 }
 
 // TestOperatorUpgrade installs the released version of the operator
@@ -66,20 +69,30 @@ func TestOperatorUpgrade(t *testing.T) {
 	t.Logf("Current operator image: %s", currentImg)
 	t.Logf("Released operator tag: %s, image: %s", releaseTag, releasedImg)
 
-	// Phase 1: Uninstall the current operator and re-install with
-	// the released image via Helm.
-	uninstallOperator(t, g, ctx, env)
-	helmInstallOperator(t, chartPath, releasedImg, extraArgs)
-	waitForOperatorReady(t, g, ctx, env.Client)
-
-	t.Logf("Released operator %s installed via Helm", releaseTag)
-
+	originalConfig, err := readOperatorConfig(ctx, env.Client)
+	g.Expect(err).NotTo(HaveOccurred())
+	// Uninstall removes CRDs and their instances. Register recovery first.
 	t.Cleanup(func() {
 		t.Logf("Restoring operator to current version...")
 		helmUpgradeOperator(t, chartPath, currentImg, extraArgs)
+		waitForOperatorConfigCRD(t, g, ctx, env.Client)
+		g.Expect(restoreOperatorConfig(ctx, env.Client, originalConfig)).To(Succeed(),
+			"restore administrator-owned operator configuration")
+		restartOperator(t)
 		waitForOperatorReady(t, g, ctx, env.Client)
 		t.Logf("Operator restored")
 	})
+
+	// Phase 1: Replace the current Helm release with the released image.
+	uninstallOperator(t, g, ctx, env)
+	// The released image predates BootcOperatorConfig and needs bink's
+	// registry settings through its command-line flags.
+	releasedArgs := append([]string{
+		"--allow-insecure-registry", "--tag-resolution-interval=10s",
+	}, extraArgs...)
+	helmInstallOperator(t, chartPath, releasedImg, releasedArgs)
+	waitForOperatorReady(t, g, ctx, env.Client)
+	t.Logf("Released operator %s installed via Helm", releaseTag)
 
 	// Phase 2: Verify the released version works.
 	nodeName := env.AddNode(t)
@@ -91,9 +104,13 @@ func TestOperatorUpgrade(t *testing.T) {
 
 	t.Logf("Node %q is Idle with released operator", nodeName)
 
-	// Phase 3: Upgrade via helm upgrade to the current version.
+	// Phase 3: Upgrade via Helm to the current version.
 	helmUpgradeOperator(t, chartPath, currentImg, extraArgs)
+	waitForOperatorConfigCRD(t, g, ctx, env.Client)
 	waitForOperatorReady(t, g, ctx, env.Client)
+	config, err := readOperatorConfig(ctx, env.Client)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(config).To(BeNil(), "installation must not create a configuration instance")
 
 	t.Logf("Upgraded operator to current version via Helm")
 
@@ -126,10 +143,8 @@ func TestOperatorUpgrade(t *testing.T) {
 		Should(poolAllUpdated(1, env.NodeImageUpdateDigest()))
 }
 
-// uninstallOperator removes the operator via Helm uninstall, then
-// deletes CRDs (which Helm does not manage on uninstall).  Custom
-// resources are deleted first while the operator is still running so
-// it can handle finalizer removal.
+// uninstallOperator removes the Helm release and its CRDs. Custom
+// resources are deleted first so the operator can handle finalizers.
 func uninstallOperator(
 	t *testing.T,
 	g Gomega,
@@ -186,11 +201,12 @@ func helmInstallOperator(t *testing.T, chartPath, img string, extraArgs []string
 	helmRun(t, args...)
 }
 
-// helmUpgradeOperator upgrades the operator via helm upgrade.
+// helmUpgradeOperator upgrades the operator, installing it if cleanup follows
+// a failed release installation.
 func helmUpgradeOperator(t *testing.T, chartPath, img string, extraArgs []string) {
 	t.Helper()
 	args := []string{
-		"upgrade", helmReleaseName, chartPath,
+		"upgrade", "--install", helmReleaseName, chartPath,
 		"--namespace", testutil.OperatorNamespaceName,
 	}
 	args = append(args, helmImageArgs(t, img, extraArgs)...)
@@ -282,6 +298,106 @@ func waitForOperatorReady(
 		g.Expect(d.Status.AvailableReplicas).To(Equal(int32(1)))
 	}).WithTimeout(3*time.Minute).Should(Succeed(),
 		"expected operator deployment to be ready")
+}
+
+// readOperatorConfig returns the optional administrator-owned instance. An
+// ambiguous configuration should fail the upgrade instead of being discarded.
+func readOperatorConfig(
+	ctx context.Context,
+	c client.Client,
+) (*bootcv1alpha1.BootcOperatorConfig, error) {
+	var configs bootcv1alpha1.BootcOperatorConfigList
+	if err := c.List(ctx, &configs); err != nil {
+		return nil, fmt.Errorf("list operator configurations: %w", err)
+	}
+	switch len(configs.Items) {
+	case 0:
+		return nil, nil
+	case 1:
+		return configs.Items[0].DeepCopy(), nil
+	default:
+		return nil, fmt.Errorf(
+			"expected at most one operator configuration, found %d",
+			len(configs.Items),
+		)
+	}
+}
+
+// restoreOperatorConfig restores only administrator-owned fields after CRD
+// deletion. A different instance name is an error rather than an implicit rename.
+func restoreOperatorConfig(
+	ctx context.Context,
+	c client.Client,
+	original *bootcv1alpha1.BootcOperatorConfig,
+) error {
+	current, err := readOperatorConfig(ctx, c)
+	if err != nil {
+		return err
+	}
+	if original == nil {
+		if current == nil {
+			return nil
+		}
+		return c.Delete(ctx, current)
+	}
+	if current != nil && current.Name != original.Name {
+		return fmt.Errorf(
+			"restore operator configuration %q: unexpected current instance %q",
+			original.Name,
+			current.Name,
+		)
+	}
+	if current == nil {
+		restored := original.DeepCopy()
+		restored.ObjectMeta = metav1.ObjectMeta{
+			Name:        original.Name,
+			Labels:      original.Labels,
+			Annotations: original.Annotations,
+		}
+		return c.Create(ctx, restored)
+	}
+	current.Spec = original.Spec
+	current.Labels = original.Labels
+	current.Annotations = original.Annotations
+	return c.Update(ctx, current)
+}
+
+func waitForOperatorConfigCRD(t *testing.T, g Gomega, ctx context.Context, c client.Client) {
+	t.Helper()
+	g.Eventually(func() ([]apiextensionsv1.CustomResourceDefinitionCondition, error) {
+		var crd apiextensionsv1.CustomResourceDefinition
+		err := c.Get(ctx, client.ObjectKey{Name: "bootcoperatorconfigs.node.bootc.dev"}, &crd)
+		return crd.Status.Conditions, err
+	}).WithTimeout(time.Minute).Should(ContainElement(And(
+		HaveField("Type", apiextensionsv1.Established),
+		HaveField("Status", apiextensionsv1.ConditionTrue),
+	)), "waiting for the operator configuration API to be established")
+}
+
+// Both components may have started with defaults before configuration was
+// restored. Restart and await each workload so later tests see the saved values.
+func restartOperator(t *testing.T) {
+	t.Helper()
+	workloads := []string{
+		"deployment/" + operatorDeployKey().Name,
+		"daemonset/" + operatorDaemonSetKey().Name,
+	}
+	for _, workload := range workloads {
+		for _, command := range [][]string{
+			{"rollout", "restart", workload},
+			{"rollout", "status", workload, "--timeout=3m"},
+		} {
+			ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+			args := append([]string{
+				"--kubeconfig", os.Getenv("KUBECONFIG"), "-n", testutil.OperatorNamespaceName,
+			}, command...)
+			out, err := exec.CommandContext(ctx, "kubectl", args...).CombinedOutput()
+			cancel()
+			if err != nil {
+				t.Fatalf("restart operator workload %s: %v\n%s", workload, err, out)
+			}
+		}
+	}
 }
 
 // operatorDeployKey returns the namespaced name of the operator Deployment.

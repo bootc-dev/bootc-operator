@@ -26,9 +26,10 @@ helm install bootc-operator oci://ghcr.io/bootc-dev/bootc-operator/charts/bootc-
   --version 0.1.0 --create-namespace --namespace bootc-operator
 ```
 
-Alternatively, install from a local checkout:
+Alternatively, generate and install the chart from a local checkout:
 
 ```bash
+make helm
 helm dependency build ./chart/bootc-operator
 helm install bootc-operator ./chart/bootc-operator \
   --create-namespace --namespace bootc-operator
@@ -42,6 +43,10 @@ helm install bootc-operator-crds oci://ghcr.io/bootc-dev/bootc-operator/charts/b
 helm install bootc-operator oci://ghcr.io/bootc-dev/bootc-operator/charts/bootc-operator \
   --create-namespace --namespace bootc-operator --set crds.install=false
 ```
+
+The chart installs the configuration CRD and the operator's read permissions.
+It does not create a `BootcOperatorConfig` instance. See
+[Configuring the operator](operations/configuration.md) to add one.
 
 By default the chart uses the image
 `ghcr.io/bootc-dev/bootc-operator:<appVersion>` where `appVersion` is
@@ -119,7 +124,9 @@ helm uninstall bootc-operator --namespace bootc-operator
 ```
 
 > **Warning**: uninstalling the chart also removes the CRDs and all
-> their instances cluster-wide.
+> their instances cluster-wide, including administrator-owned
+> `BootcOperatorConfig` settings. This applies when the CRD dependency is enabled
+> (the default). Separately managed CRDs follow their own uninstall lifecycle.
 
 ## Regenerating the chart
 
