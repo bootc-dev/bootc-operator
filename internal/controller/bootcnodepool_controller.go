@@ -18,8 +18,10 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/events"
@@ -89,6 +91,7 @@ type BootcNodePoolReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=karpenter.sh,resources=nodeclaims,verbs=get;list;watch;patch
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *BootcNodePoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -96,14 +99,59 @@ func (r *BootcNodePoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.drainCh = make(chan event.GenericEvent, 100)
 	r.drains = make(map[string]*drainStatus)
 
-	return ctrl.NewControllerManagedBy(mgr).
+	// ctrlBuilder avoids shadowing the imported "sigs.k8s.io/controller-runtime/pkg/builder" package.
+	ctrlBuilder := ctrl.NewControllerManagedBy(mgr).
 		For(&bootcv1alpha1.BootcNodePool{}).
 		Owns(&bootcv1alpha1.BootcNode{}).
 		Watches(&corev1.Node{}, handler.EnqueueRequestsFromMapFunc(r.mapNodeToPoolRequests), builder.WithPredicates(nodePredicates())).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.mapSecretToPoolRequests), builder.WithPredicates(secretTypePredicate())).
-		WatchesRawSource(source.Channel(r.drainCh, &handler.EnqueueRequestForObject{})).
-		Named("bootcnodepool").
-		Complete(r)
+		WatchesRawSource(source.Channel(r.drainCh, &handler.EnqueueRequestForObject{}))
+
+	// Karpenter is optional. Only register the NodeClaim watch when its CRD is
+	// discoverable, so the operator remains usable on ordinary clusters.
+	if _, err := mgr.GetRESTMapper().RESTMapping(
+		schema.GroupKind{Group: "karpenter.sh", Kind: karpenterNodeClaimKind},
+		"v1",
+	); err == nil {
+		ctrlBuilder = ctrlBuilder.Watches(
+			&unstructured.Unstructured{Object: map[string]interface{}{
+				"apiVersion": karpenterNodeClaimAPIVersion,
+				"kind":       karpenterNodeClaimKind,
+			}},
+			handler.EnqueueRequestsFromMapFunc(r.mapNodeClaimToPoolRequests),
+		)
+	}
+
+	return ctrlBuilder.Named("bootcnodepool").Complete(r)
+}
+
+// mapNodeClaimToPoolRequests maps a Karpenter NodeClaim status update to the
+// BootcNodePool owning the corresponding Node.
+func (r *BootcNodePoolReconciler) mapNodeClaimToPoolRequests(
+	ctx context.Context,
+	obj client.Object,
+) []reconcile.Request {
+	log := logf.FromContext(ctx)
+	claim, ok := obj.(*unstructured.Unstructured)
+	if !ok {
+		return nil
+	}
+	nodeName, found, err := unstructured.NestedString(claim.Object, "status", "nodeName")
+	if err != nil || !found || nodeName == "" {
+		return nil
+	}
+	var bn bootcv1alpha1.BootcNode
+	if err := r.Get(ctx, types.NamespacedName{Name: nodeName}, &bn); err != nil {
+		if !apierrors.IsNotFound(err) {
+			log.Error(err, "Failed to get BootcNode in NodeClaim mapper", "node", nodeName)
+		}
+		return nil
+	}
+	owner := metav1.GetControllerOf(&bn)
+	if owner == nil || owner.Kind != "BootcNodePool" {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: owner.Name}}}
 }
 
 // mapNodeToPoolRequests maps a Node event to the BootcNodePool(s) that should
@@ -213,8 +261,8 @@ func nodeSelectorMatchesNode(sel *metav1.LabelSelector, node *corev1.Node) (bool
 }
 
 // nodePredicates returns predicates that filter Node events to only those
-// relevant to pool membership: label changes, Ready condition changes, and
-// spec.unschedulable changes.
+// relevant to pool membership or reboot coordination: label changes, Ready
+// condition changes, spec.unschedulable changes, and the Karpenter reboot taint.
 func nodePredicates() predicate.Predicate {
 	return predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool {
@@ -231,7 +279,8 @@ func nodePredicates() predicate.Predicate {
 			}
 			return nodeLabelsChanged(oldNode, newNode) ||
 				nodeReadyConditionChanged(oldNode, newNode) ||
-				nodeUnschedulableChanged(oldNode, newNode)
+				nodeUnschedulableChanged(oldNode, newNode) ||
+				karpenterRebootTaintChanged(oldNode, newNode)
 		},
 		GenericFunc: func(e event.GenericEvent) bool {
 			return true
@@ -258,6 +307,20 @@ func nodeReadyStatus(node *corev1.Node) corev1.ConditionStatus {
 
 func nodeUnschedulableChanged(oldNode, newNode *corev1.Node) bool {
 	return oldNode.Spec.Unschedulable != newNode.Spec.Unschedulable
+}
+
+func karpenterRebootTaintChanged(oldNode, newNode *corev1.Node) bool {
+	return hasKarpenterRebootTaint(oldNode) != hasKarpenterRebootTaint(newNode)
+}
+
+func hasKarpenterRebootTaint(node *corev1.Node) bool {
+	for _, taint := range node.Spec.Taints {
+		if taint.Key == karpenterRebootingTaintKey &&
+			taint.Effect == karpenterRebootingTaintEffect {
+			return true
+		}
+	}
+	return false
 }
 
 // secretTypePredicate returns a predicate that accepts only Secrets of
@@ -882,8 +945,8 @@ func (r *BootcNodePoolReconciler) removeBootcNode(
 	if err := r.Get(ctx, types.NamespacedName{Name: bn.Name}, &node); err == nil {
 		// No point in cleaning up the Node object if it's going away anyway...
 		if node.DeletionTimestamp == nil {
-			if err := r.restoreCordonState(ctx, bn, &node); err != nil {
-				return fmt.Errorf("restoring cordon state: %w", err)
+			if err := r.restoreNodeState(ctx, bn, &node); err != nil {
+				return fmt.Errorf("restoring node state: %w", err)
 			}
 			if err := r.ensureManagedLabel(ctx, &node, false); err != nil {
 				return fmt.Errorf("removing managed label: %w", err)
@@ -900,23 +963,100 @@ func (r *BootcNodePoolReconciler) removeBootcNode(
 	return nil
 }
 
-// restoreCordonState uncordons the Node if the BootcNode's was-cordoned
-// annotation indicates the operator cordoned it. If the annotation is absent
-// or "true" (node was already cordoned before us), this is a no-op.
-func (r *BootcNodePoolReconciler) restoreCordonState(
+// restoreNodeState removes any Karpenter annotations the controller owns and
+// restores the node's cordon state, combining both into a single patch when
+// needed. Karpenter annotation ownership is tracked via BootcNode annotations
+// rather than inspecting the Node directly, so an external actor removing them
+// doesn't cause spurious patches. The cordon is only removed if the was-cordoned
+// annotation records that the operator was the one who cordoned it.
+func (r *BootcNodePoolReconciler) restoreNodeState(
 	ctx context.Context,
 	bn *bootcv1alpha1.BootcNode,
 	node *corev1.Node,
 ) error {
-	if bn.Annotations[bootcv1alpha1.AnnotationWasCordoned] != "false" {
+	log := logf.FromContext(ctx)
+	modified := node.DeepCopy()
+	changed := false
+
+	if metav1.HasAnnotation(bn.ObjectMeta, bootcv1alpha1.AnnotationOwnsKarpenterDoNotRepair) {
+		if modified.Annotations[karpenterDoNotRepairAnnotationKey] == "true" {
+			log.Info("Removing karpenter.sh/do-not-repair from node", "node", node.Name)
+			delete(modified.Annotations, karpenterDoNotRepairAnnotationKey)
+			changed = true
+		}
+	}
+
+	if metav1.HasAnnotation(bn.ObjectMeta, bootcv1alpha1.AnnotationOwnsKarpenterDoNotDisrupt) {
+		if modified.Annotations[karpenterDoNotDisruptAnnotationKey] == "true" {
+			log.Info("Removing karpenter.sh/do-not-disrupt from node", "node", node.Name)
+			delete(modified.Annotations, karpenterDoNotDisruptAnnotationKey)
+			changed = true
+		}
+	}
+
+	if metav1.HasAnnotation(bn.ObjectMeta, bootcv1alpha1.AnnotationWasCordoned) &&
+		bn.Annotations[bootcv1alpha1.AnnotationWasCordoned] == "false" {
+		log.Info("Uncordoning node", "node", node.Name)
+		modified.Spec.Unschedulable = false
+		changed = true
+	}
+
+	if changed {
+		if err := r.Patch(ctx, modified, client.StrategicMergeFrom(node)); err != nil {
+			return fmt.Errorf("restoring node state: %w", err)
+		}
+		*node = *modified
+	}
+
+	// Only fetch the NodeClaim when we own at least one of its annotations,
+	// to avoid a spurious API call for non-Karpenter nodes.
+	ownsNodeClaimRepair := metav1.HasAnnotation(
+		bn.ObjectMeta,
+		bootcv1alpha1.AnnotationOwnsKarpenterNodeClaimDoNotRepair,
+	)
+	ownsNodeClaimDisrupt := metav1.HasAnnotation(
+		bn.ObjectMeta,
+		bootcv1alpha1.AnnotationOwnsKarpenterNodeClaimDoNotDisrupt,
+	)
+
+	// If we don't own either of these annotations, then there is nothing to do.
+	if !ownsNodeClaimRepair && !ownsNodeClaimDisrupt {
 		return nil
 	}
-	modified := node.DeepCopy()
-	modified.Spec.Unschedulable = false
-	if err := r.Patch(ctx, modified, client.StrategicMergeFrom(node)); err != nil {
-		return fmt.Errorf("uncordoning node: %w", err)
+
+	claim, _, err := r.getKarpenterNodeClaim(ctx, node)
+	if err != nil {
+		return fmt.Errorf("getting Karpenter NodeClaim: %w", err)
 	}
-	*node = *modified
+
+	// If the NodeClaim is absent (deleted or CRD missing), skip the patch.
+	// The node may have been forcefully replaced by Karpenter; there is nothing
+	// to clean up on a NodeClaim that no longer exists.
+	if claim == nil {
+		return nil
+	}
+
+	claimModified := claim.DeepCopy()
+	claimAnnotations := claimModified.GetAnnotations()
+	claimChanged := false
+
+	if ownsNodeClaimRepair && claimAnnotations[karpenterDoNotRepairAnnotationKey] == "true" {
+		delete(claimAnnotations, karpenterDoNotRepairAnnotationKey)
+		claimChanged = true
+	}
+
+	if ownsNodeClaimDisrupt && claimAnnotations[karpenterDoNotDisruptAnnotationKey] == "true" {
+		delete(claimAnnotations, karpenterDoNotDisruptAnnotationKey)
+		claimChanged = true
+	}
+
+	if claimChanged {
+		claimModified.SetAnnotations(claimAnnotations)
+		if err := r.Patch(ctx, claimModified, client.MergeFrom(claim)); err != nil {
+			return fmt.Errorf("restoring Karpenter NodeClaim annotations: %w", err)
+		}
+	}
+
 	return nil
 }
 

@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/kubectl/pkg/drain"
@@ -140,6 +142,51 @@ func (r *BootcNodePoolReconciler) driveRollout(
 		return rs, nil
 	}
 
+	// Apply Karpenter protection as soon as a node starts staging, before a
+	// reboot slot is even assigned. This closes the window where Karpenter
+	// could disrupt a node while its image pull is in progress.
+	//
+	// karpenterActive tracks whether any Karpenter-owned node is currently in
+	// the staging or staged state, so the periodic requeue fallback below can
+	// be set only when needed.
+	karpenterActive := false
+	for _, bn := range rs.staging {
+		var node corev1.Node
+		if err := r.Get(ctx, types.NamespacedName{Name: bn.Name}, &node); err != nil {
+			return nil, fmt.Errorf("fetching node %s: %w", bn.Name, err)
+		}
+		if isNodeOwnedByKarpenterNodeClaim(&node) {
+			karpenterActive = true
+		}
+		if err := r.ensureKarpenterStagingProtection(ctx, bn, &node); err != nil {
+			return nil, fmt.Errorf("applying Karpenter staging protection to %s: %w", bn.Name, err)
+		}
+	}
+	// Also check staged nodes: use the BootcNode Karpenter ownership
+	// annotations as a proxy, since staged nodes have already passed through
+	// ensureKarpenterStagingProtection (or assignRebootSlot) which records
+	// ownership. This avoids extra API calls for each staged node here.
+	if !karpenterActive {
+		for _, bn := range rs.staged {
+			if metav1.HasAnnotation(bn.ObjectMeta, bootcv1alpha1.AnnotationOwnsKarpenterDoNotRepair) ||
+				metav1.HasAnnotation(bn.ObjectMeta, bootcv1alpha1.AnnotationOwnsKarpenterDoNotDisrupt) {
+				karpenterActive = true
+				break
+			}
+		}
+	}
+
+	// Periodic requeue fallback: if any Karpenter-owned nodes are active
+	// (staging or staged), set a fallback requeue so that NodeClaim status
+	// changes are eventually observed even when the NodeClaim watch is not
+	// registered (e.g. Karpenter installed after bootc-operator started).
+	if karpenterActive {
+		// Only set if nothing sooner is already scheduled.
+		if rs.requeueAfter == 0 || karpenterMissingClaimRequeue < rs.requeueAfter {
+			rs.requeueAfter = karpenterMissingClaimRequeue
+		}
+	}
+
 	maxUnavail, err := resolveMaxUnavailable(pool, rs.nodeCount())
 	if err != nil {
 		return nil, err
@@ -168,7 +215,26 @@ func (r *BootcNodePoolReconciler) driveRollout(
 		if err := r.Get(ctx, types.NamespacedName{Name: bn.Name}, &node); err != nil {
 			return nil, fmt.Errorf("fetching node %s: %w", bn.Name, err)
 		}
-		if err := r.assignRebootSlot(ctx, bn, &node); err != nil {
+		// isKarpenterDisruptionActive fetches the NodeClaim as part of its
+		// disruption checks. When disruption is not active, it returns the
+		// claim so assignRebootSlot can reuse it without a second API call.
+		active, claimMissing, nodeClaim, err := r.isKarpenterDisruptionActive(ctx, &node)
+		if err != nil {
+			return nil, fmt.Errorf("checking Karpenter disruption for %s: %w", bn.Name, err)
+		}
+		if claimMissing {
+			log.Info("Deferring reboot slot: Karpenter NodeClaim is unexpectedly absent, will retry",
+				"node", bn.Name)
+			if rs.requeueAfter == 0 || karpenterMissingClaimRequeue < rs.requeueAfter {
+				rs.requeueAfter = karpenterMissingClaimRequeue
+			}
+			continue
+		}
+		if active {
+			log.Info("Deferring reboot slot: Karpenter disruption is active", "node", bn.Name)
+			continue
+		}
+		if err := r.assignRebootSlot(ctx, bn, &node, nodeClaim); err != nil {
 			return nil, fmt.Errorf("assigning reboot slot to %s: %w", bn.Name, err)
 		}
 	}
@@ -182,53 +248,237 @@ func (r *BootcNodePoolReconciler) driveRollout(
 		if bn.Spec.DesiredImageState == bootcv1alpha1.DesiredImageStateBooted {
 			continue
 		}
+		var node corev1.Node
+		if err := r.Get(ctx, types.NamespacedName{Name: bn.Name}, &node); err != nil {
+			return nil, fmt.Errorf("fetching node %s: %w", bn.Name, err)
+		}
+		active, claimMissing, _, err := r.isKarpenterDisruptionActive(ctx, &node)
+		if err != nil {
+			return nil, fmt.Errorf("checking Karpenter disruption for %s: %w", bn.Name, err)
+		}
+		if claimMissing {
+			log.Info("Deferring drain: Karpenter NodeClaim is unexpectedly absent, will retry",
+				"node", bn.Name)
+			if rs.requeueAfter == 0 || karpenterMissingClaimRequeue < rs.requeueAfter {
+				rs.requeueAfter = karpenterMissingClaimRequeue
+			}
+			continue
+		}
+		if active {
+			log.Info("Deferring drain: Karpenter disruption is active", "node", bn.Name)
+			continue
+		}
 		r.ensureDrain(ctx, pool, bn)
 	}
 
 	return rs, nil
 }
 
-// assignRebootSlot marks a BootcNode as occupying a reboot slot and
-// cordons the corresponding K8s Node. It sets the in-reboot-slot
-// annotation on the BootcNode, records prior cordon state in the
-// was-cordoned annotation, and cordons the node. All operations are
-// idempotent.
+// assignRebootSlot marks a BootcNode as occupying a reboot slot and cordons
+// the corresponding K8s Node. It sets the in-reboot-slot annotation on the
+// BootcNode and records the prior cordon state in the was-cordoned annotation.
+// For nodes owned by a Karpenter NodeClaim, it also sets the
+// karpenter.sh/do-not-repair and karpenter.sh/do-not-disrupt annotations on
+// the K8s Node to prevent Karpenter from replacing or disrupting the node
+// during the update. Ownership of those annotations is tracked on the BootcNode
+// so that restoreNodeState can remove only the ones the controller added.
+//
+// Note: these annotations are best-effort coordination signals, not a
+// distributed lock. Karpenter can commit a disruption or reboot between the
+// isKarpenterDisruptionActive check and the start of the drain.
+//
+// All operations are idempotent.
+//
+// prefetchedClaim may be the NodeClaim already fetched by a preceding
+// isKarpenterDisruptionActive call. When non-nil and the node is
+// Karpenter-owned, it is used directly to avoid a redundant API round-trip.
 func (r *BootcNodePoolReconciler) assignRebootSlot(
 	ctx context.Context,
 	bn *bootcv1alpha1.BootcNode,
 	node *corev1.Node,
+	prefetchedClaim *unstructured.Unstructured,
 ) error {
 	log := logf.FromContext(ctx)
 
-	// Set annotations on the BootcNode if not already present.
-	if !metav1.HasAnnotation(bn.ObjectMeta, bootcv1alpha1.AnnotationInRebootSlot) {
-		log.Info("Assigning reboot slot", "node", bn.Name)
-		modifiedBN := bn.DeepCopy()
-		if modifiedBN.Annotations == nil {
-			modifiedBN.Annotations = map[string]string{}
-		}
-		modifiedBN.Annotations[bootcv1alpha1.AnnotationInRebootSlot] = ""
-		// Record whether the node was already cordoned before us.
-		if node.Spec.Unschedulable {
-			modifiedBN.Annotations[bootcv1alpha1.AnnotationWasCordoned] = "true"
+	karpenterOwned := isNodeOwnedByKarpenterNodeClaim(node)
+
+	// Resolve the NodeClaim. Use the caller-supplied prefetched claim when
+	// available to avoid a second API round-trip. If no claim was pre-fetched
+	// (e.g. the node is not Karpenter-owned or the call site doesn't supply
+	// one), fall back to fetching it here.
+	//
+	// claim may be nil even when karpenterOwned is true:
+	//   - The NodeClaim CRD is not installed (Karpenter is not present on this
+	//     cluster, so the API server returns a no-match error).
+	//   - The NodeClaim is absent (karpenterClaimAbsent) — callers must have
+	//     already deferred via isKarpenterDisruptionActive before reaching here.
+	// In both cases we skip NodeClaim annotation management and proceed with
+	// only Node-level fencing.
+	var claim *unstructured.Unstructured
+	if karpenterOwned {
+		if prefetchedClaim != nil {
+			claim = prefetchedClaim
 		} else {
-			modifiedBN.Annotations[bootcv1alpha1.AnnotationWasCordoned] = "false"
+			var claimResult karpenterNodeClaimResult
+			var err error
+			claim, claimResult, err = r.getKarpenterNodeClaim(ctx, node)
+			if err != nil {
+				return fmt.Errorf("getting NodeClaim: %w", err)
+			}
+			_ = claimResult // result is implicit: nil claim means absent/missing
+		}
+	}
+	// Only manage NodeClaim annotations when the claim was successfully fetched.
+	// karpenterClaimAbsent should have been caught by isKarpenterDisruptionActive
+	// earlier, but skip NodeClaim patching defensively if we reach here anyway.
+	claimAvailable := claim != nil
+
+	// Build the desired BootcNode annotation state and patch only if anything
+	// changed. We apply every annotation the slot requires unconditionally and
+	// let the comparison at the end decide whether an API call is needed. This
+	// avoids a separate upfront guard expression that would duplicate the same
+	// per-annotation conditions.
+	modifiedBN := bn.DeepCopy()
+
+	// Mark the node as occupying a reboot slot.
+	metav1.SetMetaDataAnnotation(&modifiedBN.ObjectMeta, bootcv1alpha1.AnnotationInRebootSlot, "")
+
+	// Record the prior cordon state so restoreNodeState can leave the node as
+	// it was found (i.e. not uncordon a node that was already cordoned). Only
+	// set this on first assignment — if the slot annotation is already present
+	// we must not overwrite the original recorded value.
+	if !metav1.HasAnnotation(bn.ObjectMeta, bootcv1alpha1.AnnotationInRebootSlot) {
+		wasCordoned := "false"
+
+		if node.Spec.Unschedulable {
+			wasCordoned = "true"
+		}
+
+		metav1.SetMetaDataAnnotation(
+			&modifiedBN.ObjectMeta,
+			bootcv1alpha1.AnnotationWasCordoned,
+			wasCordoned,
+		)
+	}
+
+	// For Karpenter-managed nodes, record ownership of the do-not-repair and
+	// do-not-disrupt annotations on the Node and NodeClaim. We take ownership
+	// when the annotation is absent or not already set to "true". Karpenter
+	// only honors the literal value "true"; any other value (e.g. "false") is
+	// ineffective, so we overwrite it and track ownership so we clean it up.
+	if karpenterOwned {
+		if node.Annotations[karpenterDoNotRepairAnnotationKey] != "true" {
+			metav1.SetMetaDataAnnotation(
+				&modifiedBN.ObjectMeta,
+				bootcv1alpha1.AnnotationOwnsKarpenterDoNotRepair,
+				"true",
+			)
+		}
+
+		if node.Annotations[karpenterDoNotDisruptAnnotationKey] != "true" {
+			metav1.SetMetaDataAnnotation(
+				&modifiedBN.ObjectMeta,
+				bootcv1alpha1.AnnotationOwnsKarpenterDoNotDisrupt,
+				"true",
+			)
+		}
+
+		if claimAvailable {
+			claimAnnotations := claim.GetAnnotations()
+
+			if claimAnnotations[karpenterDoNotRepairAnnotationKey] != "true" {
+				metav1.SetMetaDataAnnotation(
+					&modifiedBN.ObjectMeta,
+					bootcv1alpha1.AnnotationOwnsKarpenterNodeClaimDoNotRepair,
+					"true",
+				)
+			}
+
+			if claimAnnotations[karpenterDoNotDisruptAnnotationKey] != "true" {
+				metav1.SetMetaDataAnnotation(
+					&modifiedBN.ObjectMeta,
+					bootcv1alpha1.AnnotationOwnsKarpenterNodeClaimDoNotDisrupt,
+					"true",
+				)
+			}
+		}
+	}
+
+	if !annotationsEqual(bn.Annotations, modifiedBN.Annotations) {
+		if !metav1.HasAnnotation(bn.ObjectMeta, bootcv1alpha1.AnnotationInRebootSlot) {
+			log.Info("Assigning reboot slot", "node", bn.Name)
+		} else {
+			log.Info("Updating reboot slot annotations", "node", bn.Name)
 		}
 		if err := r.Patch(ctx, modifiedBN, client.MergeFrom(bn)); err != nil {
 			return fmt.Errorf("annotating BootcNode: %w", err)
 		}
-		*bn = *modifiedBN
 	}
 
-	// Cordon the K8s Node if not already cordoned.
+	// Apply the Karpenter fence to the NodeClaim after recording ownership on
+	// the BootcNode. This ordering prevents a successful NodeClaim patch from
+	// becoming orphaned if the durable BootcNode update fails.
+	//
+	// NodeClaim annotations are a supplemental signal, not a distributed lock.
+	// Karpenter can already have selected or queued a disruption by the time
+	// these annotations are written; the Node-level checks (taint, deletion
+	// timestamp, disruption conditions) are the authoritative guard.
+	if claimAvailable && karpenterOwned {
+		claimAnnotations := claim.GetAnnotations()
+		modifiedClaimAnnotations := map[string]string{}
+		maps.Copy(modifiedClaimAnnotations, claimAnnotations)
+
+		if claimAnnotations[karpenterDoNotRepairAnnotationKey] != "true" {
+			modifiedClaimAnnotations[karpenterDoNotRepairAnnotationKey] = "true"
+		}
+
+		if claimAnnotations[karpenterDoNotDisruptAnnotationKey] != "true" {
+			modifiedClaimAnnotations[karpenterDoNotDisruptAnnotationKey] = "true"
+		}
+
+		if !annotationsEqual(claimAnnotations, modifiedClaimAnnotations) {
+			modifiedClaim := claim.DeepCopy()
+			modifiedClaim.SetAnnotations(modifiedClaimAnnotations)
+
+			if err := r.Patch(ctx, modifiedClaim, client.MergeFrom(claim)); err != nil {
+				return fmt.Errorf("patching Karpenter NodeClaim: %w", err)
+			}
+		}
+	}
+
+	// Cordon the K8s Node and set the Node-level Karpenter annotations.
+	// Skip the patch entirely when nothing needs to change.
+	modifiedNode := node.DeepCopy()
 	if !node.Spec.Unschedulable {
 		log.Info("Cordoning node", "node", node.Name)
-		modifiedNode := node.DeepCopy()
 		modifiedNode.Spec.Unschedulable = true
-		if err := r.Patch(ctx, modifiedNode, client.StrategicMergeFrom(node)); err != nil {
-			return fmt.Errorf("cordoning node: %w", err)
+	}
+
+	if karpenterOwned {
+		if node.Annotations[karpenterDoNotRepairAnnotationKey] != "true" {
+			log.Info("Setting karpenter.sh/do-not-repair on node", "node", node.Name)
+			metav1.SetMetaDataAnnotation(
+				&modifiedNode.ObjectMeta,
+				karpenterDoNotRepairAnnotationKey,
+				"true",
+			)
 		}
-		*node = *modifiedNode
+
+		if node.Annotations[karpenterDoNotDisruptAnnotationKey] != "true" {
+			log.Info("Setting karpenter.sh/do-not-disrupt on node", "node", node.Name)
+			metav1.SetMetaDataAnnotation(
+				&modifiedNode.ObjectMeta,
+				karpenterDoNotDisruptAnnotationKey,
+				"true",
+			)
+		}
+	}
+
+	if modifiedNode.Spec.Unschedulable != node.Spec.Unschedulable ||
+		!annotationsEqual(node.Annotations, modifiedNode.Annotations) {
+		if err := r.Patch(ctx, modifiedNode, client.StrategicMergeFrom(node)); err != nil {
+			return fmt.Errorf("patching node: %w", err)
+		}
 	}
 
 	return nil
@@ -272,12 +522,17 @@ func (r *BootcNodePoolReconciler) freeRebootSlot(
 	bn *bootcv1alpha1.BootcNode,
 	node *corev1.Node,
 ) error {
-	if err := r.restoreCordonState(ctx, bn, node); err != nil {
+	if err := r.restoreNodeState(ctx, bn, node); err != nil {
 		return err
 	}
 
-	// Remove both reboot slot annotations from the BootcNode.
+	// Remove all reboot slot annotations from the BootcNode, including the
+	// Karpenter ownership trackers if present.
 	modified := bn.DeepCopy()
+	delete(modified.Annotations, bootcv1alpha1.AnnotationOwnsKarpenterDoNotRepair)
+	delete(modified.Annotations, bootcv1alpha1.AnnotationOwnsKarpenterDoNotDisrupt)
+	delete(modified.Annotations, bootcv1alpha1.AnnotationOwnsKarpenterNodeClaimDoNotRepair)
+	delete(modified.Annotations, bootcv1alpha1.AnnotationOwnsKarpenterNodeClaimDoNotDisrupt)
 	delete(modified.Annotations, bootcv1alpha1.AnnotationWasCordoned)
 	delete(modified.Annotations, bootcv1alpha1.AnnotationInRebootSlot)
 	if err := r.Patch(ctx, modified, client.MergeFrom(bn)); err != nil {
