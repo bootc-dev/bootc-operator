@@ -141,7 +141,7 @@ func New(t *testing.T) *Env {
 	case "eks":
 		nodeImageRef = requireEnv(t, "E2E_NODE_IMAGE_REF")
 		updateRef = requireEnv(t, "E2E_NODE_IMAGE_UPDATE_REF")
-		update2Ref = os.Getenv("E2E_NODE_IMAGE_UPDATE2_REF")
+		update2Ref = requireEnv(t, "E2E_NODE_IMAGE_UPDATE2_REF")
 		registryHost = os.Getenv("E2E_REGISTRY_HOST")
 		if registryHost == "" {
 			registryHost = extractRegistryHost(updateRef)
@@ -358,13 +358,22 @@ func (e *Env) RegistryPassword() string {
 func (e *Env) createNodePullSecret(t *testing.T) {
 	t.Helper()
 
-	authStr := base64.StdEncoding.EncodeToString(
-		[]byte(e.registryUser + ":" + e.registryPassword),
-	)
-	dockerCfg := fmt.Sprintf(
-		`{"auths":{%q:{"auth":"%s"}}}`,
-		e.registryHost, authStr,
-	)
+	var dockerCfgBytes []byte
+	if envSecret := os.Getenv("E2E_NODE_PULL_SECRET"); envSecret != "" {
+		var err error
+		dockerCfgBytes, err = base64.StdEncoding.DecodeString(envSecret)
+		if err != nil {
+			t.Fatalf("decoding E2E_NODE_PULL_SECRET: %v", err)
+		}
+	} else {
+		authStr := base64.StdEncoding.EncodeToString(
+			[]byte(e.registryUser + ":" + e.registryPassword),
+		)
+		dockerCfgBytes = []byte(fmt.Sprintf(
+			`{"auths":{%q:{"auth":"%s"}}}`,
+			e.registryHost, authStr,
+		))
+	}
 
 	secretName := e.testID + "-node-pull-secret"
 	secret := &corev1.Secret{
@@ -374,7 +383,7 @@ func (e *Env) createNodePullSecret(t *testing.T) {
 		},
 		Type: corev1.SecretTypeDockerConfigJson,
 		Data: map[string][]byte{
-			corev1.DockerConfigJsonKey: []byte(dockerCfg),
+			corev1.DockerConfigJsonKey: dockerCfgBytes,
 		},
 	}
 
