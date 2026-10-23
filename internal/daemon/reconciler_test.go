@@ -12,6 +12,7 @@ import (
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
 	"github.com/bootc-dev/bootc-operator/internal/bootc"
@@ -381,6 +382,63 @@ func TestRollback(t *testing.T) {
 	))
 
 	g.Expect(fake.getRebooted()).To(BeFalse())
+}
+
+// TestStaleCacheSpuriousRestage demonstrates that a stale StatusWatcher
+// cache can cause the reconciler to spuriously re-stage an image that is
+// already booted. This reproduces the mid-rollout bug where a node reboots
+// into v2 but the cached bootc status still shows the pre-reboot state,
+// causing the daemon to stage v2 again.
+func TestStaleCacheSpuriousRestage(t *testing.T) {
+	g := NewWithT(t)
+	ctx := context.Background()
+
+	// Post-reboot reality: node is booted on image C, nothing staged.
+	fake := &fakeExecutor{}
+	fake.status = newBootcStatus(testutil.DigestC)
+
+	// Stale cache: still believes the node is booted on image A.
+	staleStatus := newBootcStatus(testutil.DigestA)
+	watcher := &StatusWatcher{
+		Events:   make(chan event.GenericEvent, 1),
+		NodeName: testNodeName,
+		Executor: fake,
+	}
+	watcher.cached = &staleStatus
+	watcher.started = true
+
+	r := &BootcNodeReconciler{
+		NodeName:      testNodeName,
+		Executor:      fake,
+		StatusWatcher: watcher,
+		stageDone:     make(chan event.GenericEvent, 1),
+	}
+	t.Cleanup(func() {
+		r.inflight.mu.Lock()
+		if r.inflight.cancel != nil {
+			r.inflight.cancel()
+		}
+		r.inflight.mu.Unlock()
+	})
+
+	// Desired image is C, which matches what's actually booted.
+	bn := testutil.NewNode(testNodeName, testutil.ImageDigestRefC)
+
+	res, err := r.reconcileBootcNode(ctx, bn)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.needsReboot).To(BeFalse(), "should not trigger reboot")
+
+	// populateBootcFields fills bn.Status from the watcher cache.
+	// With a fresh cache this would show DigestC (correct); with stale
+	// cache it shows DigestA, causing the mismatch.
+	g.Expect(bn.Status.Booted.ImageDigest).To(Equal(testutil.DigestC),
+		"stale cache returned wrong booted digest")
+
+	// After reconcileBootcNode, acquire() sets inflight.image synchronously
+	// before the stage goroutine starts. A non-empty value means a spurious
+	// stage was triggered.
+	g.Expect(r.inflight.isInFlight(testutil.ImageDigestRefC)).To(BeFalse(),
+		"stale cache caused spurious re-stage of already-booted image")
 }
 
 func TestCancelInflightStage(t *testing.T) {

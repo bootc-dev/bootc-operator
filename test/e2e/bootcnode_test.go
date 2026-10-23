@@ -413,6 +413,20 @@ func TestMidRolloutImageChange(t *testing.T) {
 
 	t.Logf("Node %q is Rebooting, node %q is the other node", rebootingNode, otherNode)
 
+	// Record boot count on the other node (the rebooting node's kubelet
+	// may already be down, so skip it to avoid a connection-refused error).
+	bc := getBootCount(t, env, ctx, otherNode)
+	t.Logf("Node %q boot count at Rebooting detection: %s (before: %s)",
+		otherNode, bc, bootCountBefore[otherNode])
+
+	// Log BootcNode status for both nodes at the moment of detection.
+	for _, nodeName := range []string{rebootingNode, otherNode} {
+		var bn bootcv1alpha1.BootcNode
+		if err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn); err == nil {
+			logBootcNodeStatus(t, &bn)
+		}
+	}
+
 	// Phase 5: Immediately switch target to second update image.
 	updateRef2 := env.NodeImageUpdate2DigestedPullSpec()
 
@@ -426,10 +440,29 @@ func TestMidRolloutImageChange(t *testing.T) {
 	// Phase 6: Wait for both nodes to be Idle with the second update image.
 	// Reboots are serialized: wait for the node already rebooting first so
 	// the other node's timeout does not include waiting for its reboot slot.
+	// Log state transitions to capture the daemon's decisions after each reboot.
 	for _, nodeName := range []string{rebootingNode, otherNode} {
-		testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 8*time.Minute,
-			HaveField("Booted", HaveField("ImageDigest", Equal(env.NodeImageUpdate2Digest()))),
-		)
+		lastReason := ""
+		g.Eventually(func(g Gomega) string {
+			var bn bootcv1alpha1.BootcNode
+			g.Expect(env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)).To(Succeed())
+
+			cond := meta.FindStatusCondition(bn.Status.Conditions, bootcv1alpha1.NodeIdle)
+			var reason string
+			if cond != nil {
+				reason = fmt.Sprintf("%s:%s", cond.Status, cond.Reason)
+			}
+			if reason != lastReason {
+				logBootcNodeStatus(t, &bn)
+				lastReason = reason
+			}
+
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Status).To(Equal(metav1.ConditionTrue), "waiting for Idle")
+			g.Expect(bn.Status.Booted).NotTo(BeNil())
+			g.Expect(bn.Status.Booted.ImageDigest).To(Equal(env.NodeImageUpdate2Digest()))
+			return reason
+		}).WithTimeout(8 * time.Minute).WithPolling(pollInterval).ShouldNot(BeEmpty())
 	}
 
 	t.Logf("Both nodes are Idle with second update image")
@@ -454,6 +487,11 @@ func TestMidRolloutImageChange(t *testing.T) {
 		"expected other node %s to reboot exactly once (from %d to %d), "+
 			"an extra reboot means it wastefully booted into the first update image",
 		otherNode, beforeCount, afterCount)
+
+	// Dump bootc status on the other node for post-mortem analysis.
+	bootcStatus := execOnNode(t, g, env, ctx, otherNode,
+		"nsenter", "-m/proc/1/ns/mnt", "--", "bootc", "status", "--json")
+	t.Logf("Node %q bootc status:\n%s", otherNode, bootcStatus)
 
 	t.Logf(
 		"Verified node %q rebooted exactly once (no wasteful reboot into first image)",
@@ -521,6 +559,32 @@ func getBootCount(t *testing.T, env *e2eutil.Env, ctx context.Context, nodeName 
 		}
 	}
 	return fmt.Sprintf("%d", count)
+}
+
+func logBootcNodeStatus(t *testing.T, bn *bootcv1alpha1.BootcNode) {
+	t.Helper()
+
+	booted := "<nil>"
+	if bn.Status.Booted != nil {
+		booted = fmt.Sprintf("image=%s digest=%s", bn.Status.Booted.Image, bn.Status.Booted.ImageDigest)
+	}
+	staged := "<nil>"
+	if bn.Status.Staged != nil {
+		staged = fmt.Sprintf("image=%s digest=%s", bn.Status.Staged.Image, bn.Status.Staged.ImageDigest)
+	}
+	rollback := "<nil>"
+	if bn.Status.Rollback != nil {
+		rollback = fmt.Sprintf("image=%s digest=%s", bn.Status.Rollback.Image, bn.Status.Rollback.ImageDigest)
+	}
+
+	idle := "<not set>"
+	if cond := meta.FindStatusCondition(bn.Status.Conditions, bootcv1alpha1.NodeIdle); cond != nil {
+		idle = fmt.Sprintf("%s:%s", cond.Status, cond.Reason)
+	}
+
+	t.Logf("BootcNode %q: idle=%s desired=%s desiredState=%s booted=[%s] staged=[%s] rollback=[%s]",
+		bn.Name, idle, bn.Spec.DesiredImage, bn.Spec.DesiredImageState,
+		booted, staged, rollback)
 }
 
 // TestPauseResume provisions a worker node, starts an update with the
