@@ -129,6 +129,7 @@ EKS_NODE_IMAGE_UPDATE2_REF ?=
 EKS_REGISTRY_HOST ?=
 EKS_REGISTRY_USER ?=
 EKS_REGISTRY_PASSWORD ?=
+EKS_IMAGE_PULL_SECRET ?=
 
 .PHONY: e2e-eks
 e2e-eks: ## Run e2e tests against EKS. V=1 for verbose. RUN=<regex> to filter.
@@ -145,6 +146,9 @@ e2e-eks: ## Run e2e tests against EKS. V=1 for verbose. RUN=<regex> to filter.
 		E2E_REGISTRY_HOST="$(EKS_REGISTRY_HOST)" \
 		E2E_REGISTRY_USER="$(EKS_REGISTRY_USER)" \
 		E2E_REGISTRY_PASSWORD="$(EKS_REGISTRY_PASSWORD)" \
+		$(if $(RELEASED_OPERATOR_TAG),E2E_OPERATOR_RELEASE_TAG=$(RELEASED_OPERATOR_TAG)) \
+		$(if $(RELEASED_OPERATOR_IMG),E2E_OPERATOR_RELEASED_IMG=$(RELEASED_OPERATOR_IMG)) \
+		$(if $(EKS_IMAGE_PULL_SECRET),E2E_IMAGE_PULL_SECRET=$(EKS_IMAGE_PULL_SECRET)) \
 		ARTIFACTS="$(ARTIFACTS)" \
 		go test -timeout 30m -count=1 -parallel 2 $(if $(V),-v) $(if $(RUN),-run '$(RUN)') .
 

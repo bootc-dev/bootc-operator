@@ -36,7 +36,7 @@ var operatorCRDNames = []string{
 // helm upgrade with the current image and verifies the operator still
 // works.
 func TestOperatorUpgrade(t *testing.T) {
-	e2eutil.Providers(t, "bink")
+	e2eutil.Providers(t, "bink", "eks")
 
 	releaseTag := os.Getenv("E2E_OPERATOR_RELEASE_TAG")
 	if releaseTag == "" {
@@ -117,7 +117,7 @@ func TestOperatorUpgrade(t *testing.T) {
 	t.Logf("Patched pool to update image %s", updateRef)
 
 	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 5*time.Minute,
-		HaveField("Booted", HaveField("ImageDigest", env.NodeImageUpdateDigest())),
+		HaveField("Booted", imageMatchesDigest(env.NodeImageUpdateDigest())),
 	)
 
 	t.Logf("Node %q completed update with upgraded operator", nodeName)
@@ -126,10 +126,10 @@ func TestOperatorUpgrade(t *testing.T) {
 		Should(poolAllUpdated(1, env.NodeImageUpdateDigest()))
 }
 
-// uninstallOperator removes the operator via Helm uninstall, then
-// deletes CRDs (which Helm does not manage on uninstall).  Custom
-// resources are deleted first while the operator is still running so
-// it can handle finalizer removal.
+// uninstallOperator removes the operator. Custom resources are deleted
+// first while the operator is still running so it can handle finalizer
+// removal. CRDs are bundled as a subchart dependency so they are
+// removed together with the main release.
 func uninstallOperator(
 	t *testing.T,
 	g Gomega,
@@ -152,9 +152,16 @@ func uninstallOperator(
 	}).WithTimeout(2*time.Minute).Should(Succeed(),
 		"expected all custom resources to be deleted")
 
-	t.Logf("Uninstalling Helm release...")
+	t.Logf("Uninstalling Helm releases...")
+	crdsRelease := helmReleaseName + "-crds"
+	hasCRDsRelease := helmReleaseExists(t, crdsRelease)
 	helmRun(t, "uninstall", helmReleaseName,
 		"--namespace", testutil.OperatorNamespaceName)
+	if hasCRDsRelease {
+		t.Logf("Uninstalling standalone CRDs release...")
+		helmRun(t, "uninstall", crdsRelease,
+			"--namespace", testutil.OperatorNamespaceName)
+	}
 
 	g.Eventually(func(g Gomega) {
 		var d appsv1.Deployment
@@ -177,6 +184,7 @@ func uninstallOperator(
 // helmInstallOperator installs the operator via helm install.
 func helmInstallOperator(t *testing.T, chartPath, img string, extraArgs []string) {
 	t.Helper()
+	helmRun(t, "dependency", "build", chartPath)
 	args := []string{
 		"install", helmReleaseName, chartPath,
 		"--namespace", testutil.OperatorNamespaceName,
@@ -190,7 +198,7 @@ func helmInstallOperator(t *testing.T, chartPath, img string, extraArgs []string
 func helmUpgradeOperator(t *testing.T, chartPath, img string, extraArgs []string) {
 	t.Helper()
 	args := []string{
-		"upgrade", helmReleaseName, chartPath,
+		"upgrade", "--install", helmReleaseName, chartPath,
 		"--namespace", testutil.OperatorNamespaceName,
 	}
 	args = append(args, helmImageArgs(t, img, extraArgs)...)
@@ -206,6 +214,9 @@ func helmImageArgs(t *testing.T, img string, extraArgs []string) []string {
 		"--set-string", "image.tag=" + tag,
 		"--set-string", "image.pullPolicy=Always",
 	}
+	if secret := os.Getenv("E2E_IMAGE_PULL_SECRET"); secret != "" {
+		args = append(args, "--set", "imagePullSecrets[0].name="+secret)
+	}
 	if len(extraArgs) > 0 {
 		j, err := json.Marshal(extraArgs)
 		if err != nil {
@@ -214,6 +225,28 @@ func helmImageArgs(t *testing.T, img string, extraArgs []string) []string {
 		args = append(args, "--set-json", "controller.extraArgs="+string(j))
 	}
 	return args
+}
+
+// helmReleaseExists returns true if the named Helm release exists in
+// the operator namespace. Any error other than "release: not found"
+// fails the test.
+func helmReleaseExists(t *testing.T, name string) bool {
+	t.Helper()
+	args := []string{"status", name,
+		"--namespace", testutil.OperatorNamespaceName}
+	if kc := os.Getenv("KUBECONFIG"); kc != "" {
+		args = append([]string{"--kubeconfig", kc}, args...)
+	}
+	cmd := exec.Command("helm", args...)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return true
+	}
+	if strings.Contains(string(out), "release: not found") {
+		return false
+	}
+	t.Fatalf("helm status %s failed: %v\n%s", name, err, out)
+	return false
 }
 
 // helmRun executes a helm command, adding --kubeconfig if set.

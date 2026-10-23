@@ -1,3 +1,5 @@
+nameOverride: bootc-operator
+
 crds:
   install: true
 
