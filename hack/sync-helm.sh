@@ -90,6 +90,20 @@ sed -i '/^          image: {{ include "bootc-operator\.image" \. }}/i\
             - {{ . | quote }}\
             {{- end }}' "$CHART_DIR/templates/controller-deployment.yaml"
 
+# Make --metrics-bind-address conditional on metrics.enabled
+sed -i 's|^\(            - --metrics-bind-address=\):8443$|            {{- if .Values.metrics.enabled }}\n\1:{{ .Values.metrics.service.port }}\n            {{- end }}|' \
+    "$CHART_DIR/templates/controller-deployment.yaml"
+
+# Make metrics containerPort conditional on metrics.enabled
+python3 -c "
+import re, sys
+text = open(sys.argv[1]).read()
+pattern = r'            - containerPort: 8443\n              name: metrics\n              protocol: TCP\n'
+repl = '            {{- if .Values.metrics.enabled }}\n            - containerPort: {{ .Values.metrics.service.port }}\n              name: metrics\n              protocol: TCP\n            {{- end }}\n'
+text = re.sub(pattern, repl, text)
+open(sys.argv[1], 'w').write(text)
+" "$CHART_DIR/templates/controller-deployment.yaml"
+
 gen_workload "$CONFIG_DIR/daemon/daemon.yaml" DaemonSet daemon \
     "$CHART_DIR/templates/daemon-daemonset.yaml"
 echo "Synced workloads"

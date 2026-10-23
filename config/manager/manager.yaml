@@ -70,6 +70,7 @@ spec:
         args:
           - --leader-elect
           - --health-probe-bind-address=:8081
+          - --metrics-bind-address=:8443
         image: ghcr.io/bootc-dev/bootc-operator:latest
         name: manager
         env:
@@ -78,6 +79,9 @@ spec:
             fieldRef:
               fieldPath: metadata.namespace
         ports:
+        - containerPort: 8443
+          name: metrics
+          protocol: TCP
         - containerPort: 8081
           name: health
           protocol: TCP

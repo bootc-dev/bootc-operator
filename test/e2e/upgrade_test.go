@@ -67,9 +67,11 @@ func TestOperatorUpgrade(t *testing.T) {
 	t.Logf("Released operator tag: %s, image: %s", releaseTag, releasedImg)
 
 	// Phase 1: Uninstall the current operator and re-install with
-	// the released image via Helm.
+	// the released image via Helm. Disable metrics because the
+	// released binary does not support --metrics-bind-address.
 	uninstallOperator(t, g, ctx, env)
-	helmInstallOperator(t, chartPath, releasedImg, extraArgs)
+	helmInstallOperator(t, chartPath, releasedImg, extraArgs,
+		"--set", "metrics.enabled=false")
 	waitForOperatorReady(t, g, ctx, env.Client)
 
 	t.Logf("Released operator %s installed via Helm", releaseTag)
@@ -175,7 +177,12 @@ func uninstallOperator(
 }
 
 // helmInstallOperator installs the operator via helm install.
-func helmInstallOperator(t *testing.T, chartPath, img string, extraArgs []string) {
+func helmInstallOperator(
+	t *testing.T,
+	chartPath, img string,
+	extraArgs []string,
+	helmSetArgs ...string,
+) {
 	t.Helper()
 	args := []string{
 		"install", helmReleaseName, chartPath,
@@ -183,17 +190,24 @@ func helmInstallOperator(t *testing.T, chartPath, img string, extraArgs []string
 		"--create-namespace",
 	}
 	args = append(args, helmImageArgs(t, img, extraArgs)...)
+	args = append(args, helmSetArgs...)
 	helmRun(t, args...)
 }
 
 // helmUpgradeOperator upgrades the operator via helm upgrade.
-func helmUpgradeOperator(t *testing.T, chartPath, img string, extraArgs []string) {
+func helmUpgradeOperator(
+	t *testing.T,
+	chartPath, img string,
+	extraArgs []string,
+	helmSetArgs ...string,
+) {
 	t.Helper()
 	args := []string{
 		"upgrade", helmReleaseName, chartPath,
 		"--namespace", testutil.OperatorNamespaceName,
 	}
 	args = append(args, helmImageArgs(t, img, extraArgs)...)
+	args = append(args, helmSetArgs...)
 	helmRun(t, args...)
 }
 
@@ -255,7 +269,8 @@ func controllerExtraArgs(t *testing.T, containers []corev1.Container) []string {
 		for _, arg := range c.Args {
 			switch {
 			case arg == "--leader-elect",
-				strings.HasPrefix(arg, "--health-probe-bind-address="):
+				strings.HasPrefix(arg, "--health-probe-bind-address="),
+				strings.HasPrefix(arg, "--metrics-bind-address="):
 			default:
 				extra = append(extra, arg)
 			}

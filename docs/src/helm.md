@@ -141,3 +141,8 @@ make helm
 | `image.pullPolicy` | not set | Kubernetes image pull policy |
 | `imagePullSecrets` | `[]` | List of pull secret references |
 | `controller.extraArgs` | `[]` | Extra arguments for the controller |
+| `metrics.enabled` | `true` | Deploy the metrics Service |
+| `metrics.service.port` | `8443` | Service port for the metrics endpoint |
+| `metrics.serviceMonitor.enabled` | `false` | Create a ServiceMonitor resource |
+| `metrics.serviceMonitor.interval` | `30s` | Scrape interval |
+| `metrics.serviceMonitor.namespace` | `""` | Namespace for the ServiceMonitor |
