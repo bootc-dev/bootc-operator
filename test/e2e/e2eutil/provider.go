@@ -11,7 +11,7 @@ import (
 // NodeProvider abstracts node provisioning so the same tests can run
 // against different infrastructure (bink, EKS, etc.).
 type NodeProvider interface {
-	AddNode(ctx context.Context, labels map[string]string) (nodeName string, err error)
+	AddNode(ctx context.Context, labels map[string]string, role string) (nodeName string, err error)
 	RemoveNode(ctx context.Context, nodeName string) error
 }
 

@@ -195,6 +195,7 @@ type NodeOption func(*nodeConfig)
 
 type nodeConfig struct {
 	labels map[string]string
+	role   string
 }
 
 // WithLabel adds a label to the provisioned node. This is in addition
@@ -205,6 +206,14 @@ func WithLabel(key, value string) NodeOption {
 			c.labels = make(map[string]string)
 		}
 		c.labels[key] = value
+	}
+}
+
+// WithRole sets the node role (e.g. "control-plane"). Defaults to
+// "worker" when empty.
+func WithRole(role string) NodeOption {
+	return func(c *nodeConfig) {
+		c.role = role
 	}
 }
 
@@ -225,8 +234,8 @@ func (e *Env) AddNode(t *testing.T, opts ...NodeOption) string {
 	}
 
 	ctx := context.Background()
-	t.Logf("Adding node...")
-	nodeName, err := e.provider.AddNode(ctx, labels)
+	t.Logf("Adding node (role=%q)...", cfg.role)
+	nodeName, err := e.provider.AddNode(ctx, labels, cfg.role)
 	if err != nil {
 		t.Fatalf("adding node: %v", err)
 	}
