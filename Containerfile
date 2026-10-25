@@ -1,4 +1,4 @@
-ARG GO_BUILDER_IMAGE=quay.io/hummingbird/go:1.27.2-builder
+ARG GO_BUILDER_IMAGE=quay.io/hummingbird/go:1.27.3-builder
 ARG CORE_RUNTIME_IMAGE=quay.io/hummingbird/core-runtime:2.43
 
 

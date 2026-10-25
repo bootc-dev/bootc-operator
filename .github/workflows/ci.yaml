@@ -8,7 +8,7 @@ on:
     branches: [main, release-*]
 
 env:
-  BINK_COMMIT: be7df01f53d044b859a773dcc33ec30af4e51d1f
+  BINK_COMMIT: c760926c363c5fdebf8671c700f2410a6124ff75
 
 permissions:
   contents: read
@@ -51,7 +51,7 @@ jobs:
   build-bink:
     uses: $/.github/workflows/build-bink.yaml
     with:
-      bink-commit: be7df01f53d044b859a773dcc33ec30af4e51d1f
+      bink-commit: c760926c363c5fdebf8671c700f2410a6124ff75
 
   build-operator:
     uses: $/.github/workflows/build-operator.yaml
