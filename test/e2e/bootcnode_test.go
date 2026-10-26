@@ -39,7 +39,7 @@ const (
 // BootcNodePool selecting it, and verifies that a BootcNode is created
 // and the node is labeled bootc.dev/managed.
 func TestControllerMembership(t *testing.T) {
-	e2eutil.Providers(t, "bink")
+	e2eutil.Providers(t, "bink", "eks")
 	t.Parallel()
 	g := NewWithT(t)
 	g.SetDefaultEventuallyTimeout(pollTimeout)
@@ -528,7 +528,7 @@ func getBootCount(t *testing.T, env *e2eutil.Env, ctx context.Context, nodeName 
 // pool paused, verifies the node stages but does not reboot, then resumes
 // and verifies the update completes.
 func TestPauseResume(t *testing.T) {
-	e2eutil.Providers(t, "bink")
+	e2eutil.Providers(t, "bink", "eks")
 	t.Parallel()
 	g := NewWithT(t)
 	g.SetDefaultEventuallyTimeout(pollTimeout)
@@ -634,7 +634,7 @@ func TestPauseResume(t *testing.T) {
 // original image, then updates to a non-existing image and verifies the
 // node enters degraded state and the update does not proceed.
 func TestNonExistingImage(t *testing.T) {
-	e2eutil.Providers(t, "bink")
+	e2eutil.Providers(t, "bink", "eks")
 	t.Parallel()
 	g := NewWithT(t)
 	g.SetDefaultEventuallyTimeout(pollTimeout)
@@ -1010,7 +1010,7 @@ func TestPullSecretRotation(t *testing.T) {
 // verifies it resumes and completes the interrupted rollout. Covers scenario 5
 // of #69 (kill the controller during a roll-out).
 func TestControllerRecovery(t *testing.T) {
-	e2eutil.Providers(t, "bink")
+	e2eutil.Providers(t, "bink", "eks")
 	g := NewWithT(t)
 	g.SetDefaultEventuallyTimeout(pollTimeout)
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
@@ -1211,7 +1211,7 @@ func poolAllUpdated(nodeCount int32, deployedDigest string) types.GomegaMatcher 
 // Covers the daemon half of scenario 5 of #69 (kill the daemon during a
 // roll-out).
 func TestDaemonRecovery(t *testing.T) {
-	e2eutil.Providers(t, "bink")
+	e2eutil.Providers(t, "bink", "eks")
 	t.Parallel()
 	g := NewWithT(t)
 	g.SetDefaultEventuallyTimeout(pollTimeout)
@@ -1352,7 +1352,7 @@ func TestRebootTimeoutDegraded(t *testing.T) {
 // TestOperatorUpgrade, which covers an actual version upgrade via a
 // released manifest rather than a same-version pod restart.
 func TestOperatorRestartResilience(t *testing.T) {
-	e2eutil.Providers(t, "bink")
+	e2eutil.Providers(t, "bink", "eks")
 	g := NewWithT(t)
 	g.SetDefaultEventuallyTimeout(pollTimeout)
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
