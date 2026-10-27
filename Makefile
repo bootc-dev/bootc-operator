@@ -202,6 +202,8 @@ undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.
 # Note the :latest tag here: this makes the pull policy be Always.
 IMG_BINK ?= registry.cluster.local:5000/bootc-operator-e2e:latest
 
+# Copy with skopeo rather than `podman push`: the node disk image booted the
+# source digest, and podman 5 rewrites the manifest on push, which changes it.
 .PHONY: seed-node-image
 seed-node-image: ## Pull the bootc node image by digest and push to the bink registry.
 	bink registry start
@@ -209,8 +211,10 @@ seed-node-image: ## Pull the bootc node image by digest and push to the bink reg
 	bootc_img=$$(podman inspect --format '{{index .Config.Labels "bink.bootc-image"}}' $(BINK_NODE_DISK_IMAGE)) && \
 		bootc_digest=$$(podman inspect --format '{{index .Config.Labels "bink.bootc-image-digest"}}' $(BINK_NODE_DISK_IMAGE)) && \
 		podman pull "$$bootc_img@$$bootc_digest" && \
-		podman tag "$$bootc_img@$$bootc_digest" localhost:5000/node:latest
-	podman push --tls-verify=false localhost:5000/node:latest
+		podman tag "$$bootc_img@$$bootc_digest" localhost:5000/node:latest && \
+		bootc_repo=$${bootc_img%:*} && \
+		skopeo copy --preserve-digests --dest-tls-verify=false \
+			"docker://$$bootc_repo@$$bootc_digest" docker://localhost:5000/node:latest
 
 .PHONY: start-bink
 start-bink: seed-node-image ## Start a bink cluster (idempotent).
