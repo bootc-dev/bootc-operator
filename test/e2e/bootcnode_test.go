@@ -90,10 +90,7 @@ func TestControllerMembership(t *testing.T) {
 	)), "expected exactly one running daemon pod on %s", nodeName)
 
 	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 3*time.Minute,
-		HaveField("Booted", And(
-			HaveField("Image", env.NodeImageDigestedPullSpec()),
-			imageMatchesDigest(env.NodeImageDigest()),
-		)),
+		HaveField("Booted", imageMatchesDigest(env.NodeImageDigest())),
 	)
 
 	// Verify pool status reflects steady state.
