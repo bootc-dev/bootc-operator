@@ -34,9 +34,9 @@ For end-to-end testing you will also need:
   backed by bootc nodes
 - [skopeo](https://github.com/containers/skopeo) — container image inspection
 
-Tool dependencies like `controller-gen`, `kustomize`, `golangci-lint`, and
-`setup-envtest` are downloaded automatically to `./bin/` by the Makefile when
-needed.
+Tool dependencies like `controller-gen`, `kustomize`, `golangci-lint`,
+`govulncheck`, and `setup-envtest` are downloaded automatically to `./bin/` by
+the Makefile when needed.
 
 ### Development Environment
 
@@ -105,6 +105,26 @@ make unit            # Run all unit tests
 make unit V=1        # Verbose output
 make unit RUN=Foo    # Run tests matching "Foo"
 ```
+
+### Checking for Vulnerabilities
+
+```shell
+make vulncheck
+```
+
+This runs [govulncheck](https://go.dev/blog/vuln) against all Go packages in
+the repository, looking for known vulnerabilities from the
+[Go vulnerability database](https://vuln.go.dev/). Both the `govulncheck`
+binary and the database are downloaded on demand, so the target requires
+network access.
+
+Only reachable findings — vulnerabilities in functions that the code actually
+calls — fail the check. Fix them by upgrading the affected dependency or
+changing the affected code. The scan may also report informational findings
+in packages you import or modules you require whose vulnerable functions are
+not called; these do not fail the check.
+
+CI runs this check in the `unit` job.
 
 ### Running End-to-End Tests
 
@@ -247,6 +267,7 @@ Follow a commit style similar to the Linux kernel:
    make vet
    make lint
    make unit
+   make vulncheck
    ```
 
 4. Push your branch and open a pull request against `main`.
