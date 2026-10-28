@@ -371,11 +371,14 @@ func (r *BootcNodePoolReconciler) collectDrainResults(
 			continue
 		}
 
-		// Drain finished; remove from the map.
+		// Drain finished; remove from the map and release its context,
+		// which would otherwise stay registered with the parent.
 		delete(r.drains, nodeName)
+		cancelled := ds.ctx.Err() != nil
+		ds.cancel()
 
 		if drainErr != nil {
-			if ds.ctx.Err() != nil {
+			if cancelled {
 				// Context was cancelled (node left pool or controller
 				// shutdown). The canceller is responsible for cleanup.
 				log.V(1).Info("Drain cancelled", "node", nodeName)

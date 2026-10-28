@@ -3,6 +3,8 @@
 package controller
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -521,4 +523,24 @@ func TestFindUnhealthySlots(t *testing.T) {
 
 		g.Expect(findUnhealthySlots(rs, targetDigest)).To(BeEmpty())
 	})
+}
+
+// Verifies that collecting a finished drain cancels its context, so it
+// does not stay registered with the long-lived parent context.
+func TestCollectDrainResultsReleasesContext(t *testing.T) {
+	g := NewWithT(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	drainCtx, drainCancel := context.WithCancel(ctx)
+	defer drainCancel()
+	ds := &drainStatus{result: make(chan error, 1), ctx: drainCtx, cancel: drainCancel}
+	ds.result <- errors.New("drain failed")
+
+	r := &BootcNodePoolReconciler{drains: map[string]*drainStatus{"n1": ds}}
+	pool := testutil.NewPool("drain-release", testImageDigestRefA, testutil.WithWorkerSelector())
+
+	g.Expect(r.collectDrainResults(ctx, pool, nil)).To(Succeed())
+	g.Expect(r.drains).To(BeEmpty())
+	g.Expect(drainCtx.Err()).To(MatchError(context.Canceled))
 }
