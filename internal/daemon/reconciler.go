@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+// Package daemon implements the per-node daemon that watches bootc
+// status and reconciles the node's BootcNode.
 package daemon
 
 import (

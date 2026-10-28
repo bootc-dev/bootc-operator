@@ -1,3 +1,4 @@
+// Package registry resolves container image tags to digests.
 package registry
 
 import (
