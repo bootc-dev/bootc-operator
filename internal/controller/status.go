@@ -4,6 +4,7 @@ package controller
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -19,12 +20,12 @@ func syncPoolStatus(pool *bootcv1alpha1.BootcNodePool, rs *rolloutState) {
 		return
 	}
 	pool.Status.ObservedGeneration = pool.Generation
-	pool.Status.NodeCount = int32(rs.nodeCount())
-	pool.Status.UpdatedCount = int32(len(rs.upToDate))
-	pool.Status.UpdatingCount = int32(
+	pool.Status.NodeCount = clampCount(rs.nodeCount())
+	pool.Status.UpdatedCount = clampCount(len(rs.upToDate))
+	pool.Status.UpdatingCount = clampCount(
 		len(rs.pending) + len(rs.staging) + len(rs.staged) + len(rs.rebooting),
 	)
-	pool.Status.DegradedCount = int32(len(rs.degraded))
+	pool.Status.DegradedCount = clampCount(len(rs.degraded))
 
 	if pool.Status.NodeCount == pool.Status.UpdatedCount {
 		pool.Status.DeployedDigest = pool.Status.TargetDigest
@@ -32,6 +33,18 @@ func syncPoolStatus(pool *bootcv1alpha1.BootcNodePool, rs *rolloutState) {
 	pool.Status.UpdateAvailable = pool.Status.TargetDigest != pool.Status.DeployedDigest
 
 	syncUpToDateCondition(pool, rs)
+}
+
+// clampCount converts a count to int32 for the status API, saturating to
+// [0, math.MaxInt32] to match the schema instead of wrapping.
+func clampCount(n int) int32 {
+	if n < 0 {
+		return 0
+	}
+	if n > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	return int32(n)
 }
 
 func syncUpToDateCondition(pool *bootcv1alpha1.BootcNodePool, rs *rolloutState) {

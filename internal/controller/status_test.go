@@ -3,6 +3,7 @@
 package controller
 
 import (
+	"math"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -169,4 +170,16 @@ func TestSyncPoolStatusDeployedDigestPreserved(t *testing.T) {
 
 	g.Expect(pool.Status.DeployedDigest).To(Equal(testDigestA))
 	g.Expect(pool.Status.UpdateAvailable).To(BeTrue())
+}
+
+// Verifies that clampCount passes in-range counts through and saturates
+// instead of wrapping when a count does not fit in int32.
+func TestClampCount(t *testing.T) {
+	g := NewWithT(t)
+
+	g.Expect(clampCount(0)).To(Equal(int32(0)))
+	g.Expect(clampCount(42)).To(Equal(int32(42)))
+	g.Expect(clampCount(math.MaxInt32)).To(Equal(int32(math.MaxInt32)))
+	g.Expect(clampCount(math.MaxInt32 + 1)).To(Equal(int32(math.MaxInt32)))
+	g.Expect(clampCount(-1)).To(Equal(int32(0)))
 }

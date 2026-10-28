@@ -263,6 +263,7 @@ spec:
               degradedCount:
                 description: degradedCount is the number of nodes in a degraded state.
                 format: int32
+                minimum: 0
                 type: integer
               deployedDigest:
                 description: |-
@@ -278,6 +279,7 @@ spec:
               nodeCount:
                 description: nodeCount is the total number of nodes in this pool.
                 format: int32
+                minimum: 0
                 type: integer
               observedGeneration:
                 description: |-
@@ -300,12 +302,14 @@ spec:
                 description: updatedCount is the number of nodes running the target
                   digest.
                 format: int32
+                minimum: 0
                 type: integer
               updatingCount:
                 description: |-
                   updatingCount is the number of nodes actively being updated
                   (staging, staged, or rebooting).
                 format: int32
+                minimum: 0
                 type: integer
             type: object
         required:
