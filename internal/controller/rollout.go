@@ -307,7 +307,8 @@ func (r *BootcNodePoolReconciler) ensureDrain(
 
 	log.Info("Starting drain", "node", bn.Name)
 
-	drainCtx, cancel := context.WithCancel(ctx)
+	// cancel is stored in r.drains and called when the drain is collected.
+	drainCtx, cancel := context.WithCancel(ctx) //nolint:gosec // G118
 	status := &drainStatus{
 		result:    make(chan error, 1),
 		ctx:       drainCtx,

@@ -236,7 +236,17 @@ func (r *BootcNodeReconciler) reconcileBootcNode(
 		switchCtx, cancel := context.WithCancel(context.Background())
 		r.inflight.acquire(log, desiredImage, cancel)
 		log.Info("Starting staging", "image", desiredImage)
-		go r.inflight.run(switchCtx, r.NodeName, desiredImage, r.Executor, r.stageDone)
+		// Staging must outlive this reconcile, so it is not derived from
+		// the request context. The context has no parent, so it cannot
+		// leak; acquire cancels it when a newer stage replaces it.
+		//nolint:gosec // G118
+		go r.inflight.run(
+			switchCtx,
+			r.NodeName,
+			desiredImage,
+			r.Executor,
+			r.stageDone,
+		)
 
 	case actionAwaitStage:
 		reason = bootcv1alpha1.NodeReasonStaging
@@ -440,7 +450,9 @@ func (r *BootcNodeReconciler) writeAuthFile(data []byte) error {
 	}
 
 	dir := filepath.Join(hostRoot, "run", "ostree")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	// Standard mode for a host system directory under /run; it only
+	// applies if the host has not created the directory already.
+	if err := os.MkdirAll(dir, 0755); err != nil { //nolint:gosec // G301
 		return fmt.Errorf("creating auth dir: %w", err)
 	}
 

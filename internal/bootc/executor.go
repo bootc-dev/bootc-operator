@@ -61,7 +61,10 @@ func (e *HostExecutor) nsenterCmd(ctx context.Context, args ...string) *exec.Cmd
 		"--setuid", "0", "--setgid", "0",
 		"--env", "--",
 	}
-	return exec.CommandContext(ctx, "nsenter", append(base, args...)...)
+	// Callers in this package pass fixed program names; the only external
+	// input is a validated, digested image reference. Arguments are not
+	// passed through a shell.
+	return exec.CommandContext(ctx, "nsenter", append(base, args...)...) //nolint:gosec // G204
 }
 
 func (e *HostExecutor) Status(ctx context.Context) ([]byte, error) {
