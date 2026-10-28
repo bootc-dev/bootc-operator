@@ -216,7 +216,10 @@ matching the structure described in [Finding Test Logs](#finding-test-logs).
 - Run `make fmt` and `make vet` before submitting.
 - Run `make lint` to check with
   [golangci-lint](https://golangci-lint.run/). Use `make lint-fix` to apply
-  automatic fixes.
+  automatic fixes. The configuration in `.golangci.yml` enables the full
+  staticcheck suite and gosec (except for the e2e tests). If a gosec finding
+  is a false positive, suppress it with `//nolint:gosec // <rule>` and a
+  comment explaining why.
 - All Go files must include the SPDX license header:
 
   ```go
