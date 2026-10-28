@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+// Package controller implements the BootcNodePool controller, which
+// resolves a pool's target image and rolls it out across member nodes.
 package controller
 
 import (

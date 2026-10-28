@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+// Package image provides helpers for matching container image
+// references against digests.
 package image
 
 import (

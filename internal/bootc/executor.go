@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+// Package bootc runs bootc commands on the host and parses their output.
 package bootc
 
 import (
