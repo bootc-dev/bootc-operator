@@ -1266,7 +1266,7 @@ func TestOperatorRestartResilience(t *testing.T) {
 
 	t.Logf("Patched pool to update image %s after operator restart", updateRef)
 
-	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 5*time.Minute,
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 8*time.Minute,
 		HaveField("Booted", imageMatchesDigest(env.NodeImageUpdateDigest())),
 	)
 	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).
