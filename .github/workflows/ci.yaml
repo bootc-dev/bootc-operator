@@ -48,6 +48,9 @@ jobs:
       - name: Lint
         run: make lint
 
+      - name: Vulnerability check
+        run: make vulncheck
+
   build-bink:
     uses: $/.github/workflows/build-bink.yaml
     with:
