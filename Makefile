@@ -98,6 +98,10 @@ go-lines: get-golines
 go-lines-fix: get-golines
 	"$(GOLINES_BIN)" -w .
 
+.PHONY: vulncheck
+vulncheck: govulncheck ## Check Go code for known vulnerabilities (requires network access to the Go vulnerability database).
+	"$(GOVULNCHECK)" ./...
+
 .PHONY: e2e
 e2e: ## Run e2e tests (requires: make deploy-bink). V=1 for verbose. RUN=<regex> to filter.
 # NB: we `cd` here instead of passing a package path to `go test` so that `-v`
@@ -288,11 +292,13 @@ CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 GOLINES_BIN = $(LOCALBIN)/golines
+GOVULNCHECK = $(LOCALBIN)/govulncheck
 YQ ?= $(LOCALBIN)/yq
 
 KUSTOMIZE_VERSION ?= v5.8.1
 CONTROLLER_TOOLS_VERSION ?= v0.20.1
 GOLANGCI_LINT_VERSION ?= v2.11.4
+GOVULNCHECK_VERSION ?= v1.9.0
 YQ_VERSION ?= v4.53.2
 
 # ENVTEST_VERSION is the version of controller-runtime release branch to fetch the envtest setup script (i.e. release-0.20)
@@ -331,6 +337,11 @@ $(ENVTEST): $(LOCALBIN)
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
 	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
+
+.PHONY: govulncheck
+govulncheck: $(GOVULNCHECK) ## Download govulncheck locally if necessary.
+$(GOVULNCHECK): $(LOCALBIN)
+	$(call go-install-tool,$(GOVULNCHECK),golang.org/x/vuln/cmd/govulncheck,$(GOVULNCHECK_VERSION))
 
 .PHONY: get-golines
 get-golines: $(GOLINES_BIN) ## Download golines locally if necessary.
