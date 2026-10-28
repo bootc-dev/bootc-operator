@@ -78,12 +78,12 @@ func TestWatcherEvents(t *testing.T) {
 			composefsPath := filepath.Join(dir, "deploy")
 
 			if tt.mkOstree {
-				if err := os.Mkdir(ostreePath, 0o755); err != nil {
+				if err := os.Mkdir(ostreePath, 0o750); err != nil {
 					t.Fatal(err)
 				}
 			}
 			if tt.mkComposefs {
-				if err := os.Mkdir(composefsPath, 0o755); err != nil {
+				if err := os.Mkdir(composefsPath, 0o750); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -100,7 +100,7 @@ func TestWatcherEvents(t *testing.T) {
 					t.Fatal(err)
 				}
 			case triggerCreate:
-				if err := os.Mkdir(filepath.Join(composefsPath, "new-deploy"), 0o755); err != nil {
+				if err := os.Mkdir(filepath.Join(composefsPath, "new-deploy"), 0o750); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -204,7 +204,7 @@ func TestWatcherGetStatusColdCache(t *testing.T) {
 func TestWatcherShutdown(t *testing.T) {
 	dir := t.TempDir()
 	watchDir := filepath.Join(dir, "bootc")
-	if err := os.Mkdir(watchDir, 0o755); err != nil {
+	if err := os.Mkdir(watchDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
 
@@ -226,7 +226,7 @@ func TestWatcherShutdown(t *testing.T) {
 func TestWatcherNoPollWhenFsnotifyHealthy(t *testing.T) {
 	dir := t.TempDir()
 	ostreePath := filepath.Join(dir, "bootc")
-	if err := os.Mkdir(ostreePath, 0o755); err != nil {
+	if err := os.Mkdir(ostreePath, 0o750); err != nil {
 		t.Fatal(err)
 	}
 
