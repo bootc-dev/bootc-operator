@@ -200,19 +200,23 @@ type BootcNodePoolStatus struct {
 
 	// nodeCount is the total number of nodes in this pool.
 	// +optional
+	// +kubebuilder:validation:Minimum=0
 	NodeCount int32 `json:"nodeCount,omitempty"`
 
 	// updatedCount is the number of nodes running the target digest.
 	// +optional
+	// +kubebuilder:validation:Minimum=0
 	UpdatedCount int32 `json:"updatedCount,omitempty"`
 
 	// updatingCount is the number of nodes actively being updated
 	// (staging, staged, or rebooting).
 	// +optional
+	// +kubebuilder:validation:Minimum=0
 	UpdatingCount int32 `json:"updatingCount,omitempty"`
 
 	// degradedCount is the number of nodes in a degraded state.
 	// +optional
+	// +kubebuilder:validation:Minimum=0
 	DegradedCount int32 `json:"degradedCount,omitempty"`
 
 	// conditions represent the current state of the pool.
