@@ -15,6 +15,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -62,10 +63,14 @@ func TestMain(m *testing.M) {
 
 	// Start a manager with the reconciler so controller logic runs
 	// against the envtest API server.
+	pullSecretNamespaces := []string{testutil.OperatorNamespaceName}
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme: scheme.Scheme,
 		Metrics: metricsserver.Options{
 			BindAddress: "0", // disable metrics server in tests
+		},
+		Cache: cache.Options{
+			ByObject: SecretCacheByObject(pullSecretNamespaces),
 		},
 	})
 	if err != nil {
@@ -90,7 +95,7 @@ func TestMain(m *testing.M) {
 		Scheme:               mgr.GetScheme(),
 		KubeClient:           kubeClient,
 		EventNamespace:       testutil.OperatorNamespaceName,
-		PullSecretNamespaces: []string{testutil.OperatorNamespaceName},
+		PullSecretNamespaces: pullSecretNamespaces,
 	}
 	if err := testReconciler.SetupWithManager(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to setup reconciler: %v\n", err)
