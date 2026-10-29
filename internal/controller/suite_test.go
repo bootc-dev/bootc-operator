@@ -84,10 +84,11 @@ func TestMain(m *testing.M) {
 	}
 
 	testReconciler = &BootcNodePoolReconciler{
-		Client:         mgr.GetClient(),
-		Scheme:         mgr.GetScheme(),
-		KubeClient:     kubeClient,
-		EventNamespace: testutil.OperatorNamespaceName,
+		Client:               mgr.GetClient(),
+		Scheme:               mgr.GetScheme(),
+		KubeClient:           kubeClient,
+		EventNamespace:       testutil.OperatorNamespaceName,
+		PullSecretNamespaces: []string{testutil.OperatorNamespaceName},
 	}
 	if err := testReconciler.SetupWithManager(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to setup reconciler: %v\n", err)

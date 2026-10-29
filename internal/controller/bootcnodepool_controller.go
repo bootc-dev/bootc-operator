@@ -67,6 +67,10 @@ type BootcNodePoolReconciler struct {
 	TagResolver           TagResolver
 	TagResolutionInterval time.Duration
 
+	// PullSecretNamespaces is the allowlist of namespaces pools may
+	// reference pull secrets from.
+	PullSecretNamespaces []string
+
 	// drainCh receives events from drain goroutines to re-enqueue the
 	// owning pool after a drain completes.
 	drainCh chan event.GenericEvent
@@ -701,13 +705,22 @@ func (r *BootcNodePoolReconciler) listAllBootcNodes(
 }
 
 // fetchPullSecretData fetches the .dockerconfigjson data from the pull
-// secret referenced by the pool. Returns nil if no pull secret is set.
+// secret referenced by the pool. Returns nil if no pull secret is set, and
+// an error if the secret's namespace is not in PullSecretNamespaces.
 func (r *BootcNodePoolReconciler) fetchPullSecretData(
 	ctx context.Context,
 	pool *bootcv1alpha1.BootcNodePool,
 ) ([]byte, error) {
 	if pool.Spec.PullSecretRef == nil {
 		return nil, nil
+	}
+
+	if !slices.Contains(r.PullSecretNamespaces, pool.Spec.PullSecretRef.Namespace) {
+		return nil, fmt.Errorf(
+			"pull secret namespace %q is not allowed (allowed: %s)",
+			pool.Spec.PullSecretRef.Namespace,
+			strings.Join(r.PullSecretNamespaces, ", "),
+		)
 	}
 
 	key := types.NamespacedName{
