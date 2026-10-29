@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
+	karpenter "github.com/bootc-dev/bootc-operator/internal/karpenter"
 )
 
 // Test fixture values. These are not helpers per se that are any use for e2e
@@ -173,6 +174,11 @@ func NewNode(name, desiredImage string, opts ...NodeOption) *bootcv1alpha1.Bootc
 	return node
 }
 
+// NewBootcNode is an explicit alias for NewNode.
+func NewBootcNode(name, desiredImage string, opts ...NodeOption) *bootcv1alpha1.BootcNode {
+	return NewNode(name, desiredImage, opts...)
+}
+
 // WithBootedDigest sets the booted image digest in the node's status.
 func WithBootedDigest(digest string) NodeOption {
 	return func(node *bootcv1alpha1.BootcNode) {
@@ -264,4 +270,163 @@ func NewK8sNode(name string, labels map[string]string, opts ...K8sNodeOption) *c
 		o(node)
 	}
 	return node
+}
+
+// WithK8sNodeAnnotations sets the annotations on a Kubernetes Node.
+func WithK8sNodeAnnotations(annotations map[string]string) K8sNodeOption {
+	return func(node *corev1.Node) {
+		node.Annotations = annotations
+	}
+}
+
+// WithOwnerReferences sets the owner references on a Kubernetes Node.
+func WithOwnerReferences(ownerReferences []metav1.OwnerReference) K8sNodeOption {
+	return func(node *corev1.Node) {
+		node.OwnerReferences = ownerReferences
+	}
+}
+
+// WithTaints sets the taints on a Kubernetes Node.
+func WithTaints(taints []corev1.Taint) K8sNodeOption {
+	return func(node *corev1.Node) {
+		node.Spec.Taints = taints
+	}
+}
+
+// WithUnschedulable sets whether a Kubernetes Node is cordoned.
+func WithUnschedulable(unschedulable bool) K8sNodeOption {
+	return func(node *corev1.Node) {
+		node.Spec.Unschedulable = unschedulable
+	}
+}
+
+// WithK8sNodeConditions sets the status conditions on a Kubernetes Node.
+func WithK8sNodeConditions(conditions []corev1.NodeCondition) K8sNodeOption {
+	return func(node *corev1.Node) {
+		node.Status.Conditions = conditions
+	}
+}
+
+// KarpenterNodeClaimOption configures an internal Karpenter NodeClaim.
+type KarpenterNodeClaimOption func(*karpenter.NodeClaim)
+
+// KarpenterNodeClaimCondition describes a NodeClaim status condition.
+type KarpenterNodeClaimCondition struct {
+	Type   string
+	Status string
+	Reason string
+}
+
+// KarpenterNodeClaimRequirement describes a NodeClaim scheduling requirement.
+type KarpenterNodeClaimRequirement struct {
+	Key      string
+	Operator string
+	Values   []string
+}
+
+// NewKarpenterNodeClaim creates a NodeClaim with the given name. Override
+// metadata and status fields via functional options.
+func NewKarpenterNodeClaim(name string, opts ...KarpenterNodeClaimOption) *karpenter.NodeClaim {
+	claim := karpenter.NewNodeClaim()
+	claim.SetName(name)
+	for _, o := range opts {
+		o(claim)
+	}
+	return claim
+}
+
+// WithKarpenterNodeClaimAnnotation sets one annotation on a NodeClaim.
+func WithKarpenterNodeClaimAnnotation(key, value string) KarpenterNodeClaimOption {
+	return func(claim *karpenter.NodeClaim) {
+		annotations := claim.GetAnnotations()
+		if annotations == nil {
+			annotations = make(map[string]string)
+		}
+		annotations[key] = value
+		claim.SetAnnotations(annotations)
+	}
+}
+
+// WithKarpenterNodeClaimNodeClassRef sets spec.nodeClassRef on a NodeClaim.
+func WithKarpenterNodeClaimNodeClassRef(name, kind, group string) KarpenterNodeClaimOption {
+	return func(claim *karpenter.NodeClaim) {
+		spec := karpenterNodeClaimSpec(claim)
+		spec["nodeClassRef"] = map[string]interface{}{
+			"name":  name,
+			"kind":  kind,
+			"group": group,
+		}
+	}
+}
+
+// WithKarpenterNodeClaimRequirements sets spec.requirements on a NodeClaim.
+func WithKarpenterNodeClaimRequirements(
+	requirements ...KarpenterNodeClaimRequirement,
+) KarpenterNodeClaimOption {
+	return func(claim *karpenter.NodeClaim) {
+		items := make([]interface{}, 0, len(requirements))
+		for _, requirement := range requirements {
+			item := map[string]interface{}{
+				"key":      requirement.Key,
+				"operator": requirement.Operator,
+			}
+			if requirement.Values != nil {
+				item["values"] = requirement.Values
+			}
+			items = append(items, item)
+		}
+		karpenterNodeClaimSpec(claim)["requirements"] = items
+	}
+}
+
+// WithKarpenterNodeClaimNodeName sets status.nodeName on a NodeClaim.
+func WithKarpenterNodeClaimNodeName(nodeName string) KarpenterNodeClaimOption {
+	return func(claim *karpenter.NodeClaim) {
+		status := karpenterNodeClaimStatus(claim)
+		status["nodeName"] = nodeName
+	}
+}
+
+// WithKarpenterNodeClaimConditions sets status.conditions on a NodeClaim.
+func WithKarpenterNodeClaimConditions(
+	conditions ...KarpenterNodeClaimCondition,
+) KarpenterNodeClaimOption {
+	return func(claim *karpenter.NodeClaim) {
+		items := make([]interface{}, 0, len(conditions))
+		for _, condition := range conditions {
+			item := map[string]interface{}{
+				"type":   condition.Type,
+				"status": condition.Status,
+			}
+			if condition.Reason != "" {
+				item["reason"] = condition.Reason
+			}
+			items = append(items, item)
+		}
+		karpenterNodeClaimStatus(claim)["conditions"] = items
+	}
+}
+
+func karpenterNodeClaimStatus(claim *karpenter.NodeClaim) map[string]interface{} {
+	if claim.Object == nil {
+		claim.Object = make(map[string]interface{})
+	}
+	status, ok := claim.Object["status"].(map[string]interface{})
+	if !ok {
+		status = make(map[string]interface{})
+		claim.Object["status"] = status
+	}
+	return status
+}
+
+func karpenterNodeClaimSpec(claim *karpenter.NodeClaim) map[string]interface{} {
+	if claim.Object == nil {
+		claim.Object = make(map[string]interface{})
+	}
+	spec, ok := claim.Object["spec"].(map[string]interface{})
+	if !ok {
+		spec = make(map[string]interface{})
+		claim.Object["spec"] = spec
+	}
+	return spec
 }
