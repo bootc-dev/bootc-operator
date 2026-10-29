@@ -20,6 +20,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/events"
@@ -35,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
+	karpenter "github.com/bootc-dev/bootc-operator/internal/karpenter"
 )
 
 // drainStatus tracks an in-progress drain goroutine for a single node.
@@ -89,6 +91,7 @@ type BootcNodePoolReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=karpenter.sh,resources=nodeclaims,verbs=get;list;watch;patch
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *BootcNodePoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -96,16 +99,99 @@ func (r *BootcNodePoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.drainCh = make(chan event.GenericEvent, 100)
 	r.drains = make(map[string]*drainStatus)
 
-	return ctrl.NewControllerManagedBy(mgr).
+	// ctrlBuilder avoids shadowing the imported "sigs.k8s.io/controller-runtime/pkg/builder" package.
+	ctrlBuilder := ctrl.NewControllerManagedBy(mgr).
 		For(&bootcv1alpha1.BootcNodePool{}).
 		Owns(&bootcv1alpha1.BootcNode{}).
 		Watches(&corev1.Node{}, handler.EnqueueRequestsFromMapFunc(r.mapNodeToPoolRequests), builder.WithPredicates(nodePredicates())).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.mapSecretToPoolRequests), builder.WithPredicates(secretTypePredicate())).
-		WatchesRawSource(source.Channel(r.drainCh, &handler.EnqueueRequestForObject{})).
-		Named("bootcnodepool").
-		Complete(r)
+		WatchesRawSource(source.Channel(r.drainCh, &handler.EnqueueRequestForObject{}))
+
+	// Karpenter is optional. Only register the NodeClaim watch when its CRD is
+	// discoverable, so the operator remains usable on ordinary clusters.
+	karpenterInstalled, err := isKarpenterInstalled(mgr.GetRESTMapper())
+	if err != nil {
+		return err
+	}
+	if karpenterInstalled {
+		ctrlBuilder = ctrlBuilder.Watches(
+			karpenter.NewNodeClaim().UnstructuredObject(),
+			handler.EnqueueRequestsFromMapFunc(r.mapNodeClaimToPoolRequests),
+		)
+	}
+
+	return ctrlBuilder.Named("bootcnodepool").Complete(r)
 }
 
+// isKarpenterInstalled reports whether the Karpenter NodeClaim resource is
+// discoverable. Karpenter is optional, so a missing resource is not an error.
+func isKarpenterInstalled(restMapper apimeta.RESTMapper) (bool, error) {
+	mapping, err := restMapper.RESTMapping(
+		schema.GroupKind{Group: karpenter.Group, Kind: karpenter.NodeClaimKind},
+		"v1",
+	)
+	switch {
+	case err == nil:
+		logf.Log.Info(
+			"Discovered Karpenter NodeClaim resource",
+			"resource", mapping.Resource,
+			"kind", mapping.GroupVersionKind,
+			"scope", mapping.Scope.Name(),
+		)
+		return true, nil
+	case apimeta.IsNoMatchError(err):
+		logf.Log.Info(
+			"Karpenter NodeClaim resource could not be resolved; skipping watch",
+			"group", karpenter.Group,
+			"kind", karpenter.NodeClaimKind,
+			"version", "v1",
+			"error", err,
+		)
+		return false, nil
+	default:
+		logf.Log.Error(
+			err,
+			"Failed to resolve Karpenter NodeClaim resource",
+			"group", karpenter.Group,
+			"kind", karpenter.NodeClaimKind,
+			"version", "v1",
+		)
+		return false, fmt.Errorf("discovering Karpenter NodeClaim: %w", err)
+	}
+}
+
+// mapNodeClaimToPoolRequests maps a Karpenter NodeClaim status update to the
+// BootcNodePool owning the corresponding Node.
+func (r *BootcNodePoolReconciler) mapNodeClaimToPoolRequests(
+	ctx context.Context,
+	obj client.Object,
+) []reconcile.Request {
+	log := logf.FromContext(ctx)
+	nodeName, claimName, err := karpenter.NodeNameFromObject(obj)
+	if err != nil {
+		log.Error(err, "Unexpected error in NodeClaim mapper")
+		return nil
+	}
+	if nodeName == "" {
+		log.V(1).Info("NodeClaim has no node name yet; skipping event", "claim", claimName)
+		return nil
+	}
+	var bn bootcv1alpha1.BootcNode
+	if err := r.Get(ctx, types.NamespacedName{Name: nodeName}, &bn); err != nil {
+		if !apierrors.IsNotFound(err) {
+			log.Error(err, "Failed to get BootcNode in NodeClaim mapper", "node", nodeName)
+		}
+		return nil
+	}
+	owner := metav1.GetControllerOf(&bn)
+	if owner == nil || owner.Kind != "BootcNodePool" {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: owner.Name}}}
+}
+
+// nodeClaimFromObject normalizes typed and unstructured watch objects. CRD
+// watches may deliver unstructured objects even when a local wrapper exists.
 // mapNodeToPoolRequests maps a Node event to the BootcNodePool(s) that should
 // be reconciled. It enqueues two sets: (1) pools whose nodeSelector matches
 // the node's current labels, and (2) if a BootcNode exists for this node, the
@@ -213,8 +299,8 @@ func nodeSelectorMatchesNode(sel *metav1.LabelSelector, node *corev1.Node) (bool
 }
 
 // nodePredicates returns predicates that filter Node events to only those
-// relevant to pool membership: label changes, Ready condition changes, and
-// spec.unschedulable changes.
+// relevant to pool membership or reboot coordination: label changes, Ready
+// condition changes, spec.unschedulable changes, and managed taint changes.
 func nodePredicates() predicate.Predicate {
 	return predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool {
@@ -231,7 +317,9 @@ func nodePredicates() predicate.Predicate {
 			}
 			return nodeLabelsChanged(oldNode, newNode) ||
 				nodeReadyConditionChanged(oldNode, newNode) ||
-				nodeUnschedulableChanged(oldNode, newNode)
+				nodeUnschedulableChanged(oldNode, newNode) ||
+				karpenterRebootTaintChanged(oldNode, newNode) ||
+				osNotReadyTaintChanged(oldNode, newNode)
 		},
 		GenericFunc: func(e event.GenericEvent) bool {
 			return true
@@ -258,6 +346,24 @@ func nodeReadyStatus(node *corev1.Node) corev1.ConditionStatus {
 
 func nodeUnschedulableChanged(oldNode, newNode *corev1.Node) bool {
 	return oldNode.Spec.Unschedulable != newNode.Spec.Unschedulable
+}
+
+func karpenterRebootTaintChanged(oldNode, newNode *corev1.Node) bool {
+	return hasKarpenterRebootTaint(oldNode) != hasKarpenterRebootTaint(newNode)
+}
+
+func osNotReadyTaintChanged(oldNode, newNode *corev1.Node) bool {
+	return nodeHasOsNotReadyTaint(oldNode) != nodeHasOsNotReadyTaint(newNode)
+}
+
+func hasKarpenterRebootTaint(node *corev1.Node) bool {
+	for _, taint := range node.Spec.Taints {
+		if taint.Key == karpenter.RebootingTaintKey &&
+			taint.Effect == karpenter.RebootingTaintEffect {
+			return true
+		}
+	}
+	return false
 }
 
 // secretTypePredicate returns a predicate that accepts only Secrets of
@@ -396,10 +502,7 @@ func (r *BootcNodePoolReconciler) Reconcile(
 
 	// Carry a time-based requeue (e.g. reboot timeout) unless something
 	// sooner is already scheduled.
-	if rs.requeueAfter > 0 &&
-		(resolveResult.RequeueAfter == 0 || rs.requeueAfter < resolveResult.RequeueAfter) {
-		resolveResult.RequeueAfter = rs.requeueAfter
-	}
+	resolveResult.RequeueAfter = earlierRequeue(resolveResult.RequeueAfter, rs.requeueAfter)
 
 	return complete(resolveResult)
 }
@@ -809,6 +912,18 @@ func (r *BootcNodePoolReconciler) createBootcNode(
 
 	bn.Spec.RebootPolicy = effectiveRebootPolicy(pool)
 
+	// Record ownership of the os-not-ready startup taint if the node carries
+	// it. This must be done at join time so that nodes already running the
+	// target image (which never go through a reboot slot) still have their
+	// taint removed via the up-to-date path in driveRollout.
+	if nodeHasOsNotReadyTaint(node) {
+		metav1.SetMetaDataAnnotation(
+			&bn.ObjectMeta,
+			bootcv1alpha1.AnnotationOwnsOsNotReadyTaint,
+			"true",
+		)
+	}
+
 	// Set ownerReference so the BootcNode is cleaned up if the pool is
 	// deleted and so the Owns() watch routes BootcNode events to this pool.
 	if err := controllerutil.SetControllerReference(pool, bn, r.Scheme); err != nil {
@@ -825,6 +940,17 @@ func (r *BootcNodePoolReconciler) createBootcNode(
 	}
 
 	return bn, nil
+}
+
+// nodeHasOsNotReadyTaint reports whether the K8s Node carries the well-known
+// bootc.dev/os-not-ready:NoSchedule startup taint.
+func nodeHasOsNotReadyTaint(node *corev1.Node) bool {
+	for _, t := range node.Spec.Taints {
+		if t.Key == bootcv1alpha1.TaintKeyOsNotReady && t.Effect == corev1.TaintEffectNoSchedule {
+			return true
+		}
+	}
+	return false
 }
 
 // ensureManagedLabel adds or removes the bootc.dev/managed label on a Node.
@@ -879,18 +1005,28 @@ func (r *BootcNodePoolReconciler) removeBootcNode(
 	// Try to clean up the node (label + cordon state) before deleting
 	// the BootcNode. The node may have been deleted from the cluster.
 	var node corev1.Node
-	if err := r.Get(ctx, types.NamespacedName{Name: bn.Name}, &node); err == nil {
-		// No point in cleaning up the Node object if it's going away anyway...
-		if node.DeletionTimestamp == nil {
-			if err := r.restoreCordonState(ctx, bn, &node); err != nil {
-				return fmt.Errorf("restoring cordon state: %w", err)
-			}
-			if err := r.ensureManagedLabel(ctx, &node, false); err != nil {
-				return fmt.Errorf("removing managed label: %w", err)
-			}
-		}
-	} else if !apierrors.IsNotFound(err) {
+	err := r.Get(ctx, types.NamespacedName{Name: bn.Name}, &node)
+	if err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("fetching node %s: %w", bn.Name, err)
+	}
+	// No point in cleaning up the Node object if it's going away anyway...
+	if err == nil && node.DeletionTimestamp == nil {
+		// A node leaving the pool has not necessarily been verified against
+		// the pool image. Preserve the startup taint in that case; removing
+		// it here could expose an unverified OS image to workloads. The
+		// taint can be removed by the controller after verification or by an
+		// administrator when retiring the pool.
+		//
+		// Strip the taint ownership so restoreNodeState does not remove the
+		// os-not-ready taint; the node has not been verified against the pool image.
+		bnWithoutTaintOwnership := bn.DeepCopy()
+		delete(bnWithoutTaintOwnership.Annotations, bootcv1alpha1.AnnotationOwnsOsNotReadyTaint)
+		if err := r.restoreNodeState(ctx, bnWithoutTaintOwnership, &node, nil); err != nil {
+			return fmt.Errorf("restoring node state: %w", err)
+		}
+		if err := r.ensureManagedLabel(ctx, &node, false); err != nil {
+			return fmt.Errorf("removing managed label: %w", err)
+		}
 	}
 
 	if err := r.Delete(ctx, bn); err != nil && !apierrors.IsNotFound(err) {
@@ -900,23 +1036,176 @@ func (r *BootcNodePoolReconciler) removeBootcNode(
 	return nil
 }
 
-// restoreCordonState uncordons the Node if the BootcNode's was-cordoned
-// annotation indicates the operator cordoned it. If the annotation is absent
-// or "true" (node was already cordoned before us), this is a no-op.
-func (r *BootcNodePoolReconciler) restoreCordonState(
+// restoreNodeState removes any Karpenter annotations the controller owns and
+// restores the node's cordon state, combining both into a single patch when
+// needed. Karpenter annotation ownership is tracked via BootcNode annotations
+// rather than inspecting the Node directly, so an external actor removing them
+// doesn't cause spurious patches. The cordon is only removed if the was-cordoned
+// annotation records that the operator was the one who cordoned it.
+func (r *BootcNodePoolReconciler) restoreNodeState(
+	ctx context.Context,
+	bn *bootcv1alpha1.BootcNode,
+	node *corev1.Node,
+	prefetchedClaim *karpenter.NodeClaim,
+) error {
+	log := logf.FromContext(ctx)
+	modified := node.DeepCopy()
+	changed := false
+
+	if removeOwnedAnnotation(
+		bn,
+		modified,
+		bootcv1alpha1.AnnotationOwnsKarpenterDoNotRepair,
+		karpenter.DoNotRepairAnnotationKey,
+	) {
+		log.Info("Removing karpenter.sh/do-not-repair annotation from node", "node", node.Name)
+		changed = true
+	}
+
+	if removeOwnedAnnotation(
+		bn,
+		modified,
+		bootcv1alpha1.AnnotationOwnsKarpenterDoNotDisrupt,
+		karpenter.DoNotDisruptAnnotationKey,
+	) {
+		log.Info("Removing karpenter.sh/do-not-disrupt annotation from node", "node", node.Name)
+		changed = true
+	}
+
+	if wasCordoned, ok := bn.Annotations[bootcv1alpha1.AnnotationWasCordoned]; ok &&
+		wasCordoned == "false" {
+		log.Info("Uncordoning node", "node", node.Name)
+		modified.Spec.Unschedulable = false
+		changed = true
+	}
+
+	if metav1.HasAnnotation(bn.ObjectMeta, bootcv1alpha1.AnnotationOwnsOsNotReadyTaint) {
+		if removedTaint := removeOsNotReadyTaint(modified); removedTaint {
+			log.Info("Removing bootc.dev/os-not-ready taint from node", "node", node.Name)
+			changed = true
+		}
+	}
+
+	if changed {
+		if err := r.Patch(ctx, modified, client.StrategicMergeFrom(node)); err != nil {
+			return fmt.Errorf("restoring node state: %w", err)
+		}
+		*node = *modified
+	}
+
+	// Only fetch the NodeClaim when we own at least one of its annotations,
+	// to avoid a spurious API call for non-Karpenter nodes.
+	ownsNodeClaimRepair := metav1.HasAnnotation(
+		bn.ObjectMeta,
+		bootcv1alpha1.AnnotationOwnsKarpenterNodeClaimDoNotRepair,
+	)
+	ownsNodeClaimDisrupt := metav1.HasAnnotation(
+		bn.ObjectMeta,
+		bootcv1alpha1.AnnotationOwnsKarpenterNodeClaimDoNotDisrupt,
+	)
+
+	// If we don't own either of these annotations, then there is nothing to do.
+	if !ownsNodeClaimRepair && !ownsNodeClaimDisrupt {
+		return nil
+	}
+
+	var claim *karpenter.NodeClaim
+	if prefetchedClaim != nil {
+		claim = prefetchedClaim
+	} else {
+		var err error
+		claim, _, err = r.getKarpenterNodeClaim(ctx, node)
+		if err != nil {
+			return fmt.Errorf("getting Karpenter NodeClaim: %w", err)
+		}
+	}
+
+	// If the NodeClaim is absent (deleted or CRD missing), skip the patch.
+	// The node may have been forcefully replaced by Karpenter; there is nothing
+	// to clean up on a NodeClaim that no longer exists.
+	if claim == nil {
+		return nil
+	}
+
+	claimModified := claim.DeepCopy()
+	claimChanged := ownsNodeClaimRepair && removeOwnedAnnotation(
+		bn,
+		claimModified,
+		bootcv1alpha1.AnnotationOwnsKarpenterNodeClaimDoNotRepair,
+		karpenter.DoNotRepairAnnotationKey,
+	)
+
+	if ownsNodeClaimDisrupt && removeOwnedAnnotation(
+		bn,
+		claimModified,
+		bootcv1alpha1.AnnotationOwnsKarpenterNodeClaimDoNotDisrupt,
+		karpenter.DoNotDisruptAnnotationKey,
+	) {
+		claimChanged = true
+	}
+
+	if claimChanged {
+		if err := r.Patch(
+			ctx,
+			&claimModified.Unstructured,
+			client.MergeFrom(&claim.Unstructured),
+		); err != nil {
+			return fmt.Errorf("restoring Karpenter NodeClaim annotations: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// removeOsNotReadyTaint removes the bootc.dev/os-not-ready:NoSchedule taint
+// from modified in place and returns true if the taint was present and removed.
+func removeOsNotReadyTaint(node *corev1.Node) bool {
+	taints := node.Spec.Taints
+	for i, t := range taints {
+		if t.Key == bootcv1alpha1.TaintKeyOsNotReady && t.Effect == corev1.TaintEffectNoSchedule {
+			node.Spec.Taints = append(taints[:i], taints[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+// removeOsNotReadyTaintAndAnnotation removes the bootc.dev/os-not-ready taint
+// from the K8s Node and clears the ownership annotation from the BootcNode.
+// It is called for nodes that are UpToDate and Ready but never held a reboot
+// slot (the taint removal was not handled by restoreNodeState in that case).
+func (r *BootcNodePoolReconciler) removeOsNotReadyTaintAndAnnotation(
 	ctx context.Context,
 	bn *bootcv1alpha1.BootcNode,
 	node *corev1.Node,
 ) error {
-	if bn.Annotations[bootcv1alpha1.AnnotationWasCordoned] != "false" {
-		return nil
+	log := logf.FromContext(ctx)
+
+	modifiedNode := node.DeepCopy()
+	if removedTaint := removeOsNotReadyTaint(modifiedNode); removedTaint {
+		log.Info(
+			"Removing bootc.dev/os-not-ready taint from already-up-to-date node",
+			"node",
+			node.Name,
+		)
+		if err := r.Patch(ctx, modifiedNode, client.StrategicMergeFrom(node)); err != nil {
+			return fmt.Errorf("removing os-not-ready taint from node: %w", err)
+		}
+		*node = *modifiedNode
+	} else {
+		log.V(1).Info(
+			"os-not-ready taint already absent; clearing ownership annotation",
+			"node", node.Name,
+		)
 	}
-	modified := node.DeepCopy()
-	modified.Spec.Unschedulable = false
-	if err := r.Patch(ctx, modified, client.StrategicMergeFrom(node)); err != nil {
-		return fmt.Errorf("uncordoning node: %w", err)
+
+	modifiedBN := bn.DeepCopy()
+	delete(modifiedBN.Annotations, bootcv1alpha1.AnnotationOwnsOsNotReadyTaint)
+	if err := r.Patch(ctx, modifiedBN, client.MergeFrom(bn)); err != nil {
+		return fmt.Errorf("clearing os-not-ready taint ownership annotation: %w", err)
 	}
-	*node = *modified
+	*bn = *modifiedBN
+
 	return nil
 }
 
