@@ -194,6 +194,19 @@ func TestMembershipSyncsDesiredImage(t *testing.T) {
 		return bn.Spec.DesiredImage, err
 	}).Should(Equal(testImageDigestRefA))
 
+	// Simulate a label update race that left the existing BootcNode behind.
+	// Membership reconciliation must restore the managed label so the daemon
+	// can start on nodes that use the Karpenter startup taint integration.
+	var unlabeled corev1.Node
+	g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(node), &unlabeled)).To(Succeed())
+	delete(unlabeled.Labels, bootcv1alpha1.LabelManaged)
+	g.Expect(k8sClient.Update(ctx, &unlabeled)).To(Succeed())
+	g.Eventually(func() (map[string]string, error) {
+		var current corev1.Node
+		err := k8sClient.Get(ctx, client.ObjectKeyFromObject(node), &current)
+		return current.Labels, err
+	}).Should(HaveKey(bootcv1alpha1.LabelManaged))
+
 	// Update pool image to B.
 	var freshPool bootcv1alpha1.BootcNodePool
 	g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(pool), &freshPool)).To(Succeed())
