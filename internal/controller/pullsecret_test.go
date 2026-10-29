@@ -156,3 +156,32 @@ func TestPullSecretRemovalClearsRef(t *testing.T) {
 		return bn.Spec.PullSecretRef, err
 	}).Should(BeNil())
 }
+
+func TestParsePullSecretNamespaces(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		opNS    string
+		want    []string
+		wantErr bool
+	}{
+		{"empty", "", "op", []string{"op"}, false},
+		{"only separators", " , ,", "op", []string{"op"}, false},
+		{"unknown operator namespace", "", "", nil, false},
+		{"operator namespace prepended", "team-a", "op", []string{"op", "team-a"}, false},
+		{"trims and dedupes", " team-a ,,op,team-a", "op", []string{"op", "team-a"}, false},
+		{"invalid name", "Team-A", "op", nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewWithT(t)
+			got, err := ParsePullSecretNamespaces(tt.value, tt.opNS)
+			if tt.wantErr {
+				g.Expect(err).To(MatchError(ContainSubstring(`invalid namespace "Team-A"`)))
+				return
+			}
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(got).To(Equal(tt.want))
+		})
+	}
+}
