@@ -42,6 +42,9 @@ jobs:
       - name: Unit tests
         run: make unit
 
+      - name: Helm template tests
+        run: make helm-test
+
       - name: Vet
         run: make vet
 
