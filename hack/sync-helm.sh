@@ -89,8 +89,9 @@ gen_workload() {
 gen_workload "$CONFIG_DIR/manager/manager.yaml" Deployment controller \
     "$CHART_DIR/templates/controller-deployment.yaml"
 
-# Inject controller.extraArgs into the args list
+# Inject --pull-secret-namespaces and controller.extraArgs into the args list
 sed -i '/^          image: {{ include "bootc-operator\.image" \. }}/i\
+            - {{ printf "--pull-secret-namespaces=%s" (include "bootc-operator.pullSecretNamespaces" .) | quote }}\
             {{- range .Values.controller.extraArgs }}\
             - {{ . | quote }}\
             {{- end }}' "$CHART_DIR/templates/controller-deployment.yaml"
