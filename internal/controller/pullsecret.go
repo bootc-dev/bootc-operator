@@ -7,7 +7,10 @@ import (
 	"slices"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // ParsePullSecretNamespaces parses a comma-separated namespace list and
@@ -28,4 +31,17 @@ func ParsePullSecretNamespaces(value, operatorNamespace string) ([]string, error
 		namespaces = append(namespaces, ns)
 	}
 	return namespaces, nil
+}
+
+// SecretCacheByObject returns manager cache settings that restrict the
+// Secret informer to the given namespaces, so the controller never caches
+// (or needs RBAC for) Secrets elsewhere in the cluster.
+func SecretCacheByObject(namespaces []string) map[client.Object]cache.ByObject {
+	config := make(map[string]cache.Config, len(namespaces))
+	for _, ns := range namespaces {
+		config[ns] = cache.Config{}
+	}
+	return map[client.Object]cache.ByObject{
+		&corev1.Secret{}: {Namespaces: config},
+	}
 }

@@ -68,7 +68,8 @@ type BootcNodePoolReconciler struct {
 	TagResolutionInterval time.Duration
 
 	// PullSecretNamespaces is the allowlist of namespaces pools may
-	// reference pull secrets from.
+	// reference pull secrets from. The manager's Secret cache must be
+	// restricted to the same namespaces.
 	PullSecretNamespaces []string
 
 	// drainCh receives events from drain goroutines to re-enqueue the
