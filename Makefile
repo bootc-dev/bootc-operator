@@ -64,6 +64,10 @@ manifests: controller-gen ## Generate CRD and RBAC manifests.
 helm: manifests yq ## Regenerate Helm chart from Kustomize manifests.
 	YQ="$(YQ)" ./hack/sync-helm.sh
 
+.PHONY: helm-test
+helm-test: helm helm-tool ## Render the Helm chart and check the output.
+	HELM="$(HELM)" YQ="$(YQ)" ./hack/test-helm.sh
+
 .PHONY: generate
 generate: controller-gen ## Generate DeepCopy method implementations.
 	"$(CONTROLLER_GEN)" object:headerFile="hack/boilerplate.go.txt",year=$(YEAR) paths="./..."
@@ -305,12 +309,14 @@ GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 GOLINES_BIN = $(LOCALBIN)/golines
 GOVULNCHECK = $(LOCALBIN)/govulncheck
 YQ ?= $(LOCALBIN)/yq
+HELM ?= $(LOCALBIN)/helm
 
 KUSTOMIZE_VERSION ?= v5.8.1
 CONTROLLER_TOOLS_VERSION ?= v0.20.1
 GOLANGCI_LINT_VERSION ?= v2.11.4
 GOVULNCHECK_VERSION ?= v1.9.0
 YQ_VERSION ?= v4.53.2
+HELM_VERSION ?= v3.19.0
 
 # ENVTEST_VERSION is the version of controller-runtime release branch to fetch the envtest setup script (i.e. release-0.20)
 ENVTEST_VERSION ?= $(shell v='$(call gomodver,sigs.k8s.io/controller-runtime)'; \
@@ -363,6 +369,11 @@ $(GOLINES_BIN): $(LOCALBIN)
 yq: $(YQ) ## Download yq locally if necessary.
 $(YQ): $(LOCALBIN)
 	$(call go-install-tool,$(YQ),github.com/mikefarah/yq/v4,$(YQ_VERSION))
+
+.PHONY: helm-tool
+helm-tool: $(HELM) ## Download helm locally if necessary.
+$(HELM): $(LOCALBIN)
+	$(call go-install-tool,$(HELM),helm.sh/helm/v3/cmd/helm,$(HELM_VERSION))
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary
