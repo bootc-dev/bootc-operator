@@ -17,6 +17,8 @@ BINK_NODE_DISK_IMAGE ?= ghcr.io/bootc-dev/bink/node:v$(DEFAULT_KUBE_MINOR)-fedor
 BINK_LOCAL_REGISTRY_NODE_IMAGE ?= registry.cluster.local:5000/node
 E2E_REGISTRY_USER ?= e2e-user
 E2E_REGISTRY_PASSWORD ?= e2e-password
+# Extra namespace deploy-bink allows pull secrets from (TestPullSecretNamespaces).
+E2E_PULL_SECRET_NAMESPACE ?= bootc-e2e-pull-secrets
 # Released operator for upgrade testing (TestOperatorUpgrade): the published
 # chart and the release tag, whose version without the leading "v" is the
 # chart version. The released image is the one the chart deploys. Override
@@ -125,6 +127,7 @@ e2e: ## Run e2e tests (requires: make deploy-bink). V=1 for verbose. RUN=<regex>
 		E2E_NODE_IMAGE_UPDATE_DIGEST=$$(skopeo inspect --tls-verify=false docker://localhost:5000/node:update | jq -r '.Digest') \
 		E2E_NODE_IMAGE_UPDATE2_DIGEST=$$(skopeo inspect --tls-verify=false docker://localhost:5000/node:update2 | jq -r '.Digest') \
 		E2E_REGISTRY_USER=$(E2E_REGISTRY_USER) E2E_REGISTRY_PASSWORD=$(E2E_REGISTRY_PASSWORD) \
+		E2E_PULL_SECRET_NAMESPACE=$(E2E_PULL_SECRET_NAMESPACE) \
 		$(if $(RELEASED_OPERATOR_TAG),E2E_OPERATOR_RELEASE_TAG=$(RELEASED_OPERATOR_TAG)) \
 		$(if $(RELEASED_OPERATOR_TAG),E2E_OPERATOR_RELEASED_IMG=$(IMG_BINK_RELEASED)) \
 		$(if $(RELEASED_OPERATOR_CHART),E2E_OPERATOR_RELEASED_CHART=$(RELEASED_OPERATOR_CHART)) \
@@ -269,6 +272,8 @@ start-bink: seed-node-image ## Start a bink cluster (idempotent).
 deploy-bink: start-bink build-update-image $(if $(RELEASED_OPERATOR_TAG),push-released-operator-image) helm ## Deploy to a bink cluster (requires: buildimg).
 	podman push --tls-verify=false $(IMG) localhost:5000/bootc-operator-e2e:latest
 	helm dependency build ./chart/bootc-operator
+	kubectl --kubeconfig $(KUBECONFIG_BINK) create namespace $(E2E_PULL_SECRET_NAMESPACE) \
+		--dry-run=client -o yaml | kubectl --kubeconfig $(KUBECONFIG_BINK) apply -f -
 	img="$(IMG_BINK)" && \
 	helm upgrade --install bootc-operator ./chart/bootc-operator \
 		--kubeconfig $(abspath $(KUBECONFIG_BINK)) \
@@ -276,7 +281,13 @@ deploy-bink: start-bink build-update-image $(if $(RELEASED_OPERATOR_TAG),push-re
 		--set-string image.repository="$${img%:*}" \
 		--set-string image.tag="$${img##*:}" \
 		--set-string image.pullPolicy=Always \
+<<<<<<< HEAD
 		--set-json 'controller.extraArgs=["--allow-insecure-registry","--tag-resolution-interval=10s"]'
+=======
+		--set-json 'pullSecretNamespaces=["$(E2E_PULL_SECRET_NAMESPACE)"]' \
+		--set-json 'controller.extraArgs=["--allow-insecure-registry","--tag-resolution-interval=10s"]' \
+		--set-string 'daemon.extraArgs[0]=--bootc-poll-interval=$(E2E_BOOTC_POLL_INTERVAL)'
+>>>>>>> 10ccc8e (e2e: Test pull secrets from other namespaces)
 	kubectl --kubeconfig $(KUBECONFIG_BINK) -n bootc-operator rollout restart deployment/bootc-operator-controller
 	kubectl --kubeconfig $(KUBECONFIG_BINK) -n bootc-operator rollout status deployment/bootc-operator-controller --timeout=3m
 
