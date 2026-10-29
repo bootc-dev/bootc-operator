@@ -10,5 +10,9 @@ image:
 
 imagePullSecrets: []
 
+# Extra namespaces that BootcNodePool pullSecretRefs may point to. The release
+# namespace is always allowed. The namespaces must already exist.
+pullSecretNamespaces: []
+
 controller:
   extraArgs: []

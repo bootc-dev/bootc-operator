@@ -309,7 +309,8 @@ func controllerExtraArgs(t *testing.T, containers []corev1.Container) []string {
 		for _, arg := range c.Args {
 			switch {
 			case arg == "--leader-elect",
-				strings.HasPrefix(arg, "--health-probe-bind-address="):
+				strings.HasPrefix(arg, "--health-probe-bind-address="),
+				strings.HasPrefix(arg, "--pull-secret-namespaces="):
 			default:
 				extra = append(extra, arg)
 			}
