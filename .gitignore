@@ -9,6 +9,8 @@ chart/bootc-operator/charts/
 chart/bootc-operator/Chart.lock
 chart/bootc-operator-crds/templates/
 chart/bootc-operator/templates/controller-clusterrole.yaml
+chart/bootc-operator/templates/controller-role.yaml
+chart/bootc-operator/templates/controller-rolebinding.yaml
 chart/bootc-operator/templates/daemon-clusterrole.yaml
 chart/bootc-operator/templates/leader-election-role.yaml
 chart/bootc-operator/templates/controller-deployment.yaml
