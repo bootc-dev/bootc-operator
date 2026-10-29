@@ -12,3 +12,14 @@ imagePullSecrets: []
 
 controller:
   extraArgs: []
+
+metrics:
+  enabled: true
+  service:
+    port: 8443
+  serviceMonitor:
+    # When enabled, bind the metrics-reader ClusterRole to your
+    # Prometheus ServiceAccount so it can access /metrics.
+    enabled: false
+    interval: 30s
+    namespace: ""

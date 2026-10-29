@@ -1,0 +1,18 @@
+{{- if .Values.metrics.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "bootc-operator.fullname" . }}-metrics
+  labels:
+    {{- include "bootc-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  ports:
+    - name: https
+      port: {{ .Values.metrics.service.port }}
+      targetPort: metrics
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: {{ include "bootc-operator.name" . }}
+    app.kubernetes.io/component: controller
+{{- end }}

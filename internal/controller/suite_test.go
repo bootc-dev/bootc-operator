@@ -27,6 +27,7 @@ var (
 	testEnv        *envtest.Environment
 	k8sClient      client.Client
 	testReconciler *BootcNodePoolReconciler
+	testCache      objectLister
 )
 
 // TODO: TestMain starts envtest and the manager unconditionally, which means
@@ -63,7 +64,7 @@ func TestMain(m *testing.M) {
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme: scheme.Scheme,
 		Metrics: metricsserver.Options{
-			BindAddress: "0", // disable metrics server in tests
+			BindAddress: "0",
 		},
 	})
 	if err != nil {
@@ -82,6 +83,8 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "Failed to create event namespace: %v\n", err)
 		os.Exit(1)
 	}
+
+	testCache = mgr.GetCache()
 
 	testReconciler = &BootcNodePoolReconciler{
 		Client:         mgr.GetClient(),
