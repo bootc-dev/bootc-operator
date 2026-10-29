@@ -67,6 +67,7 @@ func TestOperatorUpgrade(t *testing.T) {
 	g.Expect(env.Client.Get(ctx, operatorDeployKey(), &origDeploy)).To(Succeed())
 	currentImg := containerImage(t, origDeploy.Spec.Template.Spec.Containers, "manager")
 	extraArgs := controllerExtraArgs(t, origDeploy.Spec.Template.Spec.Containers)
+	pullSecretNamespaces := controllerPullSecretNamespaces(t, g, ctx, env.Client)
 	t.Logf("Current operator image: %s", currentImg)
 	t.Logf("Released operator tag: %s, image: %s, chart: %s",
 		releaseTag, releasedImg, releasedChart)
@@ -81,7 +82,7 @@ func TestOperatorUpgrade(t *testing.T) {
 	// install, so the tests that run after this one have an operator.
 	t.Cleanup(func() {
 		t.Logf("Restoring operator to current version...")
-		helmUpgradeOperator(t, chartPath, currentImg, extraArgs)
+		helmUpgradeOperator(t, chartPath, currentImg, extraArgs, pullSecretNamespaces)
 		waitForOperatorReady(t, g, ctx, env.Client)
 		t.Logf("Operator restored")
 	})
@@ -103,7 +104,7 @@ func TestOperatorUpgrade(t *testing.T) {
 	t.Logf("Node %q is Idle with released operator", nodeName)
 
 	// Phase 3: Upgrade via helm upgrade to the current version.
-	helmUpgradeOperator(t, chartPath, currentImg, extraArgs)
+	helmUpgradeOperator(t, chartPath, currentImg, extraArgs, pullSecretNamespaces)
 	waitForOperatorReady(t, g, ctx, env.Client)
 
 	t.Logf("Upgraded operator to current version via Helm")
@@ -211,8 +212,13 @@ func helmInstallOperator(
 }
 
 // helmUpgradeOperator upgrades the operator to the local chart via helm
-// upgrade.
-func helmUpgradeOperator(t *testing.T, chartPath, img string, extraArgs []string) {
+// upgrade. The release namespace is always allowed, so including it in
+// pullSecretNamespaces is harmless.
+func helmUpgradeOperator(
+	t *testing.T,
+	chartPath, img string,
+	extraArgs, pullSecretNamespaces []string,
+) {
 	t.Helper()
 	helmRun(t, "dependency", "build", chartPath)
 	args := []string{
@@ -220,6 +226,13 @@ func helmUpgradeOperator(t *testing.T, chartPath, img string, extraArgs []string
 		"--namespace", testutil.OperatorNamespaceName,
 	}
 	args = append(args, helmImageArgs(t, img, extraArgs)...)
+	if len(pullSecretNamespaces) > 0 {
+		j, err := json.Marshal(pullSecretNamespaces)
+		if err != nil {
+			t.Fatalf("marshaling pullSecretNamespaces: %v", err)
+		}
+		args = append(args, "--set-json", "pullSecretNamespaces="+string(j))
+	}
 	helmRun(t, args...)
 }
 
@@ -318,6 +331,31 @@ func controllerExtraArgs(t *testing.T, containers []corev1.Container) []string {
 		return extra
 	}
 	t.Fatalf("container %q not found in pod spec", "manager")
+	return nil
+}
+
+// controllerPullSecretNamespaces returns the namespaces the running
+// controller allows pull secrets from, as given by its
+// --pull-secret-namespaces flag.
+func controllerPullSecretNamespaces(
+	t *testing.T,
+	g Gomega,
+	ctx context.Context,
+	c client.Client,
+) []string {
+	t.Helper()
+	var d appsv1.Deployment
+	g.Expect(c.Get(ctx, operatorDeployKey(), &d)).To(Succeed())
+	for _, cont := range d.Spec.Template.Spec.Containers {
+		if cont.Name != "manager" {
+			continue
+		}
+		for _, arg := range cont.Args {
+			if v, ok := strings.CutPrefix(arg, "--pull-secret-namespaces="); ok {
+				return strings.Split(v, ",")
+			}
+		}
+	}
 	return nil
 }
 
