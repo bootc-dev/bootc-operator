@@ -531,10 +531,10 @@ func TestNodeEvent(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			g := NewWithT(t)
-			node := testutil.NewNode(
+			node := testutil.NewBootcNode(
 				"node-events",
 				testImageDigestRefB,
-				testutil.WithNodeCondition(bootcv1alpha1.NodeIdle, tt.status, tt.reason),
+				testutil.WithBootcNodeCondition(bootcv1alpha1.NodeIdle, tt.status, tt.reason),
 			)
 
 			observation, reason, note := nodeEvent(node, tt.previous)
@@ -563,10 +563,10 @@ func TestRecordNodeEventBeforeMarkerPatch(t *testing.T) {
 		testImageDigestRefB,
 		testutil.WithWorkerSelector(),
 	)
-	node := testutil.NewNode(
+	node := testutil.NewBootcNode(
 		"node-patch-events-worker",
 		testImageDigestRefB,
-		testutil.WithNodeCondition(
+		testutil.WithBootcNodeCondition(
 			bootcv1alpha1.NodeIdle,
 			metav1.ConditionFalse,
 			bootcv1alpha1.NodeReasonStaging,
@@ -595,7 +595,7 @@ func TestRecordDrainFailedEvent(t *testing.T) {
 	recorder := &capturingEventRecorder{}
 	reconciler := &BootcNodePoolReconciler{Recorder: recorder}
 	pool := testutil.NewPool("drain-events", testImageDigestRefB, testutil.WithWorkerSelector())
-	node := testutil.NewNode("drain-events-worker", testImageDigestRefB)
+	node := testutil.NewBootcNode("drain-events-worker", testImageDigestRefB)
 
 	reconciler.recordDrainFailedEvent(pool, node, errors.New("timed out waiting for eviction"))
 
@@ -681,8 +681,8 @@ func TestRecordDrainStalls(t *testing.T) {
 	g := NewWithT(t)
 	recorder := &capturingEventRecorder{}
 	pool := testutil.NewPool("drain-stall", testImageDigestRefB, testutil.WithWorkerSelector())
-	stalledNode := testutil.NewNode("drain-stall-worker", testImageDigestRefB)
-	freshNode := testutil.NewNode("drain-fresh-worker", testImageDigestRefB)
+	stalledNode := testutil.NewBootcNode("drain-stall-worker", testImageDigestRefB)
+	freshNode := testutil.NewBootcNode("drain-fresh-worker", testImageDigestRefB)
 	stalledStatus := &drainStatus{startTime: time.Now().Add(-drainStallThreshold)}
 	freshStatus := &drainStatus{startTime: time.Now()}
 	reconciler := &BootcNodePoolReconciler{
