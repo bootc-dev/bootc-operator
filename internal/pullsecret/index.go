@@ -35,7 +35,8 @@ func PoolRefIndexFunc(obj client.Object) []string {
 
 // IndexPoolPullSecretRef registers PoolRefIndex with the manager's cache. A
 // manager accepts the registration once, so call it once per manager, before
-// starting it.
+// starting it, not from the controllers' SetupWithManager. The pool reconciler
+// and the PullSecretAggregator both rely on it.
 func IndexPoolPullSecretRef(ctx context.Context, indexer client.FieldIndexer) error {
 	err := indexer.IndexField(ctx, &bootcv1alpha1.BootcNodePool{}, PoolRefIndex, PoolRefIndexFunc)
 	if err != nil {
