@@ -39,6 +39,7 @@ import (
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
 	"github.com/bootc-dev/bootc-operator/internal/karpenter"
+	"github.com/bootc-dev/bootc-operator/internal/pullsecret"
 )
 
 // drainStatus tracks an in-progress drain goroutine for a single node.
@@ -827,7 +828,8 @@ func (r *BootcNodePoolReconciler) listAllBootcNodes(
 
 // fetchPullSecretData fetches the .dockerconfigjson data from the pull
 // secret referenced by the pool. Returns nil if no pull secret is set, and
-// an error if the secret's namespace is not in PullSecretNamespaces.
+// an error if the secret's namespace is not in PullSecretNamespaces or the
+// reference cannot be stored in the aggregated pull secret.
 func (r *BootcNodePoolReconciler) fetchPullSecretData(
 	ctx context.Context,
 	pool *bootcv1alpha1.BootcNodePool,
@@ -842,6 +844,13 @@ func (r *BootcNodePoolReconciler) fetchPullSecretData(
 			pool.Spec.PullSecretRef.Namespace,
 			strings.Join(r.PullSecretNamespaces, ", "),
 		)
+	}
+
+	if _, err := pullsecret.Key(
+		pool.Spec.PullSecretRef.Namespace,
+		pool.Spec.PullSecretRef.Name,
+	); err != nil {
+		return nil, err
 	}
 
 	key := types.NamespacedName{

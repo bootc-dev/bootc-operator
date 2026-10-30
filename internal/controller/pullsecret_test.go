@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -249,6 +250,39 @@ func TestPullSecretNamespaceDeniedAndRecovery(t *testing.T) {
 	}).Should(Equal(&bootcv1alpha1.PullSecretRef{
 		Name: "ps-denied-secret", Namespace: testutil.OperatorNamespaceName,
 	}))
+}
+
+func TestPullSecretNameTooLong(t *testing.T) {
+	g := NewWithT(t)
+	g.SetDefaultEventuallyTimeout(pollTimeout)
+	g.SetDefaultEventuallyPollingInterval(pollInterval)
+	ctx := context.Background()
+
+	// A valid Secret name whose aggregated key "<namespace>_<name>" exceeds
+	// the 253-character Secret key limit.
+	secretName := strings.Repeat("a", 240)
+	secret := newDockerConfigSecret(secretName, testutil.OperatorNamespaceName,
+		[]byte(`{"auths":{"long":{}}}`))
+	g.Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+	t.Cleanup(func() { _ = k8sClient.Delete(ctx, secret) })
+
+	pool := testutil.NewPool("ps-too-long-pool", testImageDigestRefA,
+		testutil.WithWorkerSelector(),
+		testutil.WithPullSecret(secretName, testutil.OperatorNamespaceName),
+	)
+	g.Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+	t.Cleanup(func() { _ = k8sClient.Delete(ctx, pool) })
+
+	g.Eventually(func() ([]metav1.Condition, error) {
+		var p bootcv1alpha1.BootcNodePool
+		err := k8sClient.Get(ctx, client.ObjectKeyFromObject(pool), &p)
+		return p.Status.Conditions, err
+	}).Should(ContainElement(And(
+		HaveField("Type", bootcv1alpha1.PoolDegraded),
+		HaveField("Status", metav1.ConditionTrue),
+		HaveField("Reason", bootcv1alpha1.PoolSecretError),
+		HaveField("Message", ContainSubstring("key name too long")),
+	)))
 }
 
 func TestParsePullSecretNamespaces(t *testing.T) {
