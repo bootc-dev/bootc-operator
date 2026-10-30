@@ -68,7 +68,6 @@ type BootcNodeReconciler struct {
 	PullSecretDir string
 	Executor      bootc.Executor
 	StatusWatcher *StatusWatcher
-	APIReader     client.Reader
 
 	inflight  stageOp
 	stageDone chan event.GenericEvent
