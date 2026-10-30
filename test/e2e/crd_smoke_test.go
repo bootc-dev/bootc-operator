@@ -38,7 +38,7 @@ func TestCRDSmoke(t *testing.T) {
 	t.Run("BootcNode", func(t *testing.T) {
 		g := NewWithT(t)
 
-		node := testutil.NewNode("smoke-node", testutil.ImageDigestRefA)
+		node := testutil.NewBootcNode("smoke-node", testutil.ImageDigestRefA)
 		g.Expect(env.Client.Create(ctx, node)).To(Succeed())
 		t.Cleanup(func() {
 			_ = env.Client.Delete(ctx, node)
