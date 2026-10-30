@@ -26,6 +26,11 @@ var (
 	testEnv        *envtest.Environment
 	k8sClient      client.Client
 	testReconciler *BootcNodeReconciler
+
+	// testHostRoot and testPullSecretDir stand in for the host filesystem
+	// and the pull secret mount, so tests never touch the real host.
+	testHostRoot      string
+	testPullSecretDir string
 )
 
 func TestMain(m *testing.M) {
@@ -64,12 +69,22 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
+	tmpDir, err := os.MkdirTemp("", "bootc-daemon-test-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to create temp dir: %v\n", err)
+		os.Exit(1)
+	}
+	testHostRoot = filepath.Join(tmpDir, "host")
+	testPullSecretDir = filepath.Join(tmpDir, "pull-secrets")
+
 	fake := &fakeExecutor{}
 	testReconciler = &BootcNodeReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		NodeName: testNodeName,
-		Executor: fake,
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		NodeName:      testNodeName,
+		HostRoot:      testHostRoot,
+		PullSecretDir: testPullSecretDir,
+		Executor:      fake,
 		StatusWatcher: &StatusWatcher{
 			Events:   make(chan event.GenericEvent, 1),
 			NodeName: testNodeName,
@@ -104,13 +119,27 @@ func TestMain(m *testing.M) {
 	if err := testEnv.Stop(); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to stop envtest: %v\n", err)
 	}
+	if err := os.RemoveAll(tmpDir); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to remove temp dir: %v\n", err)
+	}
 
 	os.Exit(code)
 }
 
 // newTestEnv creates a fresh fakeExecutor and StatusWatcher for a test,
-// wiring them into the shared reconciler. Each test gets its own cache.
-func newTestEnv() *fakeExecutor {
+// wiring them into the shared reconciler. Each test gets its own cache and
+// an empty host root and pull secret mount.
+func newTestEnv(t *testing.T) *fakeExecutor {
+	t.Helper()
+	for _, dir := range []string{testHostRoot, testPullSecretDir} {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	fake := &fakeExecutor{}
 	testReconciler.Executor = fake
 	testReconciler.rebootIssued = false
