@@ -55,8 +55,12 @@ for node in "${nodes[@]}"; do
         -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
 
     if [[ -n "${daemon_pod}" ]]; then
-        run "journal-${node}.txt" kubectl exec -n bootc-operator "${daemon_pod}" -- \
-            journalctl --no-pager
+        # The daemon image has no journalctl; enter the host mount namespace
+        # to read the host journal (all boots).
+        host_exec=(kubectl exec -n bootc-operator "${daemon_pod}" -- \
+            nsenter -m/proc/1/ns/mnt --)
+        run "journal-${node}.txt"            "${host_exec[@]}" journalctl --no-pager
+        run "journal-list-boots-${node}.txt" "${host_exec[@]}" journalctl --no-pager --list-boots
     fi
 done
 
