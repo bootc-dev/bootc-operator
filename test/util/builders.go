@@ -34,6 +34,21 @@ const (
 	OperatorNamespaceName = "bootc-operator"
 )
 
+// NewDockerConfigSecret creates a kubernetes.io/dockerconfigjson Secret
+// holding the given config.
+func NewDockerConfigSecret(name, namespace string, dockerCfg []byte) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Type: corev1.SecretTypeDockerConfigJson,
+		Data: map[string][]byte{
+			corev1.DockerConfigJsonKey: dockerCfg,
+		},
+	}
+}
+
 // PoolOption configures a BootcNodePool.
 type PoolOption func(*bootcv1alpha1.BootcNodePool)
 
