@@ -32,7 +32,7 @@ func TestReconcilePopulatesStatus(t *testing.T) {
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
 	ctx := context.Background()
 
-	fake := newTestEnv()
+	fake := newTestEnv(t)
 
 	v1 := "v1"
 	v2 := "v2"
@@ -114,7 +114,7 @@ func TestReconcileBootcVersionErrorNotDegraded(t *testing.T) {
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
 	ctx := context.Background()
 
-	fake := newTestEnv()
+	fake := newTestEnv(t)
 	fake.status = newBootcStatus(testutil.DigestA)
 	fake.versionErr = errors.New("bootc --version failed")
 
@@ -144,7 +144,7 @@ func TestReconcileBootcStatusError(t *testing.T) {
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
 	ctx := context.Background()
 
-	fake := newTestEnv()
+	fake := newTestEnv(t)
 	fake.setStatusErr(errors.New(bootcStatusErrMsg))
 
 	bn := testutil.NewBootcNode(testNodeName, testutil.ImageDigestRefA)
@@ -176,7 +176,7 @@ func TestStagingTriggered(t *testing.T) {
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
 	ctx := context.Background()
 
-	fake := newTestEnv()
+	fake := newTestEnv(t)
 	fake.status = newBootcStatus(testutil.DigestA)
 
 	bn := testutil.NewBootcNode(testNodeName, testutil.ImageDigestRefB)
@@ -217,7 +217,7 @@ func TestStagingError(t *testing.T) {
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
 	ctx := context.Background()
 
-	fake := newTestEnv()
+	fake := newTestEnv(t)
 	fake.status = newBootcStatus(testutil.DigestA)
 	fake.setStageErr(errors.New(stageErrMsg))
 
@@ -252,7 +252,7 @@ func TestAlreadyStaged(t *testing.T) {
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
 	ctx := context.Background()
 
-	fake := newTestEnv()
+	fake := newTestEnv(t)
 	fake.status = newBootcStatus(testutil.DigestA)
 	fake.status.Status.Staged = newBootEntry(testutil.ImageDigestRefB, testutil.DigestB)
 
@@ -281,7 +281,7 @@ func TestRebootingSet(t *testing.T) {
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
 	ctx := context.Background()
 
-	fake := newTestEnv()
+	fake := newTestEnv(t)
 	fake.status = newBootcStatus(testutil.DigestA)
 	fake.status.Status.Staged = newBootEntry(testutil.ImageDigestRefB, testutil.DigestB)
 
@@ -314,7 +314,7 @@ func TestSoftReboot(t *testing.T) {
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
 	ctx := context.Background()
 
-	fake := newTestEnv()
+	fake := newTestEnv(t)
 	fake.status = newBootcStatus(testutil.DigestA)
 	fake.status.Status.Staged = newBootEntry(testutil.ImageDigestRefB, testutil.DigestB)
 
@@ -350,7 +350,7 @@ func TestRebootOnlyPolicy(t *testing.T) {
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
 	ctx := context.Background()
 
-	fake := newTestEnv()
+	fake := newTestEnv(t)
 	fake.status = newBootcStatus(testutil.DigestA)
 	fake.status.Status.Staged = newBootEntry(testutil.ImageDigestRefB, testutil.DigestB)
 
@@ -385,7 +385,7 @@ func TestRollback(t *testing.T) {
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
 	ctx := context.Background()
 
-	fake := newTestEnv()
+	fake := newTestEnv(t)
 	fake.status = newBootcStatus(testutil.DigestA)
 	fake.status.Status.Staged = newBootEntry(testutil.ImageDigestRefB, testutil.DigestB)
 
@@ -420,7 +420,7 @@ func TestCancelInflightStage(t *testing.T) {
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
 	ctx := context.Background()
 
-	fake := newTestEnv()
+	fake := newTestEnv(t)
 	fake.status = newBootcStatus(testutil.DigestA)
 
 	firstBlock := make(chan struct{})

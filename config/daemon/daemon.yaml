@@ -42,6 +42,17 @@ spec:
           requests:
             cpu: 10m
             memory: 64Mi
+        volumeMounts:
+        # No subPath: subPath mounts do not receive Secret updates.
+        - name: pull-secrets
+          mountPath: /var/run/bootc-pull-secrets
+          readOnly: true
+      volumes:
+      - name: pull-secrets
+        secret:
+          secretName: bootc-pull-secrets
+          # The daemon must start before the controller creates the Secret.
+          optional: true
       tolerations:
       - operator: Exists
       serviceAccountName: daemon
