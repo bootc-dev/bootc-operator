@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -43,6 +44,7 @@ func TestMain(m *testing.M) {
 
 	testEnv = &envtest.Environment{
 		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
+		CRDs:                  []*apiextensionsv1.CustomResourceDefinition{karpenterNodeClaimCRD()},
 		ErrorIfCRDPathMissing: true,
 	}
 
@@ -117,3 +119,33 @@ func TestMain(m *testing.M) {
 
 	os.Exit(code)
 }
+
+func karpenterNodeClaimCRD() *apiextensionsv1.CustomResourceDefinition {
+	return &apiextensionsv1.CustomResourceDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: "nodeclaims.karpenter.sh"},
+		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+			Group: "karpenter.sh",
+			Names: apiextensionsv1.CustomResourceDefinitionNames{
+				Plural:   "nodeclaims",
+				Singular: "nodeclaim",
+				Kind:     "NodeClaim",
+			},
+			Scope: apiextensionsv1.ClusterScoped,
+			Versions: []apiextensionsv1.CustomResourceDefinitionVersion{
+				{
+					Name:    "v1",
+					Served:  true,
+					Storage: true,
+					Schema: &apiextensionsv1.CustomResourceValidation{
+						OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
+							Type:                   "object",
+							XPreserveUnknownFields: boolPtr(true),
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func boolPtr(value bool) *bool { return &value }

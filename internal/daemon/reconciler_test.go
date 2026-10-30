@@ -63,7 +63,7 @@ func TestReconcilePopulatesStatus(t *testing.T) {
 		},
 	}
 
-	bn := testutil.NewNode(testNodeName, testutil.ImageDigestRefA)
+	bn := testutil.NewBootcNode(testNodeName, testutil.ImageDigestRefA)
 	g.Expect(k8sClient.Create(ctx, bn)).To(Succeed())
 	t.Cleanup(func() {
 		_ = k8sClient.Delete(ctx, bn)
@@ -116,7 +116,7 @@ func TestReconcileBootcStatusError(t *testing.T) {
 	fake := newTestEnv()
 	fake.setStatusErr(errors.New(bootcStatusErrMsg))
 
-	bn := testutil.NewNode(testNodeName, testutil.ImageDigestRefA)
+	bn := testutil.NewBootcNode(testNodeName, testutil.ImageDigestRefA)
 	g.Expect(k8sClient.Create(ctx, bn)).To(Succeed())
 	t.Cleanup(func() {
 		_ = k8sClient.Delete(ctx, bn)
@@ -148,7 +148,7 @@ func TestStagingTriggered(t *testing.T) {
 	fake := newTestEnv()
 	fake.status = newBootcStatus(testutil.DigestA)
 
-	bn := testutil.NewNode(testNodeName, testutil.ImageDigestRefB)
+	bn := testutil.NewBootcNode(testNodeName, testutil.ImageDigestRefB)
 	g.Expect(k8sClient.Create(ctx, bn)).To(Succeed())
 	t.Cleanup(func() {
 		_ = k8sClient.Delete(ctx, bn)
@@ -190,7 +190,7 @@ func TestStagingError(t *testing.T) {
 	fake.status = newBootcStatus(testutil.DigestA)
 	fake.setStageErr(errors.New(stageErrMsg))
 
-	bn := testutil.NewNode(testNodeName, testutil.ImageDigestRefB)
+	bn := testutil.NewBootcNode(testNodeName, testutil.ImageDigestRefB)
 	g.Expect(k8sClient.Create(ctx, bn)).To(Succeed())
 	t.Cleanup(func() {
 		_ = k8sClient.Delete(ctx, bn)
@@ -225,7 +225,7 @@ func TestAlreadyStaged(t *testing.T) {
 	fake.status = newBootcStatus(testutil.DigestA)
 	fake.status.Status.Staged = newBootEntry(testutil.ImageDigestRefB, testutil.DigestB)
 
-	bn := testutil.NewNode(testNodeName, testutil.ImageDigestRefB)
+	bn := testutil.NewBootcNode(testNodeName, testutil.ImageDigestRefB)
 	g.Expect(k8sClient.Create(ctx, bn)).To(Succeed())
 	t.Cleanup(func() {
 		_ = k8sClient.Delete(ctx, bn)
@@ -254,10 +254,10 @@ func TestRebootingSet(t *testing.T) {
 	fake.status = newBootcStatus(testutil.DigestA)
 	fake.status.Status.Staged = newBootEntry(testutil.ImageDigestRefB, testutil.DigestB)
 
-	bn := testutil.NewNode(
+	bn := testutil.NewBootcNode(
 		testNodeName,
 		testutil.ImageDigestRefB,
-		testutil.WithDesiredImageState(bootcv1alpha1.DesiredImageStateBooted),
+		testutil.WithBootcNodeDesiredImageState(bootcv1alpha1.DesiredImageStateBooted),
 	)
 	g.Expect(k8sClient.Create(ctx, bn)).To(Succeed())
 	t.Cleanup(func() {
@@ -287,11 +287,11 @@ func TestSoftReboot(t *testing.T) {
 	fake.status = newBootcStatus(testutil.DigestA)
 	fake.status.Status.Staged = newBootEntry(testutil.ImageDigestRefB, testutil.DigestB)
 
-	bn := testutil.NewNode(
+	bn := testutil.NewBootcNode(
 		testNodeName,
 		testutil.ImageDigestRefB,
-		testutil.WithDesiredImageState(bootcv1alpha1.DesiredImageStateBooted),
-		testutil.WithNodeRebootPolicy(bootcv1alpha1.RebootPolicyAllowSoftReboot),
+		testutil.WithBootcNodeDesiredImageState(bootcv1alpha1.DesiredImageStateBooted),
+		testutil.WithBootcNodeRebootPolicy(bootcv1alpha1.RebootPolicyAllowSoftReboot),
 	)
 	g.Expect(k8sClient.Create(ctx, bn)).To(Succeed())
 	t.Cleanup(func() {
@@ -323,11 +323,11 @@ func TestRebootOnlyPolicy(t *testing.T) {
 	fake.status = newBootcStatus(testutil.DigestA)
 	fake.status.Status.Staged = newBootEntry(testutil.ImageDigestRefB, testutil.DigestB)
 
-	bn := testutil.NewNode(
+	bn := testutil.NewBootcNode(
 		testNodeName,
 		testutil.ImageDigestRefB,
-		testutil.WithDesiredImageState(bootcv1alpha1.DesiredImageStateBooted),
-		testutil.WithNodeRebootPolicy(bootcv1alpha1.RebootPolicyRebootOnly),
+		testutil.WithBootcNodeDesiredImageState(bootcv1alpha1.DesiredImageStateBooted),
+		testutil.WithBootcNodeRebootPolicy(bootcv1alpha1.RebootPolicyRebootOnly),
 	)
 	g.Expect(k8sClient.Create(ctx, bn)).To(Succeed())
 	t.Cleanup(func() {
@@ -358,7 +358,7 @@ func TestRollback(t *testing.T) {
 	fake.status = newBootcStatus(testutil.DigestA)
 	fake.status.Status.Staged = newBootEntry(testutil.ImageDigestRefB, testutil.DigestB)
 
-	bn := testutil.NewNode(testNodeName, testutil.ImageDigestRefC)
+	bn := testutil.NewBootcNode(testNodeName, testutil.ImageDigestRefC)
 	g.Expect(k8sClient.Create(ctx, bn)).To(Succeed())
 	t.Cleanup(func() {
 		_ = k8sClient.Delete(ctx, bn)
@@ -397,7 +397,7 @@ func TestCancelInflightStage(t *testing.T) {
 		<-firstBlock
 	})
 
-	bn := testutil.NewNode(testNodeName, testutil.ImageDigestRefB)
+	bn := testutil.NewBootcNode(testNodeName, testutil.ImageDigestRefB)
 	g.Expect(k8sClient.Create(ctx, bn)).To(Succeed())
 	t.Cleanup(func() {
 		_ = k8sClient.Delete(ctx, bn)
