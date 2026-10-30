@@ -120,17 +120,16 @@ func main() {
 		os.Exit(1)
 	}
 	operatorNamespace := detectNamespace()
+	if operatorNamespace == "" {
+		setupLog.Error(nil, "Operator namespace unknown; set POD_NAMESPACE")
+		os.Exit(1)
+	}
 	pullSecretNamespaces, err := controller.ParsePullSecretNamespaces(
 		pullSecretNamespacesFlag,
 		operatorNamespace,
 	)
 	if err != nil {
 		setupLog.Error(err, "Invalid pull secret namespace configuration")
-		os.Exit(1)
-	}
-	if len(pullSecretNamespaces) == 0 {
-		setupLog.Error(nil, "No pull secret namespaces configured and operator namespace unknown; "+
-			"set spec.controller.pullSecretNamespaces, --pull-secret-namespaces, or POD_NAMESPACE")
 		os.Exit(1)
 	}
 	setupLog.Info("Pull secret namespaces", "namespaces", pullSecretNamespaces)
@@ -182,6 +181,15 @@ func main() {
 		PullSecretNamespaces:  pullSecretNamespaces,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "bootcnodepool")
+		os.Exit(1)
+	}
+
+	if err := (&pullsecret.PullSecretAggregator{
+		Client:               mgr.GetClient(),
+		Namespace:            operatorNamespace,
+		PullSecretNamespaces: pullSecretNamespaces,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "pullsecretaggregator")
 		os.Exit(1)
 	}
 
