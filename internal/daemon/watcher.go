@@ -53,6 +53,14 @@ func (w *StatusWatcher) GetStatus(ctx context.Context) (*bootc.Status, error) {
 	return s, err
 }
 
+// RefreshStatus reads bootc status live from the host, bypassing and
+// updating the cache, and returns the fresh status. Callers use it to
+// re-verify the cached view before acting on it.
+func (w *StatusWatcher) RefreshStatus(ctx context.Context) (*bootc.Status, error) {
+	s, _, err := w.refresh(ctx)
+	return s, err
+}
+
 // refresh reads bootc status from the host and updates the cache.
 // Returns the new status, if the cache has changed or an error.
 func (w *StatusWatcher) refresh(ctx context.Context) (*bootc.Status, bool, error) {
