@@ -21,19 +21,6 @@ import (
 	testutil "github.com/bootc-dev/bootc-operator/test/util"
 )
 
-func newDockerConfigSecret(name, namespace string, dockerCfg []byte) *corev1.Secret {
-	return &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Type: corev1.SecretTypeDockerConfigJson,
-		Data: map[string][]byte{
-			corev1.DockerConfigJsonKey: dockerCfg,
-		},
-	}
-}
-
 func TestPullSecretRefPropagation(t *testing.T) {
 	g := NewWithT(t)
 	g.SetDefaultEventuallyTimeout(pollTimeout)
@@ -42,7 +29,11 @@ func TestPullSecretRefPropagation(t *testing.T) {
 
 	secretData := []byte(`{"auths":{"registry.example.com":{}}}`)
 
-	secret := newDockerConfigSecret("ps-prop-secret", testutil.OperatorNamespaceName, secretData)
+	secret := testutil.NewDockerConfigSecret(
+		"ps-prop-secret",
+		testutil.OperatorNamespaceName,
+		secretData,
+	)
 	g.Expect(k8sClient.Create(ctx, secret)).To(Succeed())
 	t.Cleanup(func() { _ = k8sClient.Delete(ctx, secret) })
 
@@ -105,7 +96,11 @@ func TestPullSecretMissingDegradedAndRecovery(t *testing.T) {
 
 	// Create the missing secret and verify recovery.
 	secretData := []byte(`{"auths":{"recovered":{}}}`)
-	secret := newDockerConfigSecret("ps-missing-secret", testutil.OperatorNamespaceName, secretData)
+	secret := testutil.NewDockerConfigSecret(
+		"ps-missing-secret",
+		testutil.OperatorNamespaceName,
+		secretData,
+	)
 	g.Expect(k8sClient.Create(ctx, secret)).To(Succeed())
 	t.Cleanup(func() { _ = k8sClient.Delete(ctx, secret) })
 
@@ -275,7 +270,11 @@ func TestPullSecretRemovalClearsRef(t *testing.T) {
 	ctx := context.Background()
 
 	secretData := []byte(`{"auths":{"remove":{}}}`)
-	secret := newDockerConfigSecret("ps-remove-secret", testutil.OperatorNamespaceName, secretData)
+	secret := testutil.NewDockerConfigSecret(
+		"ps-remove-secret",
+		testutil.OperatorNamespaceName,
+		secretData,
+	)
 	g.Expect(k8sClient.Create(ctx, secret)).To(Succeed())
 	t.Cleanup(func() { _ = k8sClient.Delete(ctx, secret) })
 
@@ -333,7 +332,7 @@ func TestPullSecretNamespaceDeniedAndRecovery(t *testing.T) {
 	t.Cleanup(func() { _ = k8sClient.Delete(ctx, deniedNS) })
 
 	secretData := []byte(`{"auths":{"denied":{}}}`)
-	deniedSecret := newDockerConfigSecret("ps-denied-secret", deniedNS.Name, secretData)
+	deniedSecret := testutil.NewDockerConfigSecret("ps-denied-secret", deniedNS.Name, secretData)
 	g.Expect(k8sClient.Create(ctx, deniedSecret)).To(Succeed())
 	t.Cleanup(func() { _ = k8sClient.Delete(ctx, deniedSecret) })
 
@@ -369,7 +368,7 @@ func TestPullSecretNamespaceDeniedAndRecovery(t *testing.T) {
 	}, "2s", pollInterval).ShouldNot(Succeed())
 
 	// Move the secret to the operator namespace and point the pool at it.
-	allowedSecret := newDockerConfigSecret(
+	allowedSecret := testutil.NewDockerConfigSecret(
 		"ps-denied-secret",
 		testutil.OperatorNamespaceName,
 		secretData,
@@ -414,7 +413,7 @@ func TestPullSecretNameTooLong(t *testing.T) {
 	// A valid Secret name whose aggregated key "<namespace>_<name>" exceeds
 	// the 253-character Secret key limit.
 	secretName := strings.Repeat("a", 240)
-	secret := newDockerConfigSecret(secretName, testutil.OperatorNamespaceName,
+	secret := testutil.NewDockerConfigSecret(secretName, testutil.OperatorNamespaceName,
 		[]byte(`{"auths":{"long":{}}}`))
 	g.Expect(k8sClient.Create(ctx, secret)).To(Succeed())
 	t.Cleanup(func() { _ = k8sClient.Delete(ctx, secret) })

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Package pullsecret defines the aggregated pull secret shared by the
-// controller, which writes it, and the daemon, which reads it from a
-// volume mount.
+// Package pullsecret defines the aggregated pull secret and the controller
+// that maintains it. The PullSecretAggregator writes the Secret; the daemon
+// reads it from a volume mount.
 package pullsecret
 
 import (
