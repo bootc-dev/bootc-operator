@@ -563,8 +563,8 @@ func TestDriveRolloutDefersWhenKarpenterRebootActive(t *testing.T) {
 
 	// A staged BootcNode ready for a reboot slot.
 	bn := testutil.NewBootcNode("staged-node", testImageDigestRefA,
-		testutil.WithBootedDigest(testDigestB),
-		testutil.WithNodeCondition(
+		testutil.WithBootcNodeBootedDigest(testDigestB),
+		testutil.WithBootcNodeCondition(
 			bootcv1alpha1.NodeIdle,
 			metav1.ConditionFalse,
 			bootcv1alpha1.NodeReasonStaged,
@@ -978,8 +978,8 @@ func TestDriveRolloutDoesNotProtectStaging(t *testing.T) {
 
 	// A staging BootcNode (image pull in progress, not yet staged).
 	bn := testutil.NewBootcNode("staging-node", testImageDigestRefA,
-		testutil.WithBootedDigest(testDigestB),
-		testutil.WithNodeCondition(
+		testutil.WithBootcNodeBootedDigest(testDigestB),
+		testutil.WithBootcNodeCondition(
 			bootcv1alpha1.NodeIdle,
 			metav1.ConditionFalse,
 			bootcv1alpha1.NodeReasonStaging,
@@ -1042,8 +1042,8 @@ func TestDriveRolloutDefersWhenKarpenterDisruptionActive(t *testing.T) {
 
 	// A staged BootcNode ready for a reboot slot.
 	bn := testutil.NewBootcNode("staged-node", testImageDigestRefA,
-		testutil.WithBootedDigest(testDigestB),
-		testutil.WithNodeCondition(
+		testutil.WithBootcNodeBootedDigest(testDigestB),
+		testutil.WithBootcNodeCondition(
 			bootcv1alpha1.NodeIdle,
 			metav1.ConditionFalse,
 			bootcv1alpha1.NodeReasonStaged,
@@ -1090,8 +1090,8 @@ func TestDriveRolloutDefersWhenNodeClaimAbsent(t *testing.T) {
 	ctx := context.Background()
 
 	bn := testutil.NewBootcNode("staged-node", testImageDigestRefA,
-		testutil.WithBootedDigest(testDigestB),
-		testutil.WithNodeCondition(
+		testutil.WithBootcNodeBootedDigest(testDigestB),
+		testutil.WithBootcNodeCondition(
 			bootcv1alpha1.NodeIdle,
 			metav1.ConditionFalse,
 			bootcv1alpha1.NodeReasonStaged,
@@ -1140,8 +1140,8 @@ func TestDriveRolloutKarpenterRequeueFallback(t *testing.T) {
 	// A staged Karpenter-owned node. It has no protection annotations until the
 	// reboot slot is assigned.
 	bn := testutil.NewBootcNode("staged-node", testImageDigestRefA,
-		testutil.WithBootedDigest(testDigestB),
-		testutil.WithNodeCondition(
+		testutil.WithBootcNodeBootedDigest(testDigestB),
+		testutil.WithBootcNodeCondition(
 			bootcv1alpha1.NodeIdle,
 			metav1.ConditionFalse,
 			bootcv1alpha1.NodeReasonStaged,

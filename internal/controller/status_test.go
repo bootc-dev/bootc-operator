@@ -22,9 +22,21 @@ func TestSyncPoolStatusAllUpdated(t *testing.T) {
 
 	rs := &rolloutState{
 		upToDate: []*bootcv1alpha1.BootcNode{
-			testutil.NewNode("n1", testImageDigestRefA, testutil.WithBootedDigest(testDigestA)),
-			testutil.NewNode("n2", testImageDigestRefA, testutil.WithBootedDigest(testDigestA)),
-			testutil.NewNode("n3", testImageDigestRefA, testutil.WithBootedDigest(testDigestA)),
+			testutil.NewBootcNode(
+				"n1",
+				testImageDigestRefA,
+				testutil.WithBootcNodeBootedDigest(testDigestA),
+			),
+			testutil.NewBootcNode(
+				"n2",
+				testImageDigestRefA,
+				testutil.WithBootcNodeBootedDigest(testDigestA),
+			),
+			testutil.NewBootcNode(
+				"n3",
+				testImageDigestRefA,
+				testutil.WithBootcNodeBootedDigest(testDigestA),
+			),
 		},
 	}
 
@@ -53,19 +65,39 @@ func TestSyncPoolStatusRolloutInProgress(t *testing.T) {
 
 	rs := &rolloutState{
 		upToDate: []*bootcv1alpha1.BootcNode{
-			testutil.NewNode("n1", testImageDigestRefA, testutil.WithBootedDigest(testDigestA)),
+			testutil.NewBootcNode(
+				"n1",
+				testImageDigestRefA,
+				testutil.WithBootcNodeBootedDigest(testDigestA),
+			),
 		},
 		pending: []*bootcv1alpha1.BootcNode{
-			testutil.NewNode("n2", testImageDigestRefA, testutil.WithBootedDigest(testDigestB)),
+			testutil.NewBootcNode(
+				"n2",
+				testImageDigestRefA,
+				testutil.WithBootcNodeBootedDigest(testDigestB),
+			),
 		},
 		staging: []*bootcv1alpha1.BootcNode{
-			testutil.NewNode("n3", testImageDigestRefA, testutil.WithBootedDigest(testDigestB)),
+			testutil.NewBootcNode(
+				"n3",
+				testImageDigestRefA,
+				testutil.WithBootcNodeBootedDigest(testDigestB),
+			),
 		},
 		staged: []*bootcv1alpha1.BootcNode{
-			testutil.NewNode("n4", testImageDigestRefA, testutil.WithBootedDigest(testDigestB)),
+			testutil.NewBootcNode(
+				"n4",
+				testImageDigestRefA,
+				testutil.WithBootcNodeBootedDigest(testDigestB),
+			),
 		},
 		rebooting: []*bootcv1alpha1.BootcNode{
-			testutil.NewNode("n5", testImageDigestRefA, testutil.WithBootedDigest(testDigestB)),
+			testutil.NewBootcNode(
+				"n5",
+				testImageDigestRefA,
+				testutil.WithBootcNodeBootedDigest(testDigestB),
+			),
 		},
 	}
 
@@ -101,11 +133,23 @@ func TestSyncPoolStatusPaused(t *testing.T) {
 
 	rs := &rolloutState{
 		upToDate: []*bootcv1alpha1.BootcNode{
-			testutil.NewNode("n1", testImageDigestRefA, testutil.WithBootedDigest(testDigestA)),
+			testutil.NewBootcNode(
+				"n1",
+				testImageDigestRefA,
+				testutil.WithBootcNodeBootedDigest(testDigestA),
+			),
 		},
 		pending: []*bootcv1alpha1.BootcNode{
-			testutil.NewNode("n2", testImageDigestRefA, testutil.WithBootedDigest(testDigestB)),
-			testutil.NewNode("n3", testImageDigestRefA, testutil.WithBootedDigest(testDigestB)),
+			testutil.NewBootcNode(
+				"n2",
+				testImageDigestRefA,
+				testutil.WithBootcNodeBootedDigest(testDigestB),
+			),
+			testutil.NewBootcNode(
+				"n3",
+				testImageDigestRefA,
+				testutil.WithBootcNodeBootedDigest(testDigestB),
+			),
 		},
 	}
 
@@ -161,7 +205,11 @@ func TestSyncPoolStatusDeployedDigestPreserved(t *testing.T) {
 
 	rs := &rolloutState{
 		pending: []*bootcv1alpha1.BootcNode{
-			testutil.NewNode("n1", testImageDigestRefB, testutil.WithBootedDigest(testDigestA)),
+			testutil.NewBootcNode(
+				"n1",
+				testImageDigestRefB,
+				testutil.WithBootcNodeBootedDigest(testDigestA),
+			),
 		},
 	}
 

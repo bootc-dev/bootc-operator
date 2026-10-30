@@ -152,13 +152,13 @@ func WithWorkerSelector() PoolOption {
 	return WithNodeSelector(WorkerLabels())
 }
 
-// NodeOption configures a BootcNode.
-type NodeOption func(*bootcv1alpha1.BootcNode)
+// BootcNodeOption configures a BootcNode.
+type BootcNodeOption func(*bootcv1alpha1.BootcNode)
 
-// NewNode creates a BootcNode with the given name and desired image.
+// NewBootcNode creates a BootcNode with the given name and desired image.
 // DesiredImageState defaults to Staged. Override fields via functional
 // options.
-func NewNode(name, desiredImage string, opts ...NodeOption) *bootcv1alpha1.BootcNode {
+func NewBootcNode(name, desiredImage string, opts ...BootcNodeOption) *bootcv1alpha1.BootcNode {
 	node := &bootcv1alpha1.BootcNode{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
@@ -174,13 +174,8 @@ func NewNode(name, desiredImage string, opts ...NodeOption) *bootcv1alpha1.Bootc
 	return node
 }
 
-// NewBootcNode is an explicit alias for NewNode.
-func NewBootcNode(name, desiredImage string, opts ...NodeOption) *bootcv1alpha1.BootcNode {
-	return NewNode(name, desiredImage, opts...)
-}
-
-// WithBootedDigest sets the booted image digest in the node's status.
-func WithBootedDigest(digest string) NodeOption {
+// WithBootcNodeBootedDigest sets the booted image digest in the node's status.
+func WithBootcNodeBootedDigest(digest string) BootcNodeOption {
 	return func(node *bootcv1alpha1.BootcNode) {
 		node.Status.Booted = &bootcv1alpha1.ImageInfo{
 			ImageDigest: digest,
@@ -188,8 +183,12 @@ func WithBootedDigest(digest string) NodeOption {
 	}
 }
 
-// WithNodeCondition appends a condition to the node's status.
-func WithNodeCondition(condType string, status metav1.ConditionStatus, reason string) NodeOption {
+// WithBootcNodeCondition appends a condition to the node's status.
+func WithBootcNodeCondition(
+	condType string,
+	status metav1.ConditionStatus,
+	reason string,
+) BootcNodeOption {
 	return func(node *bootcv1alpha1.BootcNode) {
 		node.Status.Conditions = append(
 			node.Status.Conditions,
@@ -198,15 +197,15 @@ func WithNodeCondition(condType string, status metav1.ConditionStatus, reason st
 	}
 }
 
-// WithNodeConditionAt appends a condition with an explicit
+// WithBootcNodeConditionAt appends a condition with an explicit
 // LastTransitionTime. Useful for exercising time-based logic such as
 // reboot timeouts.
-func WithNodeConditionAt(
+func WithBootcNodeConditionAt(
 	condType string,
 	status metav1.ConditionStatus,
 	reason string,
 	at time.Time,
-) NodeOption {
+) BootcNodeOption {
 	return func(node *bootcv1alpha1.BootcNode) {
 		node.Status.Conditions = append(
 			node.Status.Conditions,
@@ -220,8 +219,8 @@ func WithNodeConditionAt(
 	}
 }
 
-// WithNodeAnnotation sets a single annotation on the node.
-func WithNodeAnnotation(key, value string) NodeOption {
+// WithBootcNodeAnnotation sets a single annotation on the node.
+func WithBootcNodeAnnotation(key, value string) BootcNodeOption {
 	return func(node *bootcv1alpha1.BootcNode) {
 		if node.Annotations == nil {
 			node.Annotations = make(map[string]string)
@@ -230,15 +229,15 @@ func WithNodeAnnotation(key, value string) NodeOption {
 	}
 }
 
-// WithDesiredImageState overrides the default DesiredImageState on a node.
-func WithDesiredImageState(state bootcv1alpha1.DesiredImageState) NodeOption {
+// WithBootcNodeDesiredImageState overrides the default DesiredImageState on a node.
+func WithBootcNodeDesiredImageState(state bootcv1alpha1.DesiredImageState) BootcNodeOption {
 	return func(node *bootcv1alpha1.BootcNode) {
 		node.Spec.DesiredImageState = state
 	}
 }
 
-// WithNodePullSecret sets the pull secret reference on a node.
-func WithNodePullSecret(name, namespace string) NodeOption {
+// WithBootcNodePullSecret sets the pull secret reference on a node.
+func WithBootcNodePullSecret(name, namespace string) BootcNodeOption {
 	return func(node *bootcv1alpha1.BootcNode) {
 		node.Spec.PullSecretRef = &bootcv1alpha1.PullSecretRef{
 			Name:      name,
@@ -247,8 +246,8 @@ func WithNodePullSecret(name, namespace string) NodeOption {
 	}
 }
 
-// WithNodeRebootPolicy sets the reboot policy on a BootcNode.
-func WithNodeRebootPolicy(p bootcv1alpha1.RebootPolicy) NodeOption {
+// WithBootcNodeRebootPolicy sets the reboot policy on a BootcNode.
+func WithBootcNodeRebootPolicy(p bootcv1alpha1.RebootPolicy) BootcNodeOption {
 	return func(node *bootcv1alpha1.BootcNode) {
 		node.Spec.RebootPolicy = p
 	}

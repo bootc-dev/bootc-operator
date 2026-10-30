@@ -329,13 +329,13 @@ func TestFreeCompletedSlotsRemovesTaintForAlreadyUpToDateNode(t *testing.T) {
 	bn := testutil.NewBootcNode(
 		"test-node",
 		testImageDigestRefA,
-		testutil.WithBootedDigest(testDigestA),
-		testutil.WithNodeCondition(
+		testutil.WithBootcNodeBootedDigest(testDigestA),
+		testutil.WithBootcNodeCondition(
 			bootcv1alpha1.NodeIdle,
 			metav1.ConditionTrue,
 			bootcv1alpha1.NodeReasonIdle,
 		),
-		testutil.WithNodeAnnotation(bootcv1alpha1.AnnotationOwnsOsNotReadyTaint, "true"),
+		testutil.WithBootcNodeAnnotation(bootcv1alpha1.AnnotationOwnsOsNotReadyTaint, "true"),
 	)
 
 	k8sNode := testutil.NewK8sNode("test-node", nil,
@@ -374,13 +374,13 @@ func TestFreeCompletedSlotsHoldsTaintWhenNotReady(t *testing.T) {
 	bn := testutil.NewBootcNode(
 		"test-node",
 		testImageDigestRefA,
-		testutil.WithBootedDigest(testDigestA),
-		testutil.WithNodeCondition(
+		testutil.WithBootcNodeBootedDigest(testDigestA),
+		testutil.WithBootcNodeCondition(
 			bootcv1alpha1.NodeIdle,
 			metav1.ConditionTrue,
 			bootcv1alpha1.NodeReasonIdle,
 		),
-		testutil.WithNodeAnnotation(bootcv1alpha1.AnnotationOwnsOsNotReadyTaint, "true"),
+		testutil.WithBootcNodeAnnotation(bootcv1alpha1.AnnotationOwnsOsNotReadyTaint, "true"),
 	)
 
 	// Node is not Ready.
@@ -416,8 +416,8 @@ func TestFreeCompletedSlotsNoOpWhenNoTaintOwnership(t *testing.T) {
 	bn := testutil.NewBootcNode(
 		"test-node",
 		testImageDigestRefA,
-		testutil.WithBootedDigest(testDigestA),
-		testutil.WithNodeCondition(
+		testutil.WithBootcNodeBootedDigest(testDigestA),
+		testutil.WithBootcNodeCondition(
 			bootcv1alpha1.NodeIdle,
 			metav1.ConditionTrue,
 			bootcv1alpha1.NodeReasonIdle,
@@ -448,13 +448,13 @@ func TestDriveRolloutRemovesTaintForAlreadyUpToDateNode(t *testing.T) {
 	bn := testutil.NewBootcNode(
 		"up-to-date-node",
 		testImageDigestRefA,
-		testutil.WithBootedDigest(testDigestA),
-		testutil.WithNodeCondition(
+		testutil.WithBootcNodeBootedDigest(testDigestA),
+		testutil.WithBootcNodeCondition(
 			bootcv1alpha1.NodeIdle,
 			metav1.ConditionTrue,
 			bootcv1alpha1.NodeReasonIdle,
 		),
-		testutil.WithNodeAnnotation(bootcv1alpha1.AnnotationOwnsOsNotReadyTaint, "true"),
+		testutil.WithBootcNodeAnnotation(bootcv1alpha1.AnnotationOwnsOsNotReadyTaint, "true"),
 	)
 
 	k8sNode := testutil.NewK8sNode("up-to-date-node", nil,
