@@ -32,9 +32,9 @@ var operatorCRDNames = []string{
 }
 
 // TestOperatorUpgrade installs the released version of the operator
-// via Helm, verifies basic functionality, then upgrades by running
-// helm upgrade with the current image and verifies the operator still
-// works.
+// from its published Helm chart, verifies basic functionality, then
+// upgrades by running helm upgrade with the current chart and image and
+// verifies the operator still works.
 func TestOperatorUpgrade(t *testing.T) {
 	e2eutil.Providers(t, "bink", "eks")
 
@@ -42,10 +42,14 @@ func TestOperatorUpgrade(t *testing.T) {
 	if releaseTag == "" {
 		t.Skip("E2E_OPERATOR_RELEASE_TAG not set")
 	}
+	// Optional: overrides the image the released chart deploys, e.g.
+	// with a copy in a local registry.
 	releasedImg := os.Getenv("E2E_OPERATOR_RELEASED_IMG")
-	if releasedImg == "" {
-		t.Skip("E2E_OPERATOR_RELEASED_IMG not set")
+	releasedChart := os.Getenv("E2E_OPERATOR_RELEASED_CHART")
+	if releasedChart == "" {
+		t.Skip("E2E_OPERATOR_RELEASED_CHART not set")
 	}
+	releasedChartVersion := strings.TrimPrefix(releaseTag, "v")
 
 	g := NewWithT(t)
 	g.SetDefaultEventuallyTimeout(pollTimeout)
@@ -64,22 +68,29 @@ func TestOperatorUpgrade(t *testing.T) {
 	currentImg := containerImage(t, origDeploy.Spec.Template.Spec.Containers, "manager")
 	extraArgs := controllerExtraArgs(t, origDeploy.Spec.Template.Spec.Containers)
 	t.Logf("Current operator image: %s", currentImg)
-	t.Logf("Released operator tag: %s, image: %s", releaseTag, releasedImg)
+	t.Logf("Released operator tag: %s, image: %s, chart: %s",
+		releaseTag, releasedImg, releasedChart)
 
-	// Phase 1: Uninstall the current operator and re-install with
-	// the released image via Helm.
+	// Phase 1: Uninstall the current operator and re-install the
+	// released version from its published chart, the way users
+	// upgrading from it have it deployed. The current chart may not work
+	// with the released image.
 	uninstallOperator(t, g, ctx, env)
-	helmInstallOperator(t, chartPath, releasedImg, extraArgs)
-	waitForOperatorReady(t, g, ctx, env.Client)
 
-	t.Logf("Released operator %s installed via Helm", releaseTag)
-
+	// Restore the current operator even if the released one fails to
+	// install, so the tests that run after this one have an operator.
 	t.Cleanup(func() {
 		t.Logf("Restoring operator to current version...")
 		helmUpgradeOperator(t, chartPath, currentImg, extraArgs)
 		waitForOperatorReady(t, g, ctx, env.Client)
 		t.Logf("Operator restored")
 	})
+
+	helmInstallOperator(t, releasedChart, releasedChartVersion,
+		releasedImg, extraArgs)
+	waitForOperatorReady(t, g, ctx, env.Client)
+
+	t.Logf("Released operator %s installed via Helm", releaseTag)
 
 	// Phase 2: Verify the released version works.
 	nodeName := env.AddNode(t)
@@ -181,12 +192,17 @@ func uninstallOperator(
 	t.Logf("Operator uninstalled")
 }
 
-// helmInstallOperator installs the operator via helm install.
-func helmInstallOperator(t *testing.T, chartPath, img string, extraArgs []string) {
+// helmInstallOperator installs the given version of a published chart
+// via helm install.
+func helmInstallOperator(
+	t *testing.T,
+	chartRef, chartVersion, img string,
+	extraArgs []string,
+) {
 	t.Helper()
-	helmRun(t, "dependency", "build", chartPath)
 	args := []string{
-		"install", helmReleaseName, chartPath,
+		"install", helmReleaseName, chartRef,
+		"--version", chartVersion,
 		"--namespace", testutil.OperatorNamespaceName,
 		"--create-namespace",
 	}
@@ -194,9 +210,11 @@ func helmInstallOperator(t *testing.T, chartPath, img string, extraArgs []string
 	helmRun(t, args...)
 }
 
-// helmUpgradeOperator upgrades the operator via helm upgrade.
+// helmUpgradeOperator upgrades the operator to the local chart via helm
+// upgrade.
 func helmUpgradeOperator(t *testing.T, chartPath, img string, extraArgs []string) {
 	t.Helper()
+	helmRun(t, "dependency", "build", chartPath)
 	args := []string{
 		"upgrade", "--install", helmReleaseName, chartPath,
 		"--namespace", testutil.OperatorNamespaceName,
@@ -206,13 +224,16 @@ func helmUpgradeOperator(t *testing.T, chartPath, img string, extraArgs []string
 }
 
 // helmImageArgs returns the --set flags for image and controller args.
+// An empty img keeps the image of the chart.
 func helmImageArgs(t *testing.T, img string, extraArgs []string) []string {
 	t.Helper()
-	repo, tag := splitImage(img)
-	args := []string{
-		"--set-string", "image.repository=" + repo,
-		"--set-string", "image.tag=" + tag,
-		"--set-string", "image.pullPolicy=Always",
+	args := []string{"--set-string", "image.pullPolicy=Always"}
+	if img != "" {
+		repo, tag := splitImage(img)
+		args = append(args,
+			"--set-string", "image.repository="+repo,
+			"--set-string", "image.tag="+tag,
+		)
 	}
 	if secret := os.Getenv("E2E_IMAGE_PULL_SECRET"); secret != "" {
 		args = append(args, "--set", "imagePullSecrets[0].name="+secret)
