@@ -22,6 +22,7 @@ import (
 	"github.com/bootc-dev/bootc-operator/internal/bootc"
 	"github.com/bootc-dev/bootc-operator/internal/config"
 	"github.com/bootc-dev/bootc-operator/internal/daemon"
+	"github.com/bootc-dev/bootc-operator/internal/pullsecret"
 	"github.com/bootc-dev/bootc-operator/internal/version"
 )
 
@@ -127,6 +128,7 @@ func main() {
 		Scheme:        mgr.GetScheme(),
 		NodeName:      nodeName,
 		HostRoot:      "/proc/1/root",
+		PullSecretDir: pullsecret.MountDir,
 		Executor:      executor,
 		StatusWatcher: watcher,
 		APIReader:     mgr.GetAPIReader(),
