@@ -131,7 +131,6 @@ func main() {
 		PullSecretDir: pullsecret.MountDir,
 		Executor:      executor,
 		StatusWatcher: watcher,
-		APIReader:     mgr.GetAPIReader(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "bootcnode")
 		os.Exit(1)

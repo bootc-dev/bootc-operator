@@ -13,12 +13,6 @@ rules:
   verbs:
   - list
 - apiGroups:
-  - ""
-  resources:
-  - secrets
-  verbs:
-  - get
-- apiGroups:
   - node.bootc.dev
   resources:
   - bootcnodes
