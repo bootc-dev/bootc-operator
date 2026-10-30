@@ -13,6 +13,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
@@ -49,6 +50,7 @@ func main() {
 	var probeAddr string
 	var tagResolutionInterval time.Duration
 	var allowInsecureRegistry bool
+	var pullSecretNamespacesFlag string
 	flag.StringVar(
 		&probeAddr,
 		"health-probe-bind-address",
@@ -66,6 +68,13 @@ func main() {
 		"allow-insecure-registry",
 		false,
 		"Allow falling back to HTTP when resolving tag-based image refs against registries that do not serve TLS.",
+	)
+	flag.StringVar(
+		&pullSecretNamespacesFlag,
+		"pull-secret-namespaces",
+		"",
+		"Comma-separated extra namespaces that pools may reference pull secrets from. "+
+			"The operator namespace is always allowed.",
 	)
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
@@ -88,11 +97,30 @@ func main() {
 		version.GitCommit,
 	)
 
+	operatorNamespace := detectNamespace()
+	pullSecretNamespaces, err := controller.ParsePullSecretNamespaces(
+		pullSecretNamespacesFlag,
+		operatorNamespace,
+	)
+	if err != nil {
+		setupLog.Error(err, "Invalid --pull-secret-namespaces")
+		os.Exit(1)
+	}
+	if len(pullSecretNamespaces) == 0 {
+		setupLog.Error(nil, "No pull secret namespaces configured and operator namespace unknown; "+
+			"set --pull-secret-namespaces or POD_NAMESPACE")
+		os.Exit(1)
+	}
+	setupLog.Info("Pull secret namespaces", "namespaces", pullSecretNamespaces)
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "bootc-operator.bootc.dev",
+		Cache: cache.Options{
+			ByObject: controller.SecretCacheByObject(pullSecretNamespaces),
+		},
 	})
 	if err != nil {
 		setupLog.Error(err, "Failed to start manager")
@@ -109,9 +137,10 @@ func main() {
 		Client:                mgr.GetClient(),
 		Scheme:                mgr.GetScheme(),
 		KubeClient:            kubeClient,
-		EventNamespace:        detectNamespace(),
+		EventNamespace:        operatorNamespace,
 		TagResolver:           &registry.GGCRResolver{AllowInsecure: allowInsecureRegistry},
 		TagResolutionInterval: tagResolutionInterval,
+		PullSecretNamespaces:  pullSecretNamespaces,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "bootcnodepool")
 		os.Exit(1)

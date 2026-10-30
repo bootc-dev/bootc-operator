@@ -36,7 +36,7 @@ func TestPullSecretRefPropagation(t *testing.T) {
 
 	secretData := []byte(`{"auths":{"registry.example.com":{}}}`)
 
-	secret := newDockerConfigSecret("ps-prop-secret", "default", secretData)
+	secret := newDockerConfigSecret("ps-prop-secret", testutil.OperatorNamespaceName, secretData)
 	g.Expect(k8sClient.Create(ctx, secret)).To(Succeed())
 	t.Cleanup(func() { _ = k8sClient.Delete(ctx, secret) })
 
@@ -46,7 +46,7 @@ func TestPullSecretRefPropagation(t *testing.T) {
 
 	pool := testutil.NewPool("ps-prop-pool", testImageDigestRefA,
 		testutil.WithWorkerSelector(),
-		testutil.WithPullSecret("ps-prop-secret", "default"),
+		testutil.WithPullSecret("ps-prop-secret", testutil.OperatorNamespaceName),
 	)
 	g.Expect(k8sClient.Create(ctx, pool)).To(Succeed())
 	t.Cleanup(func() { _ = k8sClient.Delete(ctx, pool) })
@@ -56,7 +56,7 @@ func TestPullSecretRefPropagation(t *testing.T) {
 		err := k8sClient.Get(ctx, client.ObjectKey{Name: "ps-prop-node"}, &bn)
 		return bn.Spec.PullSecretRef, err
 	}).Should(Equal(&bootcv1alpha1.PullSecretRef{
-		Name: "ps-prop-secret", Namespace: "default",
+		Name: "ps-prop-secret", Namespace: testutil.OperatorNamespaceName,
 	}))
 }
 
@@ -72,7 +72,7 @@ func TestPullSecretMissingDegradedAndRecovery(t *testing.T) {
 
 	pool := testutil.NewPool("ps-missing-pool", testImageDigestRefA,
 		testutil.WithWorkerSelector(),
-		testutil.WithPullSecret("ps-missing-secret", "default"),
+		testutil.WithPullSecret("ps-missing-secret", testutil.OperatorNamespaceName),
 	)
 	g.Expect(k8sClient.Create(ctx, pool)).To(Succeed())
 	t.Cleanup(func() { _ = k8sClient.Delete(ctx, pool) })
@@ -99,7 +99,7 @@ func TestPullSecretMissingDegradedAndRecovery(t *testing.T) {
 
 	// Create the missing secret and verify recovery.
 	secretData := []byte(`{"auths":{"recovered":{}}}`)
-	secret := newDockerConfigSecret("ps-missing-secret", "default", secretData)
+	secret := newDockerConfigSecret("ps-missing-secret", testutil.OperatorNamespaceName, secretData)
 	g.Expect(k8sClient.Create(ctx, secret)).To(Succeed())
 	t.Cleanup(func() { _ = k8sClient.Delete(ctx, secret) })
 
@@ -121,7 +121,7 @@ func TestPullSecretRemovalClearsRef(t *testing.T) {
 	ctx := context.Background()
 
 	secretData := []byte(`{"auths":{"remove":{}}}`)
-	secret := newDockerConfigSecret("ps-remove-secret", "default", secretData)
+	secret := newDockerConfigSecret("ps-remove-secret", testutil.OperatorNamespaceName, secretData)
 	g.Expect(k8sClient.Create(ctx, secret)).To(Succeed())
 	t.Cleanup(func() { _ = k8sClient.Delete(ctx, secret) })
 
@@ -131,7 +131,7 @@ func TestPullSecretRemovalClearsRef(t *testing.T) {
 
 	pool := testutil.NewPool("ps-remove-pool", testImageDigestRefA,
 		testutil.WithWorkerSelector(),
-		testutil.WithPullSecret("ps-remove-secret", "default"),
+		testutil.WithPullSecret("ps-remove-secret", testutil.OperatorNamespaceName),
 	)
 	g.Expect(k8sClient.Create(ctx, pool)).To(Succeed())
 	t.Cleanup(func() { _ = k8sClient.Delete(ctx, pool) })
@@ -155,4 +155,116 @@ func TestPullSecretRemovalClearsRef(t *testing.T) {
 		err := k8sClient.Get(ctx, client.ObjectKey{Name: "ps-remove-node"}, &bn)
 		return bn.Spec.PullSecretRef, err
 	}).Should(BeNil())
+}
+
+func TestPullSecretNamespaceDeniedAndRecovery(t *testing.T) {
+	g := NewWithT(t)
+	g.SetDefaultEventuallyTimeout(pollTimeout)
+	g.SetDefaultEventuallyPollingInterval(pollInterval)
+	ctx := context.Background()
+
+	deniedNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ps-denied-ns"}}
+	g.Expect(k8sClient.Create(ctx, deniedNS)).To(Succeed())
+	t.Cleanup(func() { _ = k8sClient.Delete(ctx, deniedNS) })
+
+	secretData := []byte(`{"auths":{"denied":{}}}`)
+	deniedSecret := newDockerConfigSecret("ps-denied-secret", deniedNS.Name, secretData)
+	g.Expect(k8sClient.Create(ctx, deniedSecret)).To(Succeed())
+	t.Cleanup(func() { _ = k8sClient.Delete(ctx, deniedSecret) })
+
+	node := testutil.NewK8sNode("ps-denied-node", testutil.WorkerLabels())
+	g.Expect(k8sClient.Create(ctx, node)).To(Succeed())
+	t.Cleanup(func() { _ = k8sClient.Delete(ctx, node) })
+
+	pool := testutil.NewPool("ps-denied-pool", testImageDigestRefA,
+		testutil.WithWorkerSelector(),
+		testutil.WithPullSecret(deniedSecret.Name, deniedSecret.Namespace),
+	)
+	g.Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+	t.Cleanup(func() { _ = k8sClient.Delete(ctx, pool) })
+
+	// The secret exists, but its namespace is not in the allowlist.
+	g.Eventually(func() ([]metav1.Condition, error) {
+		var p bootcv1alpha1.BootcNodePool
+		err := k8sClient.Get(ctx, client.ObjectKeyFromObject(pool), &p)
+		return p.Status.Conditions, err
+	}).Should(ContainElement(And(
+		HaveField("Type", bootcv1alpha1.PoolDegraded),
+		HaveField("Status", metav1.ConditionTrue),
+		HaveField("Reason", bootcv1alpha1.PoolSecretError),
+		HaveField("Message", ContainSubstring(`"ps-denied-ns"`)),
+	)))
+
+	g.Consistently(func() error {
+		return k8sClient.Get(
+			ctx,
+			client.ObjectKey{Name: "ps-denied-node"},
+			&bootcv1alpha1.BootcNode{},
+		)
+	}, "2s", pollInterval).ShouldNot(Succeed())
+
+	// Move the secret to the operator namespace and point the pool at it.
+	allowedSecret := newDockerConfigSecret(
+		"ps-denied-secret",
+		testutil.OperatorNamespaceName,
+		secretData,
+	)
+	g.Expect(k8sClient.Create(ctx, allowedSecret)).To(Succeed())
+	t.Cleanup(func() { _ = k8sClient.Delete(ctx, allowedSecret) })
+
+	g.Eventually(func() error {
+		var p bootcv1alpha1.BootcNodePool
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(pool), &p); err != nil {
+			return err
+		}
+		p.Spec.PullSecretRef.Namespace = testutil.OperatorNamespaceName
+		return k8sClient.Update(ctx, &p)
+	}).Should(Succeed())
+
+	g.Eventually(func() ([]metav1.Condition, error) {
+		var p bootcv1alpha1.BootcNodePool
+		err := k8sClient.Get(ctx, client.ObjectKeyFromObject(pool), &p)
+		return p.Status.Conditions, err
+	}).Should(ContainElement(And(
+		HaveField("Type", bootcv1alpha1.PoolDegraded),
+		HaveField("Status", metav1.ConditionFalse),
+		HaveField("Reason", bootcv1alpha1.PoolHealthy),
+	)))
+
+	g.Eventually(func() (*bootcv1alpha1.PullSecretRef, error) {
+		var bn bootcv1alpha1.BootcNode
+		err := k8sClient.Get(ctx, client.ObjectKey{Name: "ps-denied-node"}, &bn)
+		return bn.Spec.PullSecretRef, err
+	}).Should(Equal(&bootcv1alpha1.PullSecretRef{
+		Name: "ps-denied-secret", Namespace: testutil.OperatorNamespaceName,
+	}))
+}
+
+func TestParsePullSecretNamespaces(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		opNS    string
+		want    []string
+		wantErr bool
+	}{
+		{"empty", "", "op", []string{"op"}, false},
+		{"only separators", " , ,", "op", []string{"op"}, false},
+		{"unknown operator namespace", "", "", nil, false},
+		{"operator namespace prepended", "team-a", "op", []string{"op", "team-a"}, false},
+		{"trims and dedupes", " team-a ,,op,team-a", "op", []string{"op", "team-a"}, false},
+		{"invalid name", "Team-A", "op", nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewWithT(t)
+			got, err := ParsePullSecretNamespaces(tt.value, tt.opNS)
+			if tt.wantErr {
+				g.Expect(err).To(MatchError(ContainSubstring(`invalid namespace "Team-A"`)))
+				return
+			}
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(got).To(Equal(tt.want))
+		})
+	}
 }
