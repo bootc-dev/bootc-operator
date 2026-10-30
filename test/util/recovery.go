@@ -47,14 +47,8 @@ func StagePausedUpdate(
 		err := c.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
 		return bn.Status, err
 	}).WithTimeout(5*time.Minute).Should(gomega.And(
-		gomega.HaveField("Staged", gomega.And(
-			gomega.Not(gomega.BeNil()),
-			gomega.HaveField("ImageDigest", gomega.Equal(targetDigest)),
-		)),
-		gomega.HaveField("Booted", gomega.And(
-			gomega.Not(gomega.BeNil()),
-			gomega.HaveField("ImageDigest", gomega.Equal(originalDigest)),
-		)),
+		gomega.HaveField("Staged", ImageMatchesDigest(targetDigest)),
+		gomega.HaveField("Booted", ImageMatchesDigest(originalDigest)),
 		gomega.HaveField("Conditions", gomega.ContainElement(gomega.And(
 			gomega.HaveField("Type", bootcv1alpha1.NodeIdle),
 			gomega.HaveField("Status", metav1.ConditionFalse),

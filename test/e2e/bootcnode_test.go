@@ -25,7 +25,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
-	"github.com/bootc-dev/bootc-operator/internal/image"
 	"github.com/bootc-dev/bootc-operator/test/e2e/e2eutil"
 	testutil "github.com/bootc-dev/bootc-operator/test/util"
 )
@@ -39,7 +38,7 @@ const (
 // BootcNodePool selecting it, and verifies that a BootcNode is created
 // and the node is labeled bootc.dev/managed.
 func TestControllerMembership(t *testing.T) {
-	e2eutil.Providers(t, "bink")
+	e2eutil.Providers(t, "bink", "eks")
 	t.Parallel()
 	g := NewWithT(t)
 	g.SetDefaultEventuallyTimeout(pollTimeout)
@@ -91,10 +90,7 @@ func TestControllerMembership(t *testing.T) {
 	)), "expected exactly one running daemon pod on %s", nodeName)
 
 	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 3*time.Minute,
-		HaveField("Booted", And(
-			HaveField("Image", env.NodeImageDigestedPullSpec()),
-			HaveField("ImageDigest", env.NodeImageDigest()),
-		)),
+		HaveField("Booted", imageMatchesDigest(env.NodeImageDigest())),
 	)
 
 	// Verify pool status reflects steady state.
@@ -528,7 +524,7 @@ func getBootCount(t *testing.T, env *e2eutil.Env, ctx context.Context, nodeName 
 // pool paused, verifies the node stages but does not reboot, then resumes
 // and verifies the update completes.
 func TestPauseResume(t *testing.T) {
-	e2eutil.Providers(t, "bink")
+	e2eutil.Providers(t, "bink", "eks")
 	t.Parallel()
 	g := NewWithT(t)
 	g.SetDefaultEventuallyTimeout(pollTimeout)
@@ -569,19 +565,13 @@ func TestPauseResume(t *testing.T) {
 		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
 		return bn.Status, err
 	}).WithTimeout(5 * time.Minute).Should(And(
-		HaveField("Staged", And(
-			Not(BeNil()),
-			HaveField("ImageDigest", Equal(env.NodeImageUpdateDigest())),
-		)),
+		HaveField("Staged", imageMatchesDigest(env.NodeImageUpdateDigest())),
 		HaveField("Conditions", ContainElement(And(
 			HaveField("Type", bootcv1alpha1.NodeIdle),
 			HaveField("Status", metav1.ConditionFalse),
 			HaveField("Reason", bootcv1alpha1.NodeReasonStaged),
 		))),
-		HaveField("Booted", And(
-			Not(BeNil()),
-			HaveField("ImageDigest", Equal(env.NodeImageDigest())),
-		)),
+		HaveField("Booted", imageMatchesDigest(env.NodeImageDigest())),
 	))
 
 	t.Logf("Node %q staged update but did not reboot (paused)", nodeName)
@@ -620,7 +610,7 @@ func TestPauseResume(t *testing.T) {
 	// Phase 5: Wait for node to complete the update — proves the full
 	// update lifecycle completed after resume (reboot, boot into new image).
 	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 8*time.Minute,
-		HaveField("Booted", HaveField("ImageDigest", Equal(env.NodeImageUpdateDigest()))),
+		HaveField("Booted", imageMatchesDigest(env.NodeImageUpdateDigest())),
 	)
 
 	t.Logf("Node %q completed update after resume", nodeName)
@@ -634,7 +624,7 @@ func TestPauseResume(t *testing.T) {
 // original image, then updates to a non-existing image and verifies the
 // node enters degraded state and the update does not proceed.
 func TestNonExistingImage(t *testing.T) {
-	e2eutil.Providers(t, "bink")
+	e2eutil.Providers(t, "bink", "eks")
 	t.Parallel()
 	g := NewWithT(t)
 	g.SetDefaultEventuallyTimeout(pollTimeout)
@@ -677,10 +667,7 @@ func TestNonExistingImage(t *testing.T) {
 			HaveField("Reason", bootcv1alpha1.NodeReasonError),
 			HaveField("Message", ContainSubstring("stage failed")),
 		))),
-		HaveField("Booted", And(
-			Not(BeNil()),
-			HaveField("ImageDigest", Equal(env.NodeImageDigest())),
-		)),
+		HaveField("Booted", imageMatchesDigest(env.NodeImageDigest())),
 	), "expected node to enter degraded state when pulling non-existing image")
 
 	t.Logf("Node %q entered degraded state as expected", nodeName)
@@ -1010,7 +997,7 @@ func TestPullSecretRotation(t *testing.T) {
 // verifies it resumes and completes the interrupted rollout. Covers scenario 5
 // of #69 (kill the controller during a roll-out).
 func TestControllerRecovery(t *testing.T) {
-	e2eutil.Providers(t, "bink")
+	e2eutil.Providers(t, "bink", "eks")
 	g := NewWithT(t)
 	g.SetDefaultEventuallyTimeout(pollTimeout)
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
@@ -1059,15 +1046,12 @@ func TestControllerRecovery(t *testing.T) {
 	g.Expect(env.Client.Patch(ctx, unpaused, client.MergeFrom(pool))).To(Succeed())
 	*pool = *unpaused
 
-	g.Consistently(func() (string, error) {
+	g.Consistently(func() (*bootcv1alpha1.ImageInfo, error) {
 		var bn bootcv1alpha1.BootcNode
 		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
-		if bn.Status.Booted == nil {
-			return "", err
-		}
-		return bn.Status.Booted.ImageDigest, err
+		return bn.Status.Booted, err
 	}).WithTimeout(20*time.Second).WithPolling(2*time.Second).Should(
-		Equal(env.NodeImageDigest()),
+		imageMatchesDigest(env.NodeImageDigest()),
 		"rollout should stall on the original image while the controller is down",
 	)
 
@@ -1077,7 +1061,7 @@ func TestControllerRecovery(t *testing.T) {
 	t.Logf("Controller restored; waiting for the interrupted rollout to finish")
 
 	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 5*time.Minute,
-		HaveField("Booted", HaveField("ImageDigest", Equal(env.NodeImageUpdateDigest()))),
+		HaveField("Booted", imageMatchesDigest(env.NodeImageUpdateDigest())),
 	)
 
 	t.Logf("Node %q completed the interrupted rollout after controller recovery", nodeName)
@@ -1184,9 +1168,7 @@ func fetchEvents(
 // both the content digest and the manifest-list digest embedded in the
 // Image pullspec.
 func imageMatchesDigest(digest string) types.GomegaMatcher {
-	return WithTransform(func(info *bootcv1alpha1.ImageInfo) bool {
-		return image.InfoMatchesDigest(info, digest)
-	}, BeTrue())
+	return testutil.ImageMatchesDigest(digest)
 }
 
 func poolAllUpdated(nodeCount int32, deployedDigest string) types.GomegaMatcher {
@@ -1211,7 +1193,7 @@ func poolAllUpdated(nodeCount int32, deployedDigest string) types.GomegaMatcher 
 // Covers the daemon half of scenario 5 of #69 (kill the daemon during a
 // roll-out).
 func TestDaemonRecovery(t *testing.T) {
-	e2eutil.Providers(t, "bink")
+	e2eutil.Providers(t, "bink", "eks")
 	t.Parallel()
 	g := NewWithT(t)
 	g.SetDefaultEventuallyTimeout(pollTimeout)
@@ -1226,7 +1208,7 @@ func TestDaemonRecovery(t *testing.T) {
 	pool := env.NewPool("bnp-daemonrec", env.NodeImageDigestedPullSpec())
 	g.Expect(env.Client.Create(ctx, pool)).To(Succeed())
 	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 3*time.Minute,
-		HaveField("Booted", HaveField("ImageDigest", Equal(env.NodeImageDigest()))),
+		HaveField("Booted", imageMatchesDigest(env.NodeImageDigest())),
 	)
 	t.Logf("Node %q is Idle with original image", nodeName)
 
@@ -1266,7 +1248,7 @@ func TestDaemonRecovery(t *testing.T) {
 	*pool = *unpaused
 
 	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 8*time.Minute,
-		HaveField("Booted", HaveField("ImageDigest", Equal(env.NodeImageUpdateDigest()))),
+		HaveField("Booted", imageMatchesDigest(env.NodeImageUpdateDigest())),
 	)
 	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).
 		Should(poolAllUpdated(1, env.NodeImageUpdateDigest()))
@@ -1352,7 +1334,7 @@ func TestRebootTimeoutDegraded(t *testing.T) {
 // TestOperatorUpgrade, which covers an actual version upgrade via a
 // released manifest rather than a same-version pod restart.
 func TestOperatorRestartResilience(t *testing.T) {
-	e2eutil.Providers(t, "bink")
+	e2eutil.Providers(t, "bink", "eks")
 	g := NewWithT(t)
 	g.SetDefaultEventuallyTimeout(pollTimeout)
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
@@ -1366,7 +1348,7 @@ func TestOperatorRestartResilience(t *testing.T) {
 	pool := env.NewPool("bnp-restartres", env.NodeImageDigestedPullSpec())
 	g.Expect(env.Client.Create(ctx, pool)).To(Succeed())
 	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 3*time.Minute,
-		HaveField("Booted", HaveField("ImageDigest", Equal(env.NodeImageDigest()))),
+		HaveField("Booted", imageMatchesDigest(env.NodeImageDigest())),
 	)
 	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).
 		Should(poolAllUpdated(1, env.NodeImageDigest()))
@@ -1380,15 +1362,12 @@ func TestOperatorRestartResilience(t *testing.T) {
 
 	// Phase 3: The managed node must not be disrupted by the operator restart:
 	// it must stay on its current image without rebooting.
-	g.Consistently(func() (string, error) {
+	g.Consistently(func() (*bootcv1alpha1.ImageInfo, error) {
 		var bn bootcv1alpha1.BootcNode
 		err := env.Client.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
-		if bn.Status.Booted == nil {
-			return "", err
-		}
-		return bn.Status.Booted.ImageDigest, err
+		return bn.Status.Booted, err
 	}).WithTimeout(30*time.Second).WithPolling(3*time.Second).Should(
-		Equal(env.NodeImageDigest()),
+		imageMatchesDigest(env.NodeImageDigest()),
 		"node should stay on its image across an operator restart",
 	)
 
@@ -1397,7 +1376,7 @@ func TestOperatorRestartResilience(t *testing.T) {
 		"operator restart must not reboot the node")
 
 	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 2*time.Minute,
-		HaveField("Booted", HaveField("ImageDigest", Equal(env.NodeImageDigest()))),
+		HaveField("Booted", imageMatchesDigest(env.NodeImageDigest())),
 	)
 	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).
 		Should(poolAllUpdated(1, env.NodeImageDigest()))
@@ -1413,8 +1392,8 @@ func TestOperatorRestartResilience(t *testing.T) {
 
 	t.Logf("Patched pool to update image %s after operator restart", updateRef)
 
-	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 5*time.Minute,
-		HaveField("Booted", HaveField("ImageDigest", Equal(env.NodeImageUpdateDigest()))),
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 8*time.Minute,
+		HaveField("Booted", imageMatchesDigest(env.NodeImageUpdateDigest())),
 	)
 	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).
 		Should(poolAllUpdated(1, env.NodeImageUpdateDigest()))

@@ -137,7 +137,7 @@ EKS_IMAGE_PULL_SECRET ?=
 EKS_NODE_PULL_SECRET ?=
 
 .PHONY: e2e-eks
-e2e-eks: ## Run e2e tests against EKS. V=1 for verbose. RUN=<regex> to filter.
+e2e-eks: helm ## Run e2e tests against EKS. V=1 for verbose. RUN=<regex> to filter.
 	rm -rf $(ARTIFACTS)
 	cd test/e2e && KUBECONFIG="$(KUBECONFIG)" \
 		E2E_PROVIDER=eks \
