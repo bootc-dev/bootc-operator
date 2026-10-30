@@ -21,6 +21,7 @@ import (
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
 	"github.com/bootc-dev/bootc-operator/internal/bootc"
 	"github.com/bootc-dev/bootc-operator/internal/daemon"
+	"github.com/bootc-dev/bootc-operator/internal/pullsecret"
 	"github.com/bootc-dev/bootc-operator/internal/version"
 )
 
@@ -106,9 +107,9 @@ func main() {
 		Scheme:        mgr.GetScheme(),
 		NodeName:      nodeName,
 		HostRoot:      "/proc/1/root",
+		PullSecretDir: pullsecret.MountDir,
 		Executor:      executor,
 		StatusWatcher: watcher,
-		APIReader:     mgr.GetAPIReader(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "bootcnode")
 		os.Exit(1)

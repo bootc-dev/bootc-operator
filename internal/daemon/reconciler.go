@@ -6,7 +6,9 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -16,12 +18,10 @@ import (
 	"github.com/distribution/reference"
 
 	"github.com/go-logr/logr"
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -34,6 +34,7 @@ import (
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
 	"github.com/bootc-dev/bootc-operator/internal/bootc"
 	"github.com/bootc-dev/bootc-operator/internal/image"
+	"github.com/bootc-dev/bootc-operator/internal/pullsecret"
 )
 
 const (
@@ -60,12 +61,13 @@ type stageOp struct {
 // mismatches, and drives updates via bootc stage.
 type BootcNodeReconciler struct {
 	client.Client
-	Scheme        *runtime.Scheme
-	NodeName      string
-	HostRoot      string
+	Scheme   *runtime.Scheme
+	NodeName string
+	HostRoot string
+	// PullSecretDir is where the aggregated pull secret is mounted.
+	PullSecretDir string
 	Executor      bootc.Executor
 	StatusWatcher *StatusWatcher
-	APIReader     client.Reader
 
 	inflight  stageOp
 	stageDone chan event.GenericEvent
@@ -222,7 +224,7 @@ func (r *BootcNodeReconciler) reconcileBootcNode(
 		}, nil
 	}
 
-	r.syncPullSecret(ctx, log, bn)
+	r.syncPullSecret(log, bn)
 
 	desiredImage := desiredRef.String()
 
@@ -409,47 +411,75 @@ func (r *BootcNodeReconciler) classifyAction(
 	return actionReboot
 }
 
-// syncPullSecret fetches the pull secret referenced by the BootcNode
-// and writes it to the host filesystem so bootc can authenticate.
+// syncPullSecret makes the host's auth file mirror the mounted pull secret
+// entry for the BootcNode's pullSecretRef, so bootc authenticates with it.
+// Without a reference or a readable mounted entry, the auth file is removed
+// and bootc falls back to credentials in /etc or /usr/lib. A missing entry is
+// not an error: the kubelet may not have synced it yet, and a failed stage is
+// retried with backoff.
 func (r *BootcNodeReconciler) syncPullSecret(
-	ctx context.Context,
 	log logr.Logger,
 	bn *bootcv1alpha1.BootcNode,
 ) {
-	if bn.Spec.PullSecretRef == nil {
-		return
+	data, err := r.mountedPullSecret(bn.Spec.PullSecretRef)
+	if err != nil {
+		log.Error(err, "Failed to read mounted pull secret, staging without it")
 	}
 
-	key := types.NamespacedName{
-		Name:      bn.Spec.PullSecretRef.Name,
-		Namespace: bn.Spec.PullSecretRef.Namespace,
-	}
-	var secret corev1.Secret
-	if err := r.APIReader.Get(ctx, key, &secret); err != nil {
-		log.Error(err, "Failed to fetch pull secret, continuing", "secret", key)
+	if data == nil {
+		if err := r.removeAuthFile(); err != nil {
+			log.Error(err, "Failed to remove auth file, continuing")
+		}
 		return
 	}
-
-	data, ok := secret.Data[corev1.DockerConfigJsonKey]
-	if !ok {
-		log.Info("Pull secret missing .dockerconfigjson key, continuing", "secret", key)
-		return
-	}
-
 	if err := r.writeAuthFile(data); err != nil {
 		log.Error(err, "Failed to write auth file, continuing")
 	}
 }
 
-// writeAuthFile writes dockerconfigjson data to the host filesystem
-// atomically (temp file + rename).
-func (r *BootcNodeReconciler) writeAuthFile(data []byte) error {
+// mountedPullSecret returns the mounted pull secret entry for ref, or nil if
+// ref is nil or the entry does not exist.
+func (r *BootcNodeReconciler) mountedPullSecret(ref *bootcv1alpha1.PullSecretRef) ([]byte, error) {
+	if ref == nil {
+		return nil, nil
+	}
+	key, err := pullsecret.Key(ref.Namespace, ref.Name)
+	if err != nil {
+		return nil, err
+	}
+	// Key validates the names, so key cannot contain "/" or be "..".
+	data, err := os.ReadFile(filepath.Join(r.PullSecretDir, key)) //nolint:gosec // G304
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+// authDir returns the host directory holding bootc's runtime auth file.
+func (r *BootcNodeReconciler) authDir() string {
 	hostRoot := r.HostRoot
 	if hostRoot == "" {
 		hostRoot = "/proc/1/root"
 	}
+	return filepath.Join(hostRoot, "run", "ostree")
+}
 
-	dir := filepath.Join(hostRoot, "run", "ostree")
+// removeAuthFile removes the host's auth file if present.
+func (r *BootcNodeReconciler) removeAuthFile() error {
+	err := os.Remove(filepath.Join(r.authDir(), "auth.json"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+// writeAuthFile writes dockerconfigjson data to the host filesystem
+// atomically (temp file + rename).
+func (r *BootcNodeReconciler) writeAuthFile(data []byte) error {
+	dir := r.authDir()
 	// Standard mode for a host system directory under /run; it only
 	// applies if the host has not created the directory already.
 	if err := os.MkdirAll(dir, 0755); err != nil { //nolint:gosec // G301

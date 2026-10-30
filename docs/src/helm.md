@@ -121,6 +121,15 @@ helm uninstall bootc-operator --namespace bootc-operator
 > **Warning**: uninstalling the chart also removes the CRDs and all
 > their instances cluster-wide.
 
+The controller creates the `bootc-pull-secrets` Secret in the release
+namespace, which Helm does not track, and `helm uninstall` does not
+delete the namespace created by `--create-namespace`. Delete the namespace
+to remove that Secret, along with any pull secrets created there:
+
+```bash
+kubectl delete namespace bootc-operator
+```
+
 ## Regenerating the chart
 
 Most Helm templates are generated from the kustomize manifests. After

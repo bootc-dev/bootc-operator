@@ -20,10 +20,13 @@ echo "Synced CRDs"
 
 # --- RBAC ---
 # gen_rbac OUTPUT_FILE SOURCE_FILE KIND NAME_SUFFIX COMPONENT [NAMESPACE]
+#   Takes the rules from the KIND document in SOURCE_FILE, which may hold
+#   several (controller-gen emits namespaced rules as a separate Role).
 gen_rbac() {
     local output="$1" source="$2" kind="$3" suffix="$4" component="$5" ns="${6:-}"
     local rules
-    rules=$("$YQ" -I2 '.rules' "$source")
+    rules=$("$YQ" -I2 "select(.kind == \"${kind}\") | .rules" "$source")
+    [ -n "$rules" ] || { echo "error: no ${kind} rules in ${source}" >&2; exit 1; }
     {
         echo "apiVersion: rbac.authorization.k8s.io/v1"
         echo "kind: ${kind}"
@@ -40,6 +43,8 @@ gen_rbac() {
 
 gen_rbac "$CHART_DIR/templates/controller-clusterrole.yaml" "$CONFIG_DIR/rbac/role.yaml" \
     ClusterRole controller controller
+gen_rbac "$CHART_DIR/templates/controller-role.yaml" "$CONFIG_DIR/rbac/role.yaml" \
+    Role controller controller "{{ .Release.Namespace }}"
 gen_rbac "$CHART_DIR/templates/daemon-clusterrole.yaml" "$CONFIG_DIR/rbac/daemon_role.yaml" \
     ClusterRole daemon daemon
 gen_rbac "$CHART_DIR/templates/leader-election-role.yaml" "$CONFIG_DIR/rbac/leader_election_role.yaml" \
@@ -84,8 +89,9 @@ gen_workload() {
 gen_workload "$CONFIG_DIR/manager/manager.yaml" Deployment controller \
     "$CHART_DIR/templates/controller-deployment.yaml"
 
-# Inject controller.extraArgs into the args list
+# Inject --pull-secret-namespaces and controller.extraArgs into the args list
 sed -i '/^          image: {{ include "bootc-operator\.image" \. }}/i\
+            - {{ printf "--pull-secret-namespaces=%s" (include "bootc-operator.pullSecretNamespaces" .) | quote }}\
             {{- range .Values.controller.extraArgs }}\
             - {{ . | quote }}\
             {{- end }}' "$CHART_DIR/templates/controller-deployment.yaml"
@@ -112,7 +118,8 @@ gen_binding() {
         .metadata.labels.HELM_LABELS_PLACEHOLDER = true |
         .roleRef.name = \"HELM_FULLNAME-${role_suffix}\" |
         .subjects[0].name = \"HELM_FULLNAME-${sa_suffix}\" |
-        .subjects[0].namespace = \"HELM_NAMESPACE\"
+        .subjects[0].namespace = \"HELM_NAMESPACE\" |
+        with(select(.metadata.namespace != null); .metadata.namespace = \"HELM_NAMESPACE\")
     " "$source" | helm_sed | sed \
         -e '/HELM_LABELS_PLACEHOLDER/c\    {{- include "bootc-operator.labels" . | nindent 4 }}' \
     > "$output"
@@ -121,6 +128,9 @@ gen_binding() {
 gen_binding "$CONFIG_DIR/rbac/role_binding.yaml" \
     "$CHART_DIR/templates/controller-clusterrolebinding.yaml" \
     controller ClusterRole controller controller
+gen_binding "$CONFIG_DIR/rbac/namespaced_role_binding.yaml" \
+    "$CHART_DIR/templates/controller-rolebinding.yaml" \
+    controller Role controller controller
 gen_binding "$CONFIG_DIR/rbac/daemon_role_binding.yaml" \
     "$CHART_DIR/templates/daemon-clusterrolebinding.yaml" \
     daemon ClusterRole daemon daemon

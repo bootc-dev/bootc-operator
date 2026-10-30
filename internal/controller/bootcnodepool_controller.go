@@ -37,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
+	"github.com/bootc-dev/bootc-operator/internal/pullsecret"
 )
 
 // drainStatus tracks an in-progress drain goroutine for a single node.
@@ -67,6 +68,11 @@ type BootcNodePoolReconciler struct {
 	TagResolver           TagResolver
 	TagResolutionInterval time.Duration
 
+	// PullSecretNamespaces is the allowlist of namespaces pools may
+	// reference pull secrets from. The manager's Secret cache must be
+	// restricted to the same namespaces.
+	PullSecretNamespaces []string
+
 	// drainCh receives events from drain goroutines to re-enqueue the
 	// owning pool after a drain completes.
 	drainCh chan event.GenericEvent
@@ -85,7 +91,7 @@ type BootcNodePoolReconciler struct {
 // +kubebuilder:rbac:groups=node.bootc.dev,resources=bootcnodes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=node.bootc.dev,resources=bootcnodes/status,verbs=get
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",namespace=system,resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list
 // +kubebuilder:rbac:groups="",resources=pods/eviction,verbs=create
 // +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get
@@ -701,13 +707,30 @@ func (r *BootcNodePoolReconciler) listAllBootcNodes(
 }
 
 // fetchPullSecretData fetches the .dockerconfigjson data from the pull
-// secret referenced by the pool. Returns nil if no pull secret is set.
+// secret referenced by the pool. Returns nil if no pull secret is set, and
+// an error if the secret's namespace is not in PullSecretNamespaces or the
+// reference cannot be stored in the aggregated pull secret.
 func (r *BootcNodePoolReconciler) fetchPullSecretData(
 	ctx context.Context,
 	pool *bootcv1alpha1.BootcNodePool,
 ) ([]byte, error) {
 	if pool.Spec.PullSecretRef == nil {
 		return nil, nil
+	}
+
+	if !slices.Contains(r.PullSecretNamespaces, pool.Spec.PullSecretRef.Namespace) {
+		return nil, fmt.Errorf(
+			"pull secret namespace %q is not allowed (allowed: %s)",
+			pool.Spec.PullSecretRef.Namespace,
+			strings.Join(r.PullSecretNamespaces, ", "),
+		)
+	}
+
+	if _, err := pullsecret.Key(
+		pool.Spec.PullSecretRef.Namespace,
+		pool.Spec.PullSecretRef.Name,
+	); err != nil {
+		return nil, err
 	}
 
 	key := types.NamespacedName{

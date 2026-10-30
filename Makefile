@@ -17,10 +17,14 @@ BINK_NODE_DISK_IMAGE ?= ghcr.io/bootc-dev/bink/node:v$(DEFAULT_KUBE_MINOR)-fedor
 BINK_LOCAL_REGISTRY_NODE_IMAGE ?= registry.cluster.local:5000/node
 E2E_REGISTRY_USER ?= e2e-user
 E2E_REGISTRY_PASSWORD ?= e2e-password
-# Released operator for upgrade testing (TestOperatorUpgrade).
-# Override RELEASED_OPERATOR_IMG for downstream images.
+# Extra namespace deploy-bink allows pull secrets from (TestPullSecretNamespaces).
+E2E_PULL_SECRET_NAMESPACE ?= bootc-e2e-pull-secrets
+# Released operator for upgrade testing (TestOperatorUpgrade): the published
+# chart and the release tag, whose version without the leading "v" is the
+# chart version. The released image is the one the chart deploys. Override
+# RELEASED_OPERATOR_CHART for downstream charts.
 RELEASED_OPERATOR_TAG ?= v0.2.2
-RELEASED_OPERATOR_IMG ?= ghcr.io/bootc-dev/bootc-operator:$(RELEASED_OPERATOR_TAG)
+RELEASED_OPERATOR_CHART ?= oci://ghcr.io/bootc-dev/bootc-operator/charts/bootc-operator
 IMG_BINK_RELEASED ?= registry.cluster.local:5000/bootc-operator-released:latest
 # YEAR defines the year value used for substituting the YEAR placeholder in the boilerplate header.
 YEAR ?= $(shell date +%Y)
@@ -61,6 +65,10 @@ manifests: controller-gen ## Generate CRD and RBAC manifests.
 .PHONY: helm
 helm: manifests yq ## Regenerate Helm chart from Kustomize manifests.
 	YQ="$(YQ)" ./hack/sync-helm.sh
+
+.PHONY: helm-test
+helm-test: helm helm-tool ## Render the Helm chart and check the output.
+	HELM="$(HELM)" YQ="$(YQ)" ./hack/test-helm.sh
 
 .PHONY: generate
 generate: controller-gen ## Generate DeepCopy method implementations.
@@ -119,8 +127,10 @@ e2e: ## Run e2e tests (requires: make deploy-bink). V=1 for verbose. RUN=<regex>
 		E2E_NODE_IMAGE_UPDATE_DIGEST=$$(skopeo inspect --tls-verify=false docker://localhost:5000/node:update | jq -r '.Digest') \
 		E2E_NODE_IMAGE_UPDATE2_DIGEST=$$(skopeo inspect --tls-verify=false docker://localhost:5000/node:update2 | jq -r '.Digest') \
 		E2E_REGISTRY_USER=$(E2E_REGISTRY_USER) E2E_REGISTRY_PASSWORD=$(E2E_REGISTRY_PASSWORD) \
+		E2E_PULL_SECRET_NAMESPACE=$(E2E_PULL_SECRET_NAMESPACE) \
 		$(if $(RELEASED_OPERATOR_TAG),E2E_OPERATOR_RELEASE_TAG=$(RELEASED_OPERATOR_TAG)) \
-		$(if $(RELEASED_OPERATOR_IMG),E2E_OPERATOR_RELEASED_IMG=$(IMG_BINK_RELEASED)) \
+		$(if $(RELEASED_OPERATOR_TAG),E2E_OPERATOR_RELEASED_IMG=$(IMG_BINK_RELEASED)) \
+		$(if $(RELEASED_OPERATOR_CHART),E2E_OPERATOR_RELEASED_CHART=$(RELEASED_OPERATOR_CHART)) \
 		go test -timeout 90m -count=1 -parallel 2 $(if $(V),-v) $(if $(RUN),-run '$(RUN)') .
 
 # EKS e2e settings
@@ -152,7 +162,7 @@ e2e-eks: ## Run e2e tests against EKS. V=1 for verbose. RUN=<regex> to filter.
 		E2E_REGISTRY_USER="$(EKS_REGISTRY_USER)" \
 		E2E_REGISTRY_PASSWORD="$(EKS_REGISTRY_PASSWORD)" \
 		$(if $(RELEASED_OPERATOR_TAG),E2E_OPERATOR_RELEASE_TAG=$(RELEASED_OPERATOR_TAG)) \
-		$(if $(RELEASED_OPERATOR_IMG),E2E_OPERATOR_RELEASED_IMG=$(RELEASED_OPERATOR_IMG)) \
+		$(if $(RELEASED_OPERATOR_CHART),E2E_OPERATOR_RELEASED_CHART=$(RELEASED_OPERATOR_CHART)) \
 		$(if $(EKS_IMAGE_PULL_SECRET),E2E_IMAGE_PULL_SECRET=$(EKS_IMAGE_PULL_SECRET)) \
 		E2E_NODE_PULL_SECRET="$(EKS_NODE_PULL_SECRET)" \
 		ARTIFACTS="$(ARTIFACTS)" \
@@ -192,13 +202,14 @@ build-update-image: ## Build derived node images for update testing and push to 
 	podman push --tls-verify=false localhost:5000/node:update2
 
 .PHONY: push-released-operator-image
-push-released-operator-image: ## Pull released operator image and push to bink registry for upgrade testing.
-	@if [ -z "$(RELEASED_OPERATOR_IMG)" ]; then \
-		echo "Error: RELEASED_OPERATOR_IMG must be set (e.g. ghcr.io/bootc-dev/bootc-operator:v0.1.0)"; \
-		exit 1; \
-	fi
-	podman pull $(RELEASED_OPERATOR_IMG)
-	podman push --tls-verify=false $(RELEASED_OPERATOR_IMG) localhost:5000/bootc-operator-released:latest
+push-released-operator-image: yq ## Copy the image of the released chart to the bink registry for upgrade testing.
+	img=$$(helm template bootc-operator $(RELEASED_OPERATOR_CHART) \
+		--version $(RELEASED_OPERATOR_TAG:v%=%) \
+		--kube-version $(DEFAULT_KUBE_MINOR).0 | \
+		$(YQ) 'select(.kind == "Deployment") | .spec.template.spec.containers[] | select(.name == "manager") | .image') && \
+	test -n "$$img" && \
+	podman pull "$$img" && \
+	podman push --tls-verify=false "$$img" localhost:5000/bootc-operator-released:latest
 
 ##@ Deployment
 
@@ -256,9 +267,11 @@ start-bink: seed-node-image ## Start a bink cluster (idempotent).
 	kubectl --kubeconfig $(KUBECONFIG_BINK) wait --for=condition=Ready node/controller --timeout=5m
 
 .PHONY: deploy-bink
-deploy-bink: start-bink build-update-image $(if $(RELEASED_OPERATOR_IMG),push-released-operator-image) helm ## Deploy to a bink cluster (requires: buildimg).
+deploy-bink: start-bink build-update-image $(if $(RELEASED_OPERATOR_TAG),push-released-operator-image) helm ## Deploy to a bink cluster (requires: buildimg).
 	podman push --tls-verify=false $(IMG) localhost:5000/bootc-operator-e2e:latest
 	helm dependency build ./chart/bootc-operator
+	kubectl --kubeconfig $(KUBECONFIG_BINK) create namespace $(E2E_PULL_SECRET_NAMESPACE) \
+		--dry-run=client -o yaml | kubectl --kubeconfig $(KUBECONFIG_BINK) apply -f -
 	img="$(IMG_BINK)" && \
 	helm upgrade --install bootc-operator ./chart/bootc-operator \
 		--kubeconfig $(abspath $(KUBECONFIG_BINK)) \
@@ -266,6 +279,7 @@ deploy-bink: start-bink build-update-image $(if $(RELEASED_OPERATOR_IMG),push-re
 		--set-string image.repository="$${img%:*}" \
 		--set-string image.tag="$${img##*:}" \
 		--set-string image.pullPolicy=Always \
+		--set-json 'pullSecretNamespaces=["$(E2E_PULL_SECRET_NAMESPACE)"]' \
 		--set-json 'controller.extraArgs=["--allow-insecure-registry","--tag-resolution-interval=10s"]'
 	kubectl --kubeconfig $(KUBECONFIG_BINK) -n bootc-operator rollout restart deployment/bootc-operator-controller
 	kubectl --kubeconfig $(KUBECONFIG_BINK) -n bootc-operator rollout status deployment/bootc-operator-controller --timeout=3m
@@ -294,12 +308,14 @@ GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 GOLINES_BIN = $(LOCALBIN)/golines
 GOVULNCHECK = $(LOCALBIN)/govulncheck
 YQ ?= $(LOCALBIN)/yq
+HELM ?= $(LOCALBIN)/helm
 
 KUSTOMIZE_VERSION ?= v5.8.1
 CONTROLLER_TOOLS_VERSION ?= v0.20.1
 GOLANGCI_LINT_VERSION ?= v2.11.4
 GOVULNCHECK_VERSION ?= v1.9.0
 YQ_VERSION ?= v4.53.2
+HELM_VERSION ?= v3.19.0
 
 # ENVTEST_VERSION is the version of controller-runtime release branch to fetch the envtest setup script (i.e. release-0.20)
 ENVTEST_VERSION ?= $(shell v='$(call gomodver,sigs.k8s.io/controller-runtime)'; \
@@ -352,6 +368,11 @@ $(GOLINES_BIN): $(LOCALBIN)
 yq: $(YQ) ## Download yq locally if necessary.
 $(YQ): $(LOCALBIN)
 	$(call go-install-tool,$(YQ),github.com/mikefarah/yq/v4,$(YQ_VERSION))
+
+.PHONY: helm-tool
+helm-tool: $(HELM) ## Download helm locally if necessary.
+$(HELM): $(LOCALBIN)
+	$(call go-install-tool,$(HELM),helm.sh/helm/v3/cmd/helm,$(HELM_VERSION))
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary

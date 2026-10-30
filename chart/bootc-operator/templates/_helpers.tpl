@@ -23,6 +23,10 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
 
+{{- define "bootc-operator.pullSecretNamespaces" -}}
+{{- prepend .Values.pullSecretNamespaces .Release.Namespace | uniq | join "," }}
+{{- end }}
+
 {{- define "bootc-operator.image" -}}
 {{- $tag := default .Chart.AppVersion .Values.image.tag -}}
 {{ printf "%s:%s" .Values.image.repository $tag }}
