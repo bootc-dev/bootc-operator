@@ -22,7 +22,7 @@ render() {
 # check MANIFESTS FLAG_VALUE NAMESPACES...
 #   Asserts that the controller flag is FLAG_VALUE, that each namespace has
 #   exactly one secret-reading Role bound to the controller ServiceAccount,
-#   and that the controller ClusterRole does not grant access to secrets.
+#   and that no ClusterRole (controller or daemon) grants access to secrets.
 check() {
     local manifests="$1" flag="$2"; shift 2
     local want got
@@ -45,9 +45,8 @@ check() {
     [ "$got" = "$roles" ] || fail "controller RoleBindings [$got], want [$roles]"
 
     got=$(echo "$manifests" | "$YQ" -N 'select(.kind == "ClusterRole") |
-        select(.metadata.name == "'"$SA"'") |
         select(.rules | any_c(.resources | any_c(. == "secrets"))) | .metadata.name')
-    [ -z "$got" ] || fail "controller ClusterRole grants secrets access"
+    [ -z "$got" ] || fail "ClusterRoles grant secrets access: [$got]"
 }
 
 "$HELM" dependency build "$CHART_DIR" >/dev/null
