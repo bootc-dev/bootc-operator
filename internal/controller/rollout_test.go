@@ -29,57 +29,57 @@ func TestBuildRolloutState(t *testing.T) {
 	// test focuses more on aggregation: bucketing, slot counting, and
 	// nodeCount.
 	nodes := map[string]*bootcv1alpha1.BootcNode{
-		"uptodate": testutil.NewNode(
+		"uptodate": testutil.NewBootcNode(
 			"uptodate",
 			desiredImage,
-			testutil.WithBootedDigest(testDigestA),
-			testutil.WithNodeCondition(
+			testutil.WithBootcNodeBootedDigest(testDigestA),
+			testutil.WithBootcNodeCondition(
 				bootcv1alpha1.NodeIdle,
 				metav1.ConditionTrue,
 				bootcv1alpha1.NodeReasonIdle,
 			),
 		),
-		"pending": testutil.NewNode(
+		"pending": testutil.NewBootcNode(
 			"pending",
 			desiredImage,
-			testutil.WithBootedDigest(otherDigest),
-			testutil.WithNodeCondition(
+			testutil.WithBootcNodeBootedDigest(otherDigest),
+			testutil.WithBootcNodeCondition(
 				bootcv1alpha1.NodeIdle,
 				metav1.ConditionTrue,
 				bootcv1alpha1.NodeReasonIdle,
 			),
 		),
-		"staged": testutil.NewNode(
+		"staged": testutil.NewBootcNode(
 			"staged",
 			desiredImage,
-			testutil.WithBootedDigest(otherDigest),
-			testutil.WithNodeCondition(
+			testutil.WithBootcNodeBootedDigest(otherDigest),
+			testutil.WithBootcNodeCondition(
 				bootcv1alpha1.NodeIdle,
 				metav1.ConditionFalse,
 				bootcv1alpha1.NodeReasonStaged,
 			),
 		),
-		"rebooting-1": testutil.NewNode(
+		"rebooting-1": testutil.NewBootcNode(
 			"rebooting-1",
 			desiredImage,
-			testutil.WithBootedDigest(otherDigest),
-			testutil.WithNodeCondition(
+			testutil.WithBootcNodeBootedDigest(otherDigest),
+			testutil.WithBootcNodeCondition(
 				bootcv1alpha1.NodeIdle,
 				metav1.ConditionFalse,
 				bootcv1alpha1.NodeReasonRebooting,
 			),
-			testutil.WithNodeAnnotation(bootcv1alpha1.AnnotationInRebootSlot, ""),
+			testutil.WithBootcNodeAnnotation(bootcv1alpha1.AnnotationInRebootSlot, ""),
 		),
-		"rebooting-2": testutil.NewNode(
+		"rebooting-2": testutil.NewBootcNode(
 			"rebooting-2",
 			desiredImage,
-			testutil.WithBootedDigest(otherDigest),
-			testutil.WithNodeCondition(
+			testutil.WithBootcNodeBootedDigest(otherDigest),
+			testutil.WithBootcNodeCondition(
 				bootcv1alpha1.NodeIdle,
 				metav1.ConditionFalse,
 				bootcv1alpha1.NodeReasonRebooting,
 			),
-			testutil.WithNodeAnnotation(bootcv1alpha1.AnnotationInRebootSlot, ""),
+			testutil.WithBootcNodeAnnotation(bootcv1alpha1.AnnotationInRebootSlot, ""),
 		),
 	}
 
@@ -297,14 +297,14 @@ func TestClassifyNode(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			g := NewWithT(t)
 
-			var opts []testutil.NodeOption
+			var opts []testutil.BootcNodeOption
 			if tt.bootedDigest != "" {
-				opts = append(opts, testutil.WithBootedDigest(tt.bootedDigest))
+				opts = append(opts, testutil.WithBootcNodeBootedDigest(tt.bootedDigest))
 			}
 			for _, c := range tt.conditions {
-				opts = append(opts, testutil.WithNodeCondition(c.Type, c.Status, c.Reason))
+				opts = append(opts, testutil.WithBootcNodeCondition(c.Type, c.Status, c.Reason))
 			}
-			bn := testutil.NewNode(nodeName, desiredImage, opts...)
+			bn := testutil.NewBootcNode(nodeName, desiredImage, opts...)
 			got, err := classifyNode(bn)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(got).To(Equal(tt.want))
@@ -338,10 +338,10 @@ func TestRebootTimedOut(t *testing.T) {
 	now := time.Now()
 
 	rebootingNode := func(transitioned time.Time) *bootcv1alpha1.BootcNode {
-		return testutil.NewNode(
+		return testutil.NewBootcNode(
 			"n", desiredImage,
-			testutil.WithBootedDigest(testDigestB),
-			testutil.WithNodeConditionAt(
+			testutil.WithBootcNodeBootedDigest(testDigestB),
+			testutil.WithBootcNodeConditionAt(
 				bootcv1alpha1.NodeIdle,
 				metav1.ConditionFalse,
 				bootcv1alpha1.NodeReasonRebooting,
@@ -376,10 +376,10 @@ func TestRebootTimedOut(t *testing.T) {
 		},
 		{
 			name: "not rebooting",
-			node: testutil.NewNode(
+			node: testutil.NewBootcNode(
 				"n", desiredImage,
-				testutil.WithBootedDigest(testDigestB),
-				testutil.WithNodeConditionAt(
+				testutil.WithBootcNodeBootedDigest(testDigestB),
+				testutil.WithBootcNodeConditionAt(
 					bootcv1alpha1.NodeIdle,
 					metav1.ConditionFalse,
 					bootcv1alpha1.NodeReasonStaged,
@@ -390,8 +390,12 @@ func TestRebootTimedOut(t *testing.T) {
 			want:    false,
 		},
 		{
-			name:    "no idle condition",
-			node:    testutil.NewNode("n", desiredImage, testutil.WithBootedDigest(testDigestB)),
+			name: "no idle condition",
+			node: testutil.NewBootcNode(
+				"n",
+				desiredImage,
+				testutil.WithBootcNodeBootedDigest(testDigestB),
+			),
 			timeout: 10 * time.Minute,
 			want:    false,
 		},
@@ -410,16 +414,16 @@ func TestApplyRebootTimeouts(t *testing.T) {
 	now := time.Now()
 
 	rebootingNode := func(name string, transitioned time.Time) *bootcv1alpha1.BootcNode {
-		return testutil.NewNode(
+		return testutil.NewBootcNode(
 			name, desiredImage,
-			testutil.WithBootedDigest(testDigestB),
-			testutil.WithNodeConditionAt(
+			testutil.WithBootcNodeBootedDigest(testDigestB),
+			testutil.WithBootcNodeConditionAt(
 				bootcv1alpha1.NodeIdle,
 				metav1.ConditionFalse,
 				bootcv1alpha1.NodeReasonRebooting,
 				transitioned,
 			),
-			testutil.WithNodeAnnotation(bootcv1alpha1.AnnotationInRebootSlot, ""),
+			testutil.WithBootcNodeAnnotation(bootcv1alpha1.AnnotationInRebootSlot, ""),
 		)
 	}
 
@@ -466,10 +470,10 @@ func TestFindUnhealthySlots(t *testing.T) {
 	)
 
 	slottedNode := func(name, bootedDigest string) *bootcv1alpha1.BootcNode {
-		return testutil.NewNode(
+		return testutil.NewBootcNode(
 			name, desiredImage,
-			testutil.WithBootedDigest(bootedDigest),
-			testutil.WithNodeAnnotation(bootcv1alpha1.AnnotationInRebootSlot, ""),
+			testutil.WithBootcNodeBootedDigest(bootedDigest),
+			testutil.WithBootcNodeAnnotation(bootcv1alpha1.AnnotationInRebootSlot, ""),
 		)
 	}
 
@@ -511,10 +515,10 @@ func TestFindUnhealthySlots(t *testing.T) {
 
 	t.Run("unslotted timed-out node is ignored", func(t *testing.T) {
 		g := NewWithT(t)
-		unslotted := testutil.NewNode(
+		unslotted := testutil.NewBootcNode(
 			"unslotted",
 			desiredImage,
-			testutil.WithBootedDigest(oldDigest),
+			testutil.WithBootcNodeBootedDigest(oldDigest),
 		)
 		rs := &rolloutState{
 			degraded:            []*bootcv1alpha1.BootcNode{unslotted},
