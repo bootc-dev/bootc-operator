@@ -17,10 +17,12 @@ BINK_NODE_DISK_IMAGE ?= ghcr.io/bootc-dev/bink/node:v$(DEFAULT_KUBE_MINOR)-fedor
 BINK_LOCAL_REGISTRY_NODE_IMAGE ?= registry.cluster.local:5000/node
 E2E_REGISTRY_USER ?= e2e-user
 E2E_REGISTRY_PASSWORD ?= e2e-password
-# Released operator for upgrade testing (TestOperatorUpgrade).
-# Override RELEASED_OPERATOR_IMG for downstream images.
+# Released operator for upgrade testing (TestOperatorUpgrade): the published
+# chart and the release tag, whose version without the leading "v" is the
+# chart version. The released image is the one the chart deploys. Override
+# RELEASED_OPERATOR_CHART for downstream charts.
 RELEASED_OPERATOR_TAG ?= v0.2.2
-RELEASED_OPERATOR_IMG ?= ghcr.io/bootc-dev/bootc-operator:$(RELEASED_OPERATOR_TAG)
+RELEASED_OPERATOR_CHART ?= oci://ghcr.io/bootc-dev/bootc-operator/charts/bootc-operator
 IMG_BINK_RELEASED ?= registry.cluster.local:5000/bootc-operator-released:latest
 # YEAR defines the year value used for substituting the YEAR placeholder in the boilerplate header.
 YEAR ?= $(shell date +%Y)
@@ -120,7 +122,8 @@ e2e: ## Run e2e tests (requires: make deploy-bink). V=1 for verbose. RUN=<regex>
 		E2E_NODE_IMAGE_UPDATE2_DIGEST=$$(skopeo inspect --tls-verify=false docker://localhost:5000/node:update2 | jq -r '.Digest') \
 		E2E_REGISTRY_USER=$(E2E_REGISTRY_USER) E2E_REGISTRY_PASSWORD=$(E2E_REGISTRY_PASSWORD) \
 		$(if $(RELEASED_OPERATOR_TAG),E2E_OPERATOR_RELEASE_TAG=$(RELEASED_OPERATOR_TAG)) \
-		$(if $(RELEASED_OPERATOR_IMG),E2E_OPERATOR_RELEASED_IMG=$(IMG_BINK_RELEASED)) \
+		$(if $(RELEASED_OPERATOR_TAG),E2E_OPERATOR_RELEASED_IMG=$(IMG_BINK_RELEASED)) \
+		$(if $(RELEASED_OPERATOR_CHART),E2E_OPERATOR_RELEASED_CHART=$(RELEASED_OPERATOR_CHART)) \
 		go test -timeout 90m -count=1 -parallel 2 $(if $(V),-v) $(if $(RUN),-run '$(RUN)') .
 
 # EKS e2e settings
@@ -152,7 +155,7 @@ e2e-eks: ## Run e2e tests against EKS. V=1 for verbose. RUN=<regex> to filter.
 		E2E_REGISTRY_USER="$(EKS_REGISTRY_USER)" \
 		E2E_REGISTRY_PASSWORD="$(EKS_REGISTRY_PASSWORD)" \
 		$(if $(RELEASED_OPERATOR_TAG),E2E_OPERATOR_RELEASE_TAG=$(RELEASED_OPERATOR_TAG)) \
-		$(if $(RELEASED_OPERATOR_IMG),E2E_OPERATOR_RELEASED_IMG=$(RELEASED_OPERATOR_IMG)) \
+		$(if $(RELEASED_OPERATOR_CHART),E2E_OPERATOR_RELEASED_CHART=$(RELEASED_OPERATOR_CHART)) \
 		$(if $(EKS_IMAGE_PULL_SECRET),E2E_IMAGE_PULL_SECRET=$(EKS_IMAGE_PULL_SECRET)) \
 		E2E_NODE_PULL_SECRET="$(EKS_NODE_PULL_SECRET)" \
 		ARTIFACTS="$(ARTIFACTS)" \
@@ -192,13 +195,14 @@ build-update-image: ## Build derived node images for update testing and push to 
 	podman push --tls-verify=false localhost:5000/node:update2
 
 .PHONY: push-released-operator-image
-push-released-operator-image: ## Pull released operator image and push to bink registry for upgrade testing.
-	@if [ -z "$(RELEASED_OPERATOR_IMG)" ]; then \
-		echo "Error: RELEASED_OPERATOR_IMG must be set (e.g. ghcr.io/bootc-dev/bootc-operator:v0.1.0)"; \
-		exit 1; \
-	fi
-	podman pull $(RELEASED_OPERATOR_IMG)
-	podman push --tls-verify=false $(RELEASED_OPERATOR_IMG) localhost:5000/bootc-operator-released:latest
+push-released-operator-image: yq ## Copy the image of the released chart to the bink registry for upgrade testing.
+	img=$$(helm template bootc-operator $(RELEASED_OPERATOR_CHART) \
+		--version $(RELEASED_OPERATOR_TAG:v%=%) \
+		--kube-version $(DEFAULT_KUBE_MINOR).0 | \
+		$(YQ) 'select(.kind == "Deployment") | .spec.template.spec.containers[] | select(.name == "manager") | .image') && \
+	test -n "$$img" && \
+	podman pull "$$img" && \
+	podman push --tls-verify=false "$$img" localhost:5000/bootc-operator-released:latest
 
 ##@ Deployment
 
@@ -256,7 +260,7 @@ start-bink: seed-node-image ## Start a bink cluster (idempotent).
 	kubectl --kubeconfig $(KUBECONFIG_BINK) wait --for=condition=Ready node/controller --timeout=5m
 
 .PHONY: deploy-bink
-deploy-bink: start-bink build-update-image $(if $(RELEASED_OPERATOR_IMG),push-released-operator-image) helm ## Deploy to a bink cluster (requires: buildimg).
+deploy-bink: start-bink build-update-image $(if $(RELEASED_OPERATOR_TAG),push-released-operator-image) helm ## Deploy to a bink cluster (requires: buildimg).
 	podman push --tls-verify=false $(IMG) localhost:5000/bootc-operator-e2e:latest
 	helm dependency build ./chart/bootc-operator
 	img="$(IMG_BINK)" && \
