@@ -81,7 +81,7 @@ func TestEKSAddNode(t *testing.T) {
 	}
 
 	labels := map[string]string{LabelE2ETest: "testid"}
-	got, err := provider.AddNode(context.Background(), labels)
+	got, err := provider.AddNode(context.Background(), labels, "")
 	if err != nil {
 		t.Fatalf("AddNode: %v", err)
 	}
