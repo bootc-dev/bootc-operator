@@ -21,7 +21,7 @@ RUN --mount=type=cache,id=dnf,target=/var/cache/libdnf5 \
 FROM ${GO_BUILDER_IMAGE} AS builder
 
 ARG VERSION=dev
-ARG GIT_COMMIT=unknown
+ARG GIT_COMMIT=
 WORKDIR /workspace
 COPY go.mod go.sum ./
 RUN --mount=type=cache,id=gomod,target=/root/go/pkg/mod \
