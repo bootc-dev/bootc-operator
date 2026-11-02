@@ -16,6 +16,8 @@ command -v "$YQ" >/dev/null 2>&1 || { echo "error: yq required (run: make yq)" >
 # --- CRDs (separate chart) ---
 mkdir -p "$CRD_CHART_DIR/templates"
 cp "$CONFIG_DIR"/crd/bases/*.yaml "$CRD_CHART_DIR/templates/"
+# Remove generated CRDs from the old layout to avoid packaging them twice.
+rm -rf -- "$CHART_DIR/crds"
 echo "Synced CRDs"
 
 # --- RBAC ---

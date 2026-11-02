@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
+	"github.com/bootc-dev/bootc-operator/internal/config"
 	"github.com/bootc-dev/bootc-operator/internal/controller"
 	"github.com/bootc-dev/bootc-operator/internal/registry"
 	"github.com/bootc-dev/bootc-operator/internal/version"
@@ -57,13 +58,13 @@ func main() {
 	)
 	flag.DurationVar(
 		&tagResolutionInterval,
-		"tag-resolution-interval",
-		5*time.Minute,
+		config.TagResolutionIntervalFlag,
+		time.Duration(bootcv1alpha1.DefaultTagResolutionPeriodSeconds)*time.Second,
 		"How often to re-resolve tag-based image refs.",
 	)
 	flag.BoolVar(
 		&allowInsecureRegistry,
-		"allow-insecure-registry",
+		config.AllowInsecureRegistryFlag,
 		false,
 		"Allow falling back to HTTP when resolving tag-based image refs against registries that do not serve TLS.",
 	)
@@ -75,6 +76,7 @@ func main() {
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
+	explicit := config.ExplicitFlags(flag.CommandLine)
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
@@ -88,7 +90,26 @@ func main() {
 		version.GitCommit,
 	)
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	ctx := ctrl.SetupSignalHandler()
+	restConfig := ctrl.GetConfigOrDie()
+	operatorConfig, err := config.Load(ctx, restConfig, scheme)
+	if err != nil {
+		setupLog.Error(err, "Failed to load operator configuration")
+		os.Exit(1)
+	}
+	if err := config.ApplyToFlags(flag.CommandLine, operatorConfig); err != nil {
+		setupLog.Error(err, "Failed to apply operator configuration")
+		os.Exit(1)
+	}
+	config.LogSource(
+		setupLog,
+		operatorConfig,
+		explicit,
+		config.AllowInsecureRegistryFlag,
+		config.TagResolutionIntervalFlag,
+	)
+
+	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
 		Scheme:                 scheme,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
@@ -129,7 +150,7 @@ func main() {
 	}
 
 	setupLog.Info("Starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := mgr.Start(ctx); err != nil {
 		setupLog.Error(err, "Failed to run manager")
 		os.Exit(1)
 	}
