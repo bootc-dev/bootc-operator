@@ -251,9 +251,10 @@ new image and the daemon reports `Idle=True`.
 **Validation (e2e):** ✅ On bink, `TestExternalBootcStatusChange` runs
 `bootc switch` on the host and verifies the daemon publishes the staged
 image within 30 seconds of the command completing. It requires a new
-status update before the first possible fallback poll, using the same
-default interval as the daemon. It verifies that the BootcNode generation
-stayed unchanged and the daemon pod was neither replaced nor restarted.
+status update before the first possible fallback poll, using the configured
+E2E interval (10 minutes by default). It verifies that the BootcNode
+generation stayed unchanged and the daemon pod was neither replaced nor
+restarted.
 
 ## Milestone 5: Tag Resolution & Pull Secrets
 

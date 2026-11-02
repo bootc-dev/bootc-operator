@@ -104,6 +104,9 @@ go-lines-fix: get-golines
 vulncheck: govulncheck ## Check Go code for known vulnerabilities (requires network access to the Go vulnerability database).
 	"$(GOVULNCHECK)" ./...
 
+# Give external-status observation room for provisioning without changing the daemon default.
+E2E_BOOTC_POLL_INTERVAL ?= 10m
+
 .PHONY: e2e
 e2e: ## Run e2e tests (requires: make deploy-bink). V=1 for verbose. RUN=<regex> to filter.
 # NB: we `cd` here instead of passing a package path to `go test` so that `-v`
@@ -113,6 +116,7 @@ e2e: ## Run e2e tests (requires: make deploy-bink). V=1 for verbose. RUN=<regex>
 	rm -rf $(ARTIFACTS)
 	cd test/e2e && KUBECONFIG=$(abspath $(KUBECONFIG_BINK)) \
 		E2E_PROVIDER=bink \
+		E2E_BOOTC_POLL_INTERVAL=$(E2E_BOOTC_POLL_INTERVAL) \
 		BINK_CLUSTER_NAME=$(BINK_CLUSTER_NAME) \
 		BINK_NODE_DISK_IMAGE=$(BINK_NODE_DISK_IMAGE) \
 		E2E_NODE_IMAGE_REGISTRY=$(BINK_LOCAL_REGISTRY_NODE_IMAGE) \
@@ -270,7 +274,8 @@ deploy-bink: start-bink build-update-image $(if $(RELEASED_OPERATOR_TAG),push-re
 		--set-string image.repository="$${img%:*}" \
 		--set-string image.tag="$${img##*:}" \
 		--set-string image.pullPolicy=Always \
-		--set-json 'controller.extraArgs=["--allow-insecure-registry","--tag-resolution-interval=10s"]'
+		--set-json 'controller.extraArgs=["--allow-insecure-registry","--tag-resolution-interval=10s"]' \
+		--set-string 'daemon.extraArgs[0]=--bootc-poll-interval=$(E2E_BOOTC_POLL_INTERVAL)'
 	kubectl --kubeconfig $(KUBECONFIG_BINK) -n bootc-operator rollout restart deployment/bootc-operator-controller
 	kubectl --kubeconfig $(KUBECONFIG_BINK) -n bootc-operator rollout status deployment/bootc-operator-controller --timeout=3m
 
