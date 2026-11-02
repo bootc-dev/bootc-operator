@@ -66,6 +66,11 @@ commit and especially when the agent thinks a task is complete
 to spawn a subagent to perform a review using guidelines (alongside
 looking for any other issues).
 
+### Testing
+
+Run this repository's unit tests with `make unit`. This is required to ensure
+that envtest is set up and running for tests that need it.
+
 If the agent is performing a review of other's code, the same
 principles apply.
 
