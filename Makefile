@@ -8,8 +8,8 @@ CONTAINER_TOOL ?= podman
 BINK_CLUSTER_NAME ?= e2e
 KUBECONFIG_BINK ?= ./kubeconfig-$(BINK_CLUSTER_NAME)
 ARTIFACTS ?= $(abspath _output/logs)
-VERSION ?= $(shell git describe --tags --always --dirty)
-GIT_COMMIT ?= $(shell git rev-parse --short HEAD)
+VERSION ?= dev
+GIT_COMMIT ?= $(if $(shell git status --porcelain --untracked-files=no),dirty,$(shell git rev-parse HEAD))
 LDFLAGS := -X github.com/bootc-dev/bootc-operator/internal/version.Version=$(VERSION) \
            -X github.com/bootc-dev/bootc-operator/internal/version.GitCommit=$(GIT_COMMIT)
 DEFAULT_KUBE_MINOR ?= 1.36
@@ -176,7 +176,9 @@ build-daemon: ## Build daemon binary.
 
 .PHONY: buildimg
 buildimg: ## Build container image.
-	$(CONTAINER_TOOL) build -t $(IMG) .
+	$(CONTAINER_TOOL) build \
+		--build-arg VERSION=$(VERSION) --build-arg GIT_COMMIT=$(GIT_COMMIT) \
+		-t $(IMG) .
 
 .PHONY: release-manifest
 release-manifest: kustomize yq ## Build install manifest (override IMG to set the image reference).
