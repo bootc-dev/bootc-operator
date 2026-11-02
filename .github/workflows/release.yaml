@@ -126,7 +126,7 @@ jobs:
           ACTOR: ${{ github.actor }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          make buildimg IMG="${IMAGE}:${TAG}"
+          make buildimg IMG="${IMAGE}:${TAG}" VERSION="$(cat VERSION)"
           podman login -u "${ACTOR}" -p "${GH_TOKEN}" ghcr.io
           podman push "${IMAGE}:${TAG}"
 
