@@ -92,6 +92,13 @@ sed -i '/^          image: {{ include "bootc-operator\.image" \. }}/i\
 
 gen_workload "$CONFIG_DIR/daemon/daemon.yaml" DaemonSet daemon \
     "$CHART_DIR/templates/daemon-daemonset.yaml"
+
+# Inject optional daemon.extraArgs without changing the default daemon arguments.
+sed -i '/^          image: {{ include "bootc-operator\.image" \. }}/i\
+          {{- with .Values.daemon.extraArgs }}\
+          args:\
+            {{- toYaml . | nindent 12 }}\
+          {{- end }}' "$CHART_DIR/templates/daemon-daemonset.yaml"
 echo "Synced workloads"
 
 # --- Bindings & ServiceAccounts ---

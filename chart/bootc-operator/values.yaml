@@ -12,3 +12,6 @@ imagePullSecrets: []
 
 controller:
   extraArgs: []
+
+daemon:
+  extraArgs: []

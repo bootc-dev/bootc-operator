@@ -223,7 +223,7 @@ func helmUpgradeOperator(t *testing.T, chartPath, img string, extraArgs []string
 	helmRun(t, args...)
 }
 
-// helmImageArgs returns the --set flags for image and controller args.
+// helmImageArgs returns the --set flags for image and E2E operator args.
 // An empty img keeps the image of the chart.
 func helmImageArgs(t *testing.T, img string, extraArgs []string) []string {
 	t.Helper()
@@ -237,6 +237,9 @@ func helmImageArgs(t *testing.T, img string, extraArgs []string) []string {
 	}
 	if secret := os.Getenv("E2E_IMAGE_PULL_SECRET"); secret != "" {
 		args = append(args, "--set", "imagePullSecrets[0].name="+secret)
+	}
+	if interval := os.Getenv("E2E_BOOTC_POLL_INTERVAL"); interval != "" {
+		args = append(args, "--set-string", "daemon.extraArgs[0]=--bootc-poll-interval="+interval)
 	}
 	if len(extraArgs) > 0 {
 		j, err := json.Marshal(extraArgs)

@@ -15,7 +15,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
-	"github.com/bootc-dev/bootc-operator/internal/daemon"
 	"github.com/bootc-dev/bootc-operator/test/e2e/e2eutil"
 	testutil "github.com/bootc-dev/bootc-operator/test/util"
 )
@@ -29,6 +28,11 @@ func TestExternalBootcStatusChange(t *testing.T) {
 	g := NewWithT(t)
 	g.SetDefaultEventuallyTimeout(pollTimeout)
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
+	// Match the interval configured by deploy-bink and preserved by the upgrade test.
+	pollIntervalArg := os.Getenv("E2E_BOOTC_POLL_INTERVAL")
+	fallbackPollInterval, err := time.ParseDuration(pollIntervalArg)
+	g.Expect(err).NotTo(HaveOccurred(), "E2E_BOOTC_POLL_INTERVAL must be a duration")
+	g.Expect(fallbackPollInterval).To(BeNumerically(">", 0))
 	env := e2eutil.New(t)
 	workerCreationStart := time.Now()
 	nodeName := env.AddNode(t)
@@ -57,8 +61,8 @@ func TestExternalBootcStatusChange(t *testing.T) {
 	g.Expect(pod.Status.ContainerStatuses).To(ConsistOf(HaveField("RestartCount", int32(0))))
 	g.Expect(pod.Spec.Containers).To(HaveLen(1))
 	g.Expect(append(pod.Spec.Containers[0].Command, pod.Spec.Containers[0].Args...)).
-		NotTo(ContainElement(ContainSubstring("bootc-poll-interval")),
-			"the test relies on the daemon's default polling interval")
+		To(ContainElement("--bootc-poll-interval="+pollIntervalArg),
+			"the test relies on the configured E2E polling interval")
 
 	const stageUnit = "bootc-e2e-external-switch.service"
 	// Killing kubectl does not stop a transient service on the host. Run this
@@ -101,7 +105,7 @@ func TestExternalBootcStatusChange(t *testing.T) {
 		"bootc", "switch", env.NodeImageUpdateDigestedPullSpec(),
 	)
 
-	// This is well below the daemon's default fallback polling interval.
+	// This is well below the configured E2E fallback polling interval.
 	observationCtx, cancelObservation := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelObservation()
 	testutil.WaitForNodeIdle(t, g, observationCtx, env.Client, nodeName, 30*time.Second,
@@ -111,10 +115,10 @@ func TestExternalBootcStatusChange(t *testing.T) {
 	g.Expect(observationCtx.Err()).
 		NotTo(HaveOccurred(), "status must be observed within 30 seconds")
 
-	// Fallback polling waits for the default interval after watcher startup.
+	// Fallback polling waits for the configured interval after watcher startup.
 	// This bound starts before the worker exists and uses the runner's clock,
 	// so a fallback poll cannot account for the observed status update.
-	g.Expect(time.Since(workerCreationStart)).To(BeNumerically("<", daemon.DefaultPollInterval),
+	g.Expect(time.Since(workerCreationStart)).To(BeNumerically("<", fallbackPollInterval),
 		"status must be observed before the first possible fallback poll")
 
 	var after bootcv1alpha1.BootcNode
