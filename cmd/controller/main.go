@@ -4,6 +4,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -46,6 +47,7 @@ func init() {
 
 func main() {
 	var enableLeaderElection bool
+	var showVersion bool
 	var probeAddr string
 	var tagResolutionInterval time.Duration
 	var allowInsecureRegistry bool
@@ -70,11 +72,16 @@ func main() {
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
+	flag.BoolVar(&showVersion, "version", false, "Print version and exit.")
 	opts := zap.Options{
 		Development: true,
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
+	if showVersion {
+		fmt.Println(version.String())
+		return
+	}
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 

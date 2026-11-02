@@ -36,18 +36,24 @@ func init() {
 
 func main() {
 	var pollInterval time.Duration
+	var showVersion bool
 	flag.DurationVar(
 		&pollInterval,
 		"bootc-poll-interval",
 		daemon.DefaultPollInterval,
 		"Interval for polling bootc status as a fallback to fsnotify",
 	)
+	flag.BoolVar(&showVersion, "version", false, "Print version and exit.")
 
 	opts := zap.Options{
 		Development: true,
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
+	if showVersion {
+		fmt.Println(version.String())
+		return
+	}
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
