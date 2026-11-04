@@ -161,36 +161,6 @@ func TestResolveMaxUnavailable(t *testing.T) {
 	}
 }
 
-func TestSelectDrainCandidates(t *testing.T) {
-	g := NewWithT(t)
-
-	makeBN := func(name string, slotted bool) *bootcv1alpha1.BootcNode {
-		bn := &bootcv1alpha1.BootcNode{}
-		bn.Name = name
-		if slotted {
-			bn.Annotations = map[string]string{bootcv1alpha1.AnnotationInRebootSlot: ""}
-		}
-		return bn
-	}
-
-	// Core behavior: slotted nodes always included and come first
-	// (alphabetical), then unslotted up to availableSlots (alphabetical).
-	staged := []*bootcv1alpha1.BootcNode{
-		makeBN("node-c", false),
-		makeBN("node-b", true),
-		makeBN("node-a", true),
-		makeBN("node-d", false),
-	}
-	candidates := selectDrainCandidates(staged, 1)
-	g.Expect(candidates).To(HaveLen(3))
-	g.Expect(candidates[0].Name).To(Equal("node-a")) // slotted, alphabetical
-	g.Expect(candidates[1].Name).To(Equal("node-b")) // slotted, alphabetical
-	g.Expect(candidates[2].Name).To(Equal("node-c")) // first unslotted by name
-
-	// Zero available slots with no slotted nodes returns nil.
-	g.Expect(selectDrainCandidates([]*bootcv1alpha1.BootcNode{makeBN("x", false)}, 0)).To(BeNil())
-}
-
 func TestClassifyNode(t *testing.T) {
 	const (
 		desiredImage  = testImageDigestRefA

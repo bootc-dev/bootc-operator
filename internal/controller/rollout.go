@@ -153,7 +153,7 @@ func (r *BootcNodePoolReconciler) driveRollout(
 	}
 
 	availableSlots := max(0, maxUnavail-rs.occupiedSlots)
-	candidates := selectDrainCandidates(rs.staged, availableSlots)
+	slotted, unslotted := partitionSlottedNodes(rs.staged)
 
 	log.V(1).Info("Rollout state",
 		"upToDate", len(rs.upToDate),
@@ -166,23 +166,28 @@ func (r *BootcNodePoolReconciler) driveRollout(
 		"occupiedSlots", rs.occupiedSlots,
 		"maxUnavailable", maxUnavail,
 		"availableSlots", availableSlots,
-		"candidates", nodeNames(candidates),
+		"candidates", map[string][]string{
+			"slotted":   nodeNames(slotted),
+			"unslotted": nodeNames(unslotted),
+		},
 	)
 
-	// Assign reboot slots to candidates.
-	// assignRebootSlot patches the BootcNode, so the resulting object event
-	// triggers the next reconciliation. No timed requeue is needed here.
-	for _, bn := range candidates {
+	// Process candidates in slot-priority order. Slotted candidates are retried
+	// regardless of available capacity; unslotted candidates consume capacity
+	// only when processCandidate successfully assigns a slot. Returns true only
+	// when the reboot slot is assigned; deferrals return false.
+	processCandidate := func(bn *bootcv1alpha1.BootcNode) (bool, error) {
 		var node corev1.Node
 		if err := r.Get(ctx, types.NamespacedName{Name: bn.Name}, &node); err != nil {
-			return nil, fmt.Errorf("fetching node %s: %w", bn.Name, err)
+			return false, fmt.Errorf("fetching node %s: %w", bn.Name, err)
 		}
+
 		// isKarpenterDisruptionActive fetches the NodeClaim as part of its
 		// disruption checks. When disruption is not active, it returns the
 		// claim so assignRebootSlot can reuse it without a second API call.
 		kds, err := r.isKarpenterDisruptionActive(ctx, &node)
 		if err != nil {
-			return nil, fmt.Errorf("checking Karpenter disruption for %s: %w", bn.Name, err)
+			return false, fmt.Errorf("checking Karpenter disruption for %s: %w", bn.Name, err)
 		}
 		switch {
 		case kds.claimMissing:
@@ -192,22 +197,56 @@ func (r *BootcNodePoolReconciler) driveRollout(
 				bn.Name,
 			)
 			rs.setRequeueAfter(karpenterRequeueInterval)
-			continue
+			return false, nil
 		case kds.active:
 			log.Info("Deferring reboot slot: Karpenter disruption is active", "node", bn.Name)
 			rs.setRequeueAfter(karpenterRequeueInterval)
-			continue
+			return false, nil
 		}
+
 		// The disruption check and fencing writes are separate operations. Karpenter
 		// may start a disruption in between, so this coordination remains best effort.
+		// assignRebootSlot patches the BootcNode, so the resulting object event
+		// triggers the next reconciliation. No timed requeue is needed here.
 		if err := r.assignRebootSlot(ctx, bn, &node, kds.prefetchedClaim); err != nil {
-			return nil, fmt.Errorf("assigning reboot slot to %s: %w", bn.Name, err)
+			return false, fmt.Errorf("assigning reboot slot to %s: %w", bn.Name, err)
 		}
+
 		// Periodic requeue fallback: now that a slot is assigned to a
 		// Karpenter-owned node, ensure we poll for NodeClaim status changes
 		// even when the NodeClaim watch is not registered.
 		if isNodeOwnedByKarpenterNodeClaim(&node) {
 			rs.setRequeueAfter(karpenterRequeueInterval)
+		}
+
+		return true, nil
+	}
+
+	// Always process slotted candidates, regardless of capacity.
+	for _, bn := range slotted {
+		if _, err := processCandidate(bn); err != nil {
+			return nil, err
+		}
+	}
+
+	// Assign unslotted nodes to slots when slots are available.
+	assignedSlots := 0
+	for _, bn := range unslotted {
+		// Stop once there are no more available slots.
+		if assignedSlots >= availableSlots {
+			break
+		}
+
+		isSlotted, err := processCandidate(bn)
+		if err != nil {
+			return nil, err
+		}
+
+		// Unslotted nodes are considered slotted only when the reboot slot is
+		// assigned to them. Nodes that are deferred are not considered slotted and
+		// are skipped.
+		if isSlotted {
+			assignedSlots++
 		}
 	}
 
@@ -230,17 +269,21 @@ func (r *BootcNodePoolReconciler) driveRollout(
 		if !metav1.HasAnnotation(bn.ObjectMeta, bootcv1alpha1.AnnotationInRebootSlot) {
 			continue
 		}
+
 		if bn.Spec.DesiredImageState == bootcv1alpha1.DesiredImageStateBooted {
 			continue
 		}
+
 		var node corev1.Node
 		if err := r.Get(ctx, types.NamespacedName{Name: bn.Name}, &node); err != nil {
 			return nil, fmt.Errorf("fetching node %s: %w", bn.Name, err)
 		}
+
 		kds, err := r.isKarpenterDisruptionActive(ctx, &node)
 		if err != nil {
 			return nil, fmt.Errorf("checking Karpenter disruption for %s: %w", bn.Name, err)
 		}
+
 		switch {
 		case kds.claimMissing:
 			log.Info("Deferring drain: Karpenter NodeClaim is unexpectedly absent, will retry",
@@ -252,6 +295,7 @@ func (r *BootcNodePoolReconciler) driveRollout(
 			rs.setRequeueAfter(karpenterRequeueInterval)
 			continue
 		}
+
 		r.ensureDrain(ctx, pool, bn)
 	}
 
@@ -834,22 +878,15 @@ func resolveMaxUnavailable(pool *bootcv1alpha1.BootcNodePool, nodeCount int) (in
 	return v, nil
 }
 
-// selectDrainCandidates picks Staged nodes that need the drain flow started or
-// restarted. Nodes that already have the in-reboot-slot annotation are always
-// included (e.g. they had a slot before a controller restart and need their
-// drain restarted). These nodes are already counted in occupiedSlots so they
-// don't consume availableSlots. Beyond those, up to availableSlots unslotted
-// nodes are appended, sorted alphabetically.
-func selectDrainCandidates(
+// partitionSlottedNodes separates staged nodes into slotted and unslotted
+// slices based on the presence of the in-reboot-slot annotation. It returns
+// all nodes, sorting each slice by name; it does not limit the unslotted slice
+// to the currently available reboot slots.
+func partitionSlottedNodes(
 	staged []*bootcv1alpha1.BootcNode,
-	availableSlots int,
-) []*bootcv1alpha1.BootcNode {
-	if len(staged) == 0 {
-		return nil
-	}
-
-	// Partition into already-slotted vs new candidates.
+) ([]*bootcv1alpha1.BootcNode, []*bootcv1alpha1.BootcNode) {
 	var slotted, unslotted []*bootcv1alpha1.BootcNode
+
 	for _, bn := range staged {
 		if metav1.HasAnnotation(bn.ObjectMeta, bootcv1alpha1.AnnotationInRebootSlot) {
 			slotted = append(slotted, bn)
@@ -857,25 +894,16 @@ func selectDrainCandidates(
 			unslotted = append(unslotted, bn)
 		}
 	}
+
 	slices.SortFunc(slotted, func(a, b *bootcv1alpha1.BootcNode) int {
 		return strings.Compare(a.Name, b.Name)
 	})
+
 	slices.SortFunc(unslotted, func(a, b *bootcv1alpha1.BootcNode) int {
 		return strings.Compare(a.Name, b.Name)
 	})
 
-	// Always re-select slotted nodes. Fill remaining capacity with
-	// unslotted nodes.
-	result := slotted
-	if availableSlots > 0 && len(unslotted) > 0 {
-		n := min(availableSlots, len(unslotted))
-		result = append(result, unslotted[:n]...)
-	}
-
-	if len(result) == 0 {
-		return nil
-	}
-	return result
+	return slotted, unslotted
 }
 
 // nodeNames returns the names of the given BootcNodes for logging.

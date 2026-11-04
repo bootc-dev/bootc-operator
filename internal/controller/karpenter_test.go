@@ -16,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	kubernetesfake "k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -1256,4 +1257,48 @@ func TestRemoveOwnedAnnotationRemovesExternallyChangedValue(t *testing.T) {
 		"example.com/annotation",
 	)).To(BeTrue())
 	g.Expect(target.GetAnnotations()).NotTo(HaveKey("example.com/annotation"))
+}
+
+func TestDriveRolloutSkipsDeferredCandidateToFillAvailableSlot(t *testing.T) {
+	g := NewWithT(t)
+	ctx := context.Background()
+
+	staged := func(name string) *bootcv1alpha1.BootcNode {
+		return testutil.NewBootcNode(name, testImageDigestRefA,
+			testutil.WithBootcNodeBootedDigest(testDigestB),
+			testutil.WithBootcNodeCondition(
+				bootcv1alpha1.NodeIdle,
+				metav1.ConditionFalse,
+				bootcv1alpha1.NodeReasonStaged,
+			),
+		)
+	}
+	first, second := staged("node-a"), staged("node-b")
+
+	// node-a cannot be updated: its referenced NodeClaim is missing.
+	firstNode := testutil.NewK8sNode("node-a", nil,
+		testutil.WithOwnerReferences([]metav1.OwnerReference{{
+			APIVersion: karpenter.NodeClaimAPIVersion,
+			Kind:       karpenter.NodeClaimKind,
+			Name:       "missing-claim",
+			UID:        types.UID("missing-claim-uid"),
+		}}))
+	secondNode := testutil.NewK8sNode("node-b", nil)
+
+	pool := testutil.NewPool("test-pool", testImageDigestRefA,
+		testutil.WithMaxUnavailable(intstr.FromInt32(1)))
+	pool.Status.TargetDigest = testDigestA
+
+	r, _ := newFakeReconciler(first, second, firstNode, secondNode)
+	_, err := r.driveRollout(ctx, pool, map[string]*bootcv1alpha1.BootcNode{
+		"node-a": first,
+		"node-b": second,
+	})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var gotFirst, gotSecond bootcv1alpha1.BootcNode
+	g.Expect(r.Get(ctx, client.ObjectKey{Name: "node-a"}, &gotFirst)).To(Succeed())
+	g.Expect(r.Get(ctx, client.ObjectKey{Name: "node-b"}, &gotSecond)).To(Succeed())
+	g.Expect(gotFirst.Annotations).NotTo(HaveKey(bootcv1alpha1.AnnotationInRebootSlot))
+	g.Expect(gotSecond.Annotations).To(HaveKey(bootcv1alpha1.AnnotationInRebootSlot))
 }
