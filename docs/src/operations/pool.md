@@ -44,6 +44,18 @@ The operator stages the new image on each node, drains workloads, and reboots
 nodes according to the rollout settings. Nodes that are already running the
 target digest are left untouched.
 
+### Controlling rollout concurrency
+
+The disruptive part of a rollout (draining and rebooting nodes) is limited by
+`spec.rollout.maxUnavailable`. It accepts an integer or percentage and defaults
+to `1`. Image staging is non-disruptive and can proceed on all nodes in the pool
+before a reboot slot is available.
+
+The controller considers all staged nodes when filling available reboot slots.
+A node that is temporarily deferred does not consume a slot, so another
+eligible staged node can continue. Nodes that already hold a slot continue to
+be reconciled regardless of the remaining capacity.
+
 ## Monitoring a rollout
 
 The `BootcNodePool` status shows the overall rollout progress:

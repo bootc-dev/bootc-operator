@@ -56,6 +56,10 @@ mid-deletion) and defers reboot-slot assignment and drain with a short requeue
 rather than proceeding. No Karpenter annotations are applied until a reboot
 slot is assigned.
 
+A deferred Karpenter node does not block the rest of the rollout. The
+controller continues evaluating other staged nodes and assigns available reboot
+slots to eligible nodes; the deferred node is retried on a later reconciliation.
+
 If none of those signals is active, the controller takes the following steps:
 
 1. For each annotation (`do-not-repair`, `do-not-disrupt`): if the annotation

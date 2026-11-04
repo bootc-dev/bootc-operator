@@ -427,6 +427,13 @@ governed by three rules:
    is bad. Note that Degraded is a BootcNode condition while Ready is
    a K8s Node condition -- these are independent checks.
 
+When assigning slots, the controller processes nodes that already have a slot
+first, then evaluates all other staged nodes until the available capacity is
+filled. A staged node that is temporarily deferred by an external condition
+does not consume capacity, so a later eligible node can still be assigned a
+slot. Existing slotted nodes continue to be processed even when no new slot is
+available.
+
 A node enters a slot when the controller sets the
 `bootc.dev/in-reboot-slot` annotation on the BootcNode, cordons the
 K8s Node, and starts draining. The annotation is the persistent marker
