@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -247,5 +248,74 @@ func TestWatcherNoPollWhenFsnotifyHealthy(t *testing.T) {
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("watcher returned error: %v", err)
+	}
+}
+
+func TestWatcherGetVersion(t *testing.T) {
+	tests := []struct {
+		name      string
+		output    string
+		execErr   error
+		wantVer   string
+		wantErr   bool
+		wantCalls int
+	}{
+		{
+			name:      "success is cached",
+			output:    testBootcVersionOutput,
+			wantVer:   testBootcVersion,
+			wantCalls: 1,
+		},
+		{
+			name:      "parse failure is cached",
+			output:    "garbage",
+			wantErr:   true,
+			wantCalls: 1,
+		},
+		{
+			name:      "exec failure is retried",
+			execErr:   errors.New("nsenter failed"),
+			wantErr:   true,
+			wantCalls: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeExecutor{version: tt.output, versionErr: tt.execErr}
+			w := &StatusWatcher{Executor: f}
+
+			for range 2 {
+				got, err := w.GetVersion(context.Background())
+				if tt.wantErr != (err != nil) {
+					t.Fatalf("GetVersion() error = %v, wantErr %v", err, tt.wantErr)
+				}
+				if got != tt.wantVer {
+					t.Fatalf("GetVersion() = %q, want %q", got, tt.wantVer)
+				}
+			}
+			if f.versionCalls != tt.wantCalls {
+				t.Fatalf("Version() calls = %d, want %d", f.versionCalls, tt.wantCalls)
+			}
+		})
+	}
+}
+
+func TestWatcherGetVersionRecovers(t *testing.T) {
+	f := &fakeExecutor{versionErr: errors.New("nsenter failed")}
+	w := &StatusWatcher{Executor: f}
+
+	if _, err := w.GetVersion(context.Background()); err == nil {
+		t.Fatal("expected error")
+	}
+
+	f.versionErr = nil
+	f.version = testBootcVersionOutput
+	got, err := w.GetVersion(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != testBootcVersion {
+		t.Fatalf("GetVersion() = %q, want %q", got, testBootcVersion)
 	}
 }

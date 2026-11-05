@@ -20,7 +20,11 @@ import (
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
 )
 
-const testNodeName = "test-node"
+const (
+	testNodeName           = "test-node"
+	testBootcVersion       = "1.8.0"
+	testBootcVersionOutput = "bootc " + testBootcVersion + "\n"
+)
 
 var (
 	testEnv        *envtest.Environment
@@ -64,7 +68,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	fake := &fakeExecutor{}
+	fake := &fakeExecutor{version: testBootcVersionOutput}
 	testReconciler = &BootcNodeReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
@@ -111,7 +115,7 @@ func TestMain(m *testing.M) {
 // newTestEnv creates a fresh fakeExecutor and StatusWatcher for a test,
 // wiring them into the shared reconciler. Each test gets its own cache.
 func newTestEnv() *fakeExecutor {
-	fake := &fakeExecutor{}
+	fake := &fakeExecutor{version: testBootcVersionOutput}
 	testReconciler.Executor = fake
 	testReconciler.rebootIssued = false
 	testReconciler.inflight.reset()
