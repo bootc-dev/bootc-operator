@@ -174,6 +174,7 @@ spec:                       # ← written by controller
     namespace: bootc-operator
   pullSecretHash: sha256:e3b0c4...
 status:                     # ← written by daemon
+  bootcVersion: "1.8.0"     # host bootc binary version
   booted:
     image: quay.io/example/myos@sha256:old789
     imageDigest: sha256:old789
