@@ -36,6 +36,31 @@ type StatusWatcher struct {
 	mu      sync.RWMutex
 	cached  *bootc.Status
 	started bool
+
+	versionMu   sync.Mutex
+	versionDone bool
+	version     string
+	versionErr  error
+}
+
+// GetVersion returns the host bootc version. The bootc binary lives in
+// the read-only host /usr and only changes across a (soft) reboot,
+// which also restarts the daemon (barring usroverlay/hotfix), so the
+// result of the first successful run, including a parse failure, is
+// cached. Failures to run bootc are retried on the next call.
+func (w *StatusWatcher) GetVersion(ctx context.Context) (string, error) {
+	w.versionMu.Lock()
+	defer w.versionMu.Unlock()
+	if w.versionDone {
+		return w.version, w.versionErr
+	}
+	data, err := w.Executor.Version(ctx)
+	if err != nil {
+		return "", err
+	}
+	w.version, w.versionErr = bootc.ParseVersion(data)
+	w.versionDone = true
+	return w.version, w.versionErr
 }
 
 // GetStatus returns the cached bootc status when the watcher loop is
