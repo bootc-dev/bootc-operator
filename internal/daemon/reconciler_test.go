@@ -12,6 +12,7 @@ import (
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
 	"github.com/bootc-dev/bootc-operator/internal/bootc"
@@ -381,6 +382,58 @@ func TestRollback(t *testing.T) {
 	))
 
 	g.Expect(fake.getRebooted()).To(BeFalse())
+}
+
+// TestStaleStatusNoSpuriousRestage verifies that a booted/desired
+// mismatch in the watcher's cached status is re-verified with a live
+// bootc status read before the daemon stages or reboots. A stale
+// cache — for example a read taken while the node was still settling
+// into the image it just rebooted into — must not cause the daemon to
+// re-stage and re-reboot an image the node already booted.
+func TestStaleStatusNoSpuriousRestage(t *testing.T) {
+	g := NewWithT(t)
+	ctx := context.Background()
+
+	// Post-reboot reality: the node is booted on image C. The executor
+	// is what a live bootc status read reports.
+	fake := &fakeExecutor{}
+	fake.status = newBootcStatus(testutil.DigestC)
+
+	// Stale cache: still believes the node is booted on image A.
+	stale := newBootcStatus(testutil.DigestA)
+	watcher := &StatusWatcher{
+		Events:   make(chan event.GenericEvent, 1),
+		NodeName: testNodeName,
+		Executor: fake,
+	}
+	watcher.cached = &stale
+	watcher.started = true
+
+	r := &BootcNodeReconciler{
+		NodeName:      testNodeName,
+		Executor:      fake,
+		StatusWatcher: watcher,
+		stageDone:     make(chan event.GenericEvent, 1),
+	}
+	t.Cleanup(func() {
+		r.inflight.mu.Lock()
+		if r.inflight.cancel != nil {
+			r.inflight.cancel()
+		}
+		r.inflight.mu.Unlock()
+	})
+
+	// The desired image is C, which matches what is actually booted.
+	bn := testutil.NewNode(testNodeName, testutil.ImageDigestRefC)
+
+	res, err := r.reconcileBootcNode(ctx, bn)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.needsReboot).To(BeFalse(),
+		"must not reboot a node already booted on the desired image")
+	g.Expect(fake.getStageImg()).To(BeEmpty(),
+		"stale cache must not trigger a spurious re-stage of the already-booted image")
+	g.Expect(bn.Status.Booted.ImageDigest).To(Equal(testutil.DigestC),
+		"the live re-read must correct the stale booted status")
 }
 
 func TestCancelInflightStage(t *testing.T) {

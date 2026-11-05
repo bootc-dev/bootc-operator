@@ -204,6 +204,20 @@ func (r *BootcNodeReconciler) reconcileBootcNode(
 		}, nil
 	}
 
+	// The cached status can be stale — for example a read taken while
+	// the node was still settling into the image it just rebooted
+	// into. A booted/desired mismatch leads to destructive action
+	// (stage, reboot), so re-verify it with a live bootc status read
+	// before acting, and keep using the fresh view below.
+	if !image.InfoMatchesDigest(bn.Status.Booted, digested.Digest().String()) {
+		if fresh, err := r.StatusWatcher.RefreshStatus(ctx); err != nil {
+			log.Info("Live bootc status refresh failed, continuing with cached status",
+				"error", err)
+		} else {
+			applyBootcStatus(bn, fresh)
+		}
+	}
+
 	// Nothing to do the desired image matches the booted ones.
 	// Reset the stage backoff to start from a clean state.
 	if image.InfoMatchesDigest(bn.Status.Booted, digested.Digest().String()) {
@@ -370,11 +384,17 @@ func (r *BootcNodeReconciler) populateBootcFields(
 		return fmt.Errorf("getting bootc status: %w", err)
 	}
 
+	applyBootcStatus(bn, status)
+
+	return nil
+}
+
+// applyBootcStatus copies the bootc status entries onto the BootcNode
+// status fields.
+func applyBootcStatus(bn *bootcv1alpha1.BootcNode, status *bootc.Status) {
 	bn.Status.Booted = convertBootEntry(status.Status.Booted)
 	bn.Status.Staged = convertBootEntry(status.Status.Staged)
 	bn.Status.Rollback = convertBootEntry(status.Status.Rollback)
-
-	return nil
 }
 
 // updateAction represents the next step the daemon should take for an
