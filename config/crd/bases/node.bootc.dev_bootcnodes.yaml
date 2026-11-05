@@ -100,6 +100,12 @@ spec:
           status:
             description: status defines the observed state, written by the daemon.
             properties:
+              bootcVersion:
+                description: |-
+                  bootcVersion is the version of the bootc binary on the host
+                  (e.g. "1.8.0"), as reported by bootc --version.
+                maxLength: 256
+                type: string
               booted:
                 description: booted describes the currently booted OS image.
                 properties:
