@@ -204,12 +204,26 @@ func (r *BootcNodeReconciler) reconcileBootcNode(
 		}, nil
 	}
 
+	desiredDigest := digested.Digest().String()
+
 	// Nothing to do the desired image matches the booted ones.
 	// Reset the stage backoff to start from a clean state.
-	if image.InfoMatchesDigest(bn.Status.Booted, digested.Digest().String()) {
+	if image.InfoMatchesDigest(bn.Status.Booted, desiredDigest) {
 		r.inflight.reset()
 		return reconcileResult{}, nil
 	}
+
+	// XXX: temporary debug logging for https://github.com/bootc-dev/bootc-operator/pull/251
+	stagedImg := "<nil>"
+	if bn.Status.Staged != nil {
+		stagedImg = bn.Status.Staged.Image
+	}
+	log.Info("XXX booted image mismatch",
+		"bootedImage", bn.Status.Booted.Image,
+		"bootedDigest", bn.Status.Booted.ImageDigest,
+		"desiredDigest", desiredDigest,
+		"stagedImage", stagedImg,
+	)
 
 	stageErr := r.inflight.takeErr()
 
