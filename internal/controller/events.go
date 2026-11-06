@@ -37,6 +37,15 @@ const (
 	eventNoteSuffix     = "..."
 )
 
+// effectiveDrainStallThreshold returns the configured drain stall threshold,
+// falling back to the default when the reconciler field is unset.
+func (r *BootcNodePoolReconciler) effectiveDrainStallThreshold() time.Duration {
+	if r.DrainStallThreshold > 0 {
+		return r.DrainStallThreshold
+	}
+	return drainStallThreshold
+}
+
 // EventNote renders the human-readable message of a Kubernetes Event. Each
 // implementation owns a small set of well-defined fields and is responsible for
 // producing a message that fits the events.k8s.io/v1 1 KiB note limit. Notes
@@ -369,6 +378,7 @@ func (r *BootcNodePoolReconciler) recordDrainStalls(
 	nodes map[string]*bootcv1alpha1.BootcNode,
 ) time.Duration {
 	now := time.Now()
+	threshold := r.effectiveDrainStallThreshold()
 	var stalledNodes []*bootcv1alpha1.BootcNode
 	var nextCheck time.Duration
 
@@ -378,7 +388,7 @@ func (r *BootcNodePoolReconciler) recordDrainStalls(
 			continue
 		}
 
-		remaining := drainStallThreshold - now.Sub(status.startTime)
+		remaining := threshold - now.Sub(status.startTime)
 		if remaining > 0 {
 			nextCheck = earlierRequeue(nextCheck, remaining)
 			continue
@@ -398,7 +408,7 @@ func (r *BootcNodePoolReconciler) recordDrainStalls(
 			corev1.EventTypeWarning,
 			eventReasonDrainTakingTooLong,
 			eventActionDrain,
-			drainStalledNote{Threshold: drainStallThreshold},
+			drainStalledNote{Threshold: threshold},
 		)
 	}
 

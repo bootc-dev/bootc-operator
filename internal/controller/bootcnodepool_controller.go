@@ -69,6 +69,10 @@ type BootcNodePoolReconciler struct {
 	TagResolver           TagResolver
 	TagResolutionInterval time.Duration
 
+	// DrainStallThreshold is how long a drain may run before the
+	// controller reports it as stalled. Zero uses the default.
+	DrainStallThreshold time.Duration
+
 	// PullSecretNamespaces is the allowlist of namespaces pools may
 	// reference pull secrets from. The manager's Secret cache must be
 	// restricted to the same namespaces.

@@ -648,26 +648,10 @@ func (r *BootcNodePoolReconciler) ensureDrain(
 	}
 	r.drains[bn.Name] = status
 
-	var drainTimeout time.Duration // 0 means no timeout
-	if pool.Spec.Rollout != nil && pool.Spec.Rollout.DrainTimeoutSeconds != nil {
-		drainTimeout = time.Duration(*pool.Spec.Rollout.DrainTimeoutSeconds) * time.Second
-	}
-
-	drainLog := log.WithValues("node", bn.Name)
+	var drainTimeout = resolveDrainTimeout(pool)
 
 	go func() {
-		drainer := &drain.Helper{
-			Client:               r.KubeClient,
-			Ctx:                  drainCtx,
-			Timeout:              drainTimeout,
-			EvictErrorRetryDelay: 5 * time.Second,
-			Force:                true,
-			IgnoreAllDaemonSets:  true,
-			DeleteEmptyDirData:   true,
-			GracePeriodSeconds:   -1,
-			Out:                  newDrainOutWriter(drainLog, bn.Name),
-			ErrOut:               newDrainErrWriter(drainLog, bn.Name),
-		}
+		drainer := r.newDrainHelper(drainCtx, bn.Name, drainTimeout)
 		status.result <- drain.RunNodeDrain(drainer, bn.Name)
 
 		// Re-enqueue the owning pool so the reconciler picks up the
@@ -678,6 +662,29 @@ func (r *BootcNodePoolReconciler) ensureDrain(
 			},
 		}
 	}()
+}
+
+// newDrainHelper builds the drain.Helper configuration used for a node. It is
+// shared by the drain goroutine and drain-stall diagnostics so both observe the
+// same pod set.
+func (r *BootcNodePoolReconciler) newDrainHelper(
+	ctx context.Context,
+	nodeName string,
+	timeout time.Duration,
+) *drain.Helper {
+	log := logf.FromContext(ctx).WithValues("node", nodeName)
+	return &drain.Helper{
+		Client:               r.KubeClient,
+		Ctx:                  ctx,
+		Timeout:              timeout,
+		EvictErrorRetryDelay: 5 * time.Second,
+		Force:                true,
+		IgnoreAllDaemonSets:  true,
+		DeleteEmptyDirData:   true,
+		GracePeriodSeconds:   -1,
+		Out:                  newDrainOutWriter(log, nodeName),
+		ErrOut:               newDrainErrWriter(log, nodeName),
+	}
 }
 
 // collectDrainResults checks all in-progress drains for completed
@@ -960,6 +967,15 @@ func (s nodeState) String() string {
 	default:
 		return fmt.Sprintf("Unknown(%d)", int(s))
 	}
+}
+
+// resolveDrainTimeout returns the configured drain timeout, or 0 when drains
+// are allowed to run without a timeout.
+func resolveDrainTimeout(pool *bootcv1alpha1.BootcNodePool) time.Duration {
+	if pool.Spec.Rollout == nil || pool.Spec.Rollout.DrainTimeoutSeconds == nil {
+		return 0
+	}
+	return time.Duration(*pool.Spec.Rollout.DrainTimeoutSeconds) * time.Second
 }
 
 // resolveRebootTimeout returns the configured reboot timeout, or 0 if the
