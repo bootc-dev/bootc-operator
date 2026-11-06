@@ -4,6 +4,7 @@ package controller
 
 import (
 	"math"
+	"slices"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -192,6 +193,154 @@ func TestSyncPoolStatusEmptyPool(t *testing.T) {
 		HaveField("Type", bootcv1alpha1.PoolUpToDate),
 		HaveField("Status", metav1.ConditionTrue),
 		HaveField("Reason", bootcv1alpha1.PoolAllUpdated),
+	)))
+}
+
+// pdbStagedNode builds a staged node, optionally holding a reboot slot.
+func pdbStagedNode(name string, slotted bool) *bootcv1alpha1.BootcNode {
+	node := testutil.NewBootcNode(name, testImageDigestRefA)
+	if slotted {
+		node.Annotations = map[string]string{
+			bootcv1alpha1.AnnotationInRebootSlot: "",
+		}
+	}
+	return node
+}
+
+// Verifies that a fully consumed rollout blocked by PDBs reports
+// UpToDate=False/PDBBlocked, while partial blocks keep RolloutInProgress with a
+// per-node hint. Paused keeps priority over PDBBlocked.
+func TestSyncPoolStatusPDBBlocked(t *testing.T) {
+	tests := []struct {
+		name           string
+		paused         bool
+		occupiedSlots  int
+		maxUnavailable int
+		slottedNodes   []string
+		blockedNodes   []string
+		wantReason     string
+		wantMessage    string
+	}{
+		{
+			name:           "total block",
+			occupiedSlots:  2,
+			maxUnavailable: 2,
+			slottedNodes:   []string{"n1", "n2"},
+			blockedNodes:   []string{"n1", "n2"},
+			wantReason:     bootcv1alpha1.PoolPDBBlocked,
+			wantMessage: "0/2 updated; 0 pending, 0 staging, 2 staged, 0 rebooting, " +
+				"0 degraded; n1 blocked by PDB default/a; " +
+				"n2 blocked by PDB default/b",
+		},
+		{
+			name:           "partial block",
+			occupiedSlots:  2,
+			maxUnavailable: 2,
+			slottedNodes:   []string{"n1", "n2"},
+			blockedNodes:   []string{"n1"},
+			wantReason:     bootcv1alpha1.PoolRolloutInProgress,
+			wantMessage: "0/2 updated; 0 pending, 0 staging, 2 staged, 0 rebooting, " +
+				"0 degraded; n1 blocked by PDB default/a",
+		},
+		{
+			name:           "slots not fully consumed",
+			occupiedSlots:  1,
+			maxUnavailable: 2,
+			slottedNodes:   []string{"n1"},
+			blockedNodes:   []string{"n1"},
+			wantReason:     bootcv1alpha1.PoolRolloutInProgress,
+			wantMessage: "0/2 updated; 0 pending, 0 staging, 2 staged, 0 rebooting, " +
+				"0 degraded; n1 blocked by PDB default/a",
+		},
+		{
+			name:           "paused has priority",
+			paused:         true,
+			occupiedSlots:  2,
+			maxUnavailable: 2,
+			slottedNodes:   []string{"n1", "n2"},
+			blockedNodes:   []string{"n1", "n2"},
+			wantReason:     bootcv1alpha1.PoolPaused,
+			wantMessage: "0/2 updated; 0 pending, 0 staging, 2 staged, 0 rebooting, " +
+				"0 degraded; n1 blocked by PDB default/a; " +
+				"n2 blocked by PDB default/b",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewWithT(t)
+
+			pool := testutil.NewPool(
+				"test",
+				testImageDigestRefA,
+				testutil.WithWorkerSelector(),
+				testutil.WithPaused(tt.paused),
+			)
+			pool.Status.TargetDigest = testDigestA
+
+			rs := &rolloutState{
+				staged: []*bootcv1alpha1.BootcNode{
+					pdbStagedNode("n1", slices.Contains(tt.slottedNodes, "n1")),
+					pdbStagedNode("n2", slices.Contains(tt.slottedNodes, "n2")),
+				},
+				occupiedSlots:  tt.occupiedSlots,
+				maxUnavailable: tt.maxUnavailable,
+				pdbBlocked:     map[string][]pdbBlock{},
+			}
+			for _, nodeName := range tt.blockedNodes {
+				pdbName := "a"
+				if nodeName == "n2" {
+					pdbName = "b"
+				}
+				rs.pdbBlocked[nodeName] = []pdbBlock{{
+					PDBs: []pdbRef{{Namespace: "default", Name: pdbName}},
+					Hint: pdbNeverAllowsEvictionHint,
+				}}
+			}
+
+			syncPoolStatus(pool, rs)
+
+			g.Expect(pool.Status.Conditions).To(ContainElement(And(
+				HaveField("Type", bootcv1alpha1.PoolUpToDate),
+				HaveField("Status", metav1.ConditionFalse),
+				HaveField("Reason", tt.wantReason),
+				HaveField("Message", tt.wantMessage),
+			)))
+		})
+	}
+}
+
+// Verifies that the PDBBlocked reason clears when the blocking PDBs no longer
+// block the drains.
+func TestSyncPoolStatusPDBBlockedClears(t *testing.T) {
+	g := NewWithT(t)
+
+	pool := testutil.NewPool("test", testImageDigestRefA, testutil.WithWorkerSelector())
+	pool.Status.TargetDigest = testDigestA
+
+	rs := &rolloutState{
+		staged:         []*bootcv1alpha1.BootcNode{pdbStagedNode("n1", true)},
+		occupiedSlots:  1,
+		maxUnavailable: 1,
+		pdbBlocked: map[string][]pdbBlock{
+			"n1": {{
+				PDBs: []pdbRef{{Namespace: "default", Name: "a"}},
+				Hint: pdbNeverAllowsEvictionHint,
+			}},
+		},
+	}
+	syncPoolStatus(pool, rs)
+	g.Expect(pool.Status.Conditions).To(ContainElement(And(
+		HaveField("Type", bootcv1alpha1.PoolUpToDate),
+		HaveField("Reason", bootcv1alpha1.PoolPDBBlocked),
+	)))
+
+	rs.pdbBlocked = nil
+	syncPoolStatus(pool, rs)
+	g.Expect(pool.Status.Conditions).To(ContainElement(And(
+		HaveField("Type", bootcv1alpha1.PoolUpToDate),
+		HaveField("Reason", bootcv1alpha1.PoolRolloutInProgress),
+		HaveField("Message", Not(ContainSubstring("blocked by PDB"))),
 	)))
 }
 

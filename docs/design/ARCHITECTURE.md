@@ -135,6 +135,7 @@ Pool conditions and their reasons:
 | UpToDate  | True   | AllUpdated        | All nodes are running targetDigest                  |
 | UpToDate  | False  | RolloutInProgress | Nodes are actively being updated                    |
 | UpToDate  | False  | Paused            | Updates pending but pool is paused                  |
+| UpToDate  | False  | PDBBlocked        | Stalled drains blocked by PodDisruptionBudgets      |
 | Degraded  | True   | NodeConflict      | Node selector overlaps with another pool            |
 | Degraded  | True   | NodeDegraded      | At least one node has errors or isn't converging    |
 | Degraded  | True   | RolloutHalted     | 2+ unhealthy nodes in reboot slots; rollout stopped |

@@ -5,6 +5,7 @@ package controller
 import (
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -59,6 +60,13 @@ func syncUpToDateCondition(pool *bootcv1alpha1.BootcNodePool, rs *rolloutState) 
 			Reason:  bootcv1alpha1.PoolPaused,
 			Message: rolloutBreakdown(pool, rs),
 		})
+	case pool.Status.NodeCount != pool.Status.UpdatedCount && allSlotsPDBBlocked(rs):
+		apimeta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
+			Type:    bootcv1alpha1.PoolUpToDate,
+			Status:  metav1.ConditionFalse,
+			Reason:  bootcv1alpha1.PoolPDBBlocked,
+			Message: rolloutBreakdown(pool, rs),
+		})
 	case pool.Status.NodeCount != pool.Status.UpdatedCount:
 		apimeta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
 			Type:    bootcv1alpha1.PoolUpToDate,
@@ -73,6 +81,30 @@ func syncUpToDateCondition(pool *bootcv1alpha1.BootcNodePool, rs *rolloutState) 
 			Reason: bootcv1alpha1.PoolAllUpdated,
 		})
 	}
+}
+
+// allSlotsPDBBlocked reports whether every occupied reboot slot is held by a
+// stalled drain blocked by a PodDisruptionBudget, and the rollout has consumed
+// all of its disruption budget.
+func allSlotsPDBBlocked(rs *rolloutState) bool {
+	if rs.maxUnavailable <= 0 ||
+		rs.occupiedSlots == 0 ||
+		rs.occupiedSlots < rs.maxUnavailable ||
+		len(rs.pdbBlocked) == 0 {
+		return false
+	}
+
+	slotted := 0
+	for _, bn := range rs.staged {
+		if !metav1.HasAnnotation(bn.ObjectMeta, bootcv1alpha1.AnnotationInRebootSlot) {
+			continue
+		}
+		slotted++
+		if _, ok := rs.pdbBlocked[bn.Name]; !ok {
+			return false
+		}
+	}
+	return slotted > 0 && slotted == rs.occupiedSlots
 }
 
 func rolloutBreakdown(pool *bootcv1alpha1.BootcNodePool, rs *rolloutState) string {
@@ -97,6 +129,18 @@ func rolloutBreakdown(pool *bootcv1alpha1.BootcNodePool, rs *rolloutState) strin
 			b.WriteString(", ")
 		}
 		fmt.Fprintf(&b, "%d %s", bk.count, bk.name)
+	}
+
+	if len(rs.pdbBlocked) > 0 {
+		nodeNames := make([]string, 0, len(rs.pdbBlocked))
+		for nodeName := range rs.pdbBlocked {
+			nodeNames = append(nodeNames, nodeName)
+		}
+		slices.Sort(nodeNames)
+		for _, nodeName := range nodeNames {
+			fmt.Fprintf(&b, "; %s blocked by %s",
+				nodeName, pdbBlocksDescription(rs.pdbBlocked[nodeName]))
+		}
 	}
 	return b.String()
 }
