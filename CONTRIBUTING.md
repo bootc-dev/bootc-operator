@@ -148,6 +148,35 @@ make e2e RUN=Foo     # Run tests matching "Foo"
 > every code change. Run `make buildimg` followed by `make deploy-bink` to
 > pick up your latest changes in the cluster.
 
+### Quarantining Flaky Tests
+
+A test that is intermittently failing for reasons outside the operator's
+control can be quarantined so it stops blocking CI while the underlying
+issue is investigated:
+
+```go
+func TestFlaky(t *testing.T) {
+	testutil.Quarantine(t, "flaky: <what fails>, <tracking issue URL>")
+
+	// ... rest of the test, unchanged
+}
+```
+
+Call `Quarantine` first thing in the test, before any provisioning, so a
+skipped test costs nothing. The reason must reference an open tracking
+issue: that is what tells us when the quarantine can be lifted.
+
+Quarantined tests are skipped via `t.Skip` unless `E2E_RUN_QUARANTINED` is
+set to a truthy value, so they still run on demand, for example to check
+whether the underlying issue has been fixed:
+
+```shell
+E2E_RUN_QUARANTINED=1 make e2e RUN=TestMidRolloutImageChange
+```
+
+CI leaves the variable unset. Quarantine is temporary by design: remove
+the call once the test is reliably green again.
+
 ### Internal Registry
 
 The bink cluster includes an internal container registry. From the host, push
