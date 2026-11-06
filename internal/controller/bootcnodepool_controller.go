@@ -48,6 +48,9 @@ type drainStatus struct {
 	cancel    context.CancelFunc // to abort on targetDigest change or node removal
 	startTime time.Time          // for stall detection
 	isStalled bool               // set after the one-shot drain stall event is emitted
+	// lastPDBBlockKey tracks the blocking PDB set already reported for this
+	// stall so a changed set re-emits the event and repeats stay quiet.
+	lastPDBBlockKey string
 }
 
 // TagResolver resolves a container image reference to a digest.
@@ -99,6 +102,7 @@ type BootcNodePoolReconciler struct {
 // +kubebuilder:rbac:groups="",namespace=system,resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list
 // +kubebuilder:rbac:groups="",resources=pods/eviction,verbs=create
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list
 // +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
@@ -509,7 +513,7 @@ func (r *BootcNodePoolReconciler) Reconcile(
 	}
 	resolveResult.RequeueAfter = earlierRequeue(
 		resolveResult.RequeueAfter,
-		r.recordDrainStalls(&pool, ownedBootcNodes),
+		r.recordDrainStalls(ctx, &pool, rs, ownedBootcNodes),
 	)
 
 	// Early-return paths above (TargetDigest empty, InvalidSpec) skip

@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -25,6 +26,7 @@ const (
 	eventReasonRolloutCompleted     = "RolloutCompleted"
 	eventReasonDrainFailed          = "DrainFailed"
 	eventReasonDrainTakingTooLong   = "DrainTakingTooLong"
+	eventReasonDrainBlockedByPDB    = "DrainBlockedByPDB"
 
 	eventActionResolveImage = "ResolveImage"
 	eventActionRollout      = "Rollout"
@@ -33,8 +35,11 @@ const (
 	eventActionDrain        = "Drain"
 
 	drainStallThreshold = 5 * time.Minute
-	eventNoteLimit      = 1024
-	eventNoteSuffix     = "..."
+	// drainStallRequeueInterval is short enough to notice a PDB starting to
+	// allow evictions without generating excessive API traffic.
+	drainStallRequeueInterval = 30 * time.Second
+	eventNoteLimit            = 1024
+	eventNoteSuffix           = "..."
 )
 
 // effectiveDrainStallThreshold returns the configured drain stall threshold,
@@ -160,6 +165,21 @@ func (n drainStalledNote) Note() string {
 		"Drain has been running for more than %s; it may be blocked by a PodDisruptionBudget",
 		n.Threshold,
 	)
+}
+
+// drainBlockedByPDBNote lists the PDBs preventing a drain from making
+// progress. PDB names and hints are bounded by their own fields, but the note
+// caps itself defensively because it aggregates several of them.
+type drainBlockedByPDBNote struct {
+	Blocks []pdbBlock
+}
+
+func (n drainBlockedByPDBNote) Note() string {
+	parts := make([]string, 0, len(n.Blocks))
+	for _, block := range n.Blocks {
+		parts = append(parts, block.describe())
+	}
+	return capNote("Drain blocked by " + strings.Join(parts, "; "))
 }
 
 func (r *BootcNodePoolReconciler) recordPoolEvents(
@@ -369,39 +389,55 @@ func (r *BootcNodePoolReconciler) recordDrainFailedEvent(
 	)
 }
 
-// recordDrainStalls emits one warning per drain that crosses the stall
-// threshold and returns when the next active drain should be checked. The
-// existing in-memory drain state is sufficient because drains are restarted
-// after a controller restart.
+// recordDrainStalls emits a warning for each drain that crosses the stall
+// threshold, then inspects stalled drains for PodDisruptionBudget blocks. While
+// a drain remains stalled it returns a short requeue interval so PDB state is
+// re-evaluated. The existing in-memory drain state is sufficient because drains
+// are restarted after a controller restart.
 func (r *BootcNodePoolReconciler) recordDrainStalls(
+	ctx context.Context,
 	pool *bootcv1alpha1.BootcNodePool,
+	rs *rolloutState,
 	nodes map[string]*bootcv1alpha1.BootcNode,
 ) time.Duration {
+	log := logf.FromContext(ctx)
 	now := time.Now()
 	threshold := r.effectiveDrainStallThreshold()
-	var stalledNodes []*bootcv1alpha1.BootcNode
+	var newlyStalled []*bootcv1alpha1.BootcNode
+	var stalledNodes []string
 	var nextCheck time.Duration
 
 	r.drainsMu.Lock()
 	for nodeName, status := range r.drains {
-		if status.isStalled {
+		// r.drains is shared by every pool, so only consider drains for
+		// nodes owned by the pool being reconciled.
+		if _, ok := nodes[nodeName]; !ok {
 			continue
 		}
 
-		remaining := threshold - now.Sub(status.startTime)
-		if remaining > 0 {
-			nextCheck = earlierRequeue(nextCheck, remaining)
-			continue
+		if !status.isStalled {
+			remaining := threshold - now.Sub(status.startTime)
+			if remaining > 0 {
+				nextCheck = earlierRequeue(nextCheck, remaining)
+				continue
+			}
+
+			status.isStalled = true
+			if node, ok := nodes[nodeName]; ok {
+				newlyStalled = append(newlyStalled, node)
+			}
 		}
 
-		status.isStalled = true
-		if node, ok := nodes[nodeName]; ok {
-			stalledNodes = append(stalledNodes, node)
-		}
+		stalledNodes = append(stalledNodes, nodeName)
+		nextCheck = earlierRequeue(nextCheck, drainStallRequeueInterval)
 	}
 	r.drainsMu.Unlock()
 
-	for _, node := range stalledNodes {
+	slices.Sort(stalledNodes)
+	slices.SortFunc(newlyStalled, func(a, b *bootcv1alpha1.BootcNode) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+	for _, node := range newlyStalled {
 		r.recordEvent(
 			node,
 			pool,
@@ -412,6 +448,47 @@ func (r *BootcNodePoolReconciler) recordDrainStalls(
 		)
 	}
 
+	blocked := map[string][]pdbBlock{}
+	for _, nodeName := range stalledNodes {
+		node := nodes[nodeName]
+
+		blocks, err := r.findPDBBlocksForNode(ctx, pool, nodeName)
+		if err != nil {
+			log.Error(
+				err,
+				"Failed to check PodDisruptionBudgets for stalled drain",
+				"node", nodeName,
+			)
+			continue
+		}
+
+		key := pdbBlocksKey(blocks)
+		r.drainsMu.Lock()
+		status := r.drains[nodeName]
+		emit := status != nil && key != "" && status.lastPDBBlockKey != key
+		if status != nil {
+			status.lastPDBBlockKey = key
+		}
+		r.drainsMu.Unlock()
+
+		if len(blocks) == 0 {
+			continue
+		}
+
+		blocked[nodeName] = blocks
+		if emit {
+			r.recordEvent(
+				node,
+				pool,
+				corev1.EventTypeWarning,
+				eventReasonDrainBlockedByPDB,
+				eventActionDrain,
+				drainBlockedByPDBNote{Blocks: blocks},
+			)
+		}
+	}
+
+	rs.pdbBlocked = blocked
 	return nextCheck
 }
 

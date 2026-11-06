@@ -28,6 +28,11 @@ const (
 
 	// PoolPaused means updates are pending but the pool is paused.
 	PoolPaused string = "Paused"
+
+	// PoolPDBBlocked means stalled drains are blocked by
+	// PodDisruptionBudgets and that is keeping the rollout from making
+	// progress.
+	PoolPDBBlocked string = "PDBBlocked"
 )
 
 // PoolDegraded condition reasons. Precedence ordering (which reason

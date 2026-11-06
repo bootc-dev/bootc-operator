@@ -5,15 +5,18 @@ package controller
 import (
 	"context"
 	"testing"
+	"time"
 
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	eventsv1 "k8s.io/api/events/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/util/retry"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
@@ -558,6 +561,188 @@ func setNodeReady(g Gomega, ctx context.Context, nodeName string) {
 	g.Expect(k8sClient.Status().Patch(ctx, modified, client.MergeFrom(&node))).To(Succeed())
 }
 
+// TestDrainBlockedByPDB verifies that a stalled drain reports the blocking
+// PodDisruptionBudget through an event and the pool's PDBBlocked condition, and
+// that both clear when the budget starts allowing evictions.
+func TestDrainBlockedByPDB(t *testing.T) {
+	g := NewWithT(t)
+	g.SetDefaultEventuallyTimeout(pollTimeout)
+	g.SetDefaultEventuallyPollingInterval(pollInterval)
+	ctx := context.Background()
+
+	const (
+		poolName  = "pdb-blocked-pool"
+		nodeName  = "pdb-blocked-w1"
+		namespace = "default"
+	)
+
+	node := testutil.NewK8sNode(nodeName, testutil.WorkerLabels())
+	g.Expect(k8sClient.Create(ctx, node)).To(Succeed())
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, node)
+	})
+
+	podLabels := map[string]string{"app": "pdb-block-" + nodeName}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pdb-blocker-" + nodeName,
+			Namespace: namespace,
+			Labels:    podLabels,
+		},
+		Spec: corev1.PodSpec{
+			NodeName: nodeName,
+			// envtest has no kubelet to finalize pod deletion, so make
+			// eviction remove the pod immediately.
+			TerminationGracePeriodSeconds: ptr.To[int64](0),
+			Containers: []corev1.Container{{
+				Name:  "pause",
+				Image: "registry.k8s.io/pause:3.9",
+			}},
+		},
+	}
+	g.Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, pod)
+	})
+
+	pod.Status.Phase = corev1.PodRunning
+	pod.Status.Conditions = []corev1.PodCondition{{
+		Type:   corev1.PodReady,
+		Status: corev1.ConditionTrue,
+	}}
+	g.Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+
+	minAvail := intstr.FromInt32(1)
+	pdb := &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pdb-block-" + nodeName,
+			Namespace: namespace,
+		},
+		Spec: policyv1.PodDisruptionBudgetSpec{
+			MinAvailable: &minAvail,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: podLabels,
+			},
+		},
+	}
+	g.Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, pdb)
+	})
+
+	// envtest does not run the disruption controller, so populate the PDB
+	// status as if one healthy pod filled the entire budget.
+	g.Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var current policyv1.PodDisruptionBudget
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(pdb), &current); err != nil {
+			return err
+		}
+		current.Status.DisruptionsAllowed = 0
+		current.Status.CurrentHealthy = 1
+		current.Status.DesiredHealthy = 1
+		current.Status.ExpectedPods = 1
+		return k8sClient.Status().Update(ctx, &current)
+	})).To(Succeed())
+
+	pool := testutil.NewPool(poolName, testImageDigestRefB,
+		testutil.WithWorkerSelector(),
+		testutil.WithMaxUnavailable(intstr.FromInt32(1)),
+	)
+	g.Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, pool)
+	})
+
+	g.Eventually(func() error {
+		return k8sClient.Get(ctx, client.ObjectKey{Name: nodeName}, &bootcv1alpha1.BootcNode{})
+	}).Should(Succeed())
+
+	simulateDaemonStatus(g, ctx, nodeName, testDigestA, bootcv1alpha1.NodeReasonStaged)
+
+	g.Eventually(func() (map[string]string, error) {
+		var bn bootcv1alpha1.BootcNode
+		err := k8sClient.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
+		return bn.Annotations, err
+	}).Should(HaveKey(bootcv1alpha1.AnnotationInRebootSlot))
+
+	var bootcNode bootcv1alpha1.BootcNode
+	g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: nodeName}, &bootcNode)).To(Succeed())
+
+	g.Eventually(func() ([]eventsv1.Event, error) {
+		return eventsForObject(ctx, "BootcNode", nodeName, bootcNode.UID)
+	}).Should(ContainElement(And(
+		HaveField("Type", "Warning"),
+		HaveField("Reason", eventReasonDrainBlockedByPDB),
+		HaveField("Note", ContainSubstring("default/"+pdb.Name)),
+		HaveField("Note", ContainSubstring("never allows eviction")),
+	)))
+
+	g.Eventually(func() ([]metav1.Condition, error) {
+		var p bootcv1alpha1.BootcNodePool
+		err := k8sClient.Get(ctx, client.ObjectKey{Name: poolName}, &p)
+		return p.Status.Conditions, err
+	}).Should(ContainElement(And(
+		HaveField("Type", bootcv1alpha1.PoolUpToDate),
+		HaveField("Status", metav1.ConditionFalse),
+		HaveField("Reason", bootcv1alpha1.PoolPDBBlocked),
+		HaveField("Message", ContainSubstring(nodeName+" blocked by PDB")),
+	)))
+
+	// Relax the budget. envtest does not run the disruption controller, so
+	// also write the status it would produce for minAvailable: 0.
+	g.Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var current policyv1.PodDisruptionBudget
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(pdb), &current); err != nil {
+			return err
+		}
+		zero := intstr.FromInt32(0)
+		current.Spec.MinAvailable = &zero
+		return k8sClient.Update(ctx, &current)
+	})).To(Succeed())
+	g.Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var current policyv1.PodDisruptionBudget
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(pdb), &current); err != nil {
+			return err
+		}
+		current.Status.ObservedGeneration = current.Generation
+		current.Status.DisruptionsAllowed = 1
+		current.Status.CurrentHealthy = 1
+		current.Status.DesiredHealthy = 0
+		current.Status.ExpectedPods = 1
+		return k8sClient.Status().Update(ctx, &current)
+	})).To(Succeed())
+
+	// The drain retries eviction after its configured retry delay, so allow
+	// enough time for it to observe the relaxed budget and finish.
+	g.Eventually(func() (bootcv1alpha1.DesiredImageState, error) {
+		var bn bootcv1alpha1.BootcNode
+		err := k8sClient.Get(ctx, client.ObjectKey{Name: nodeName}, &bn)
+		return bn.Spec.DesiredImageState, err
+	}).WithTimeout(20 * time.Second).Should(Equal(bootcv1alpha1.DesiredImageStateBooted))
+
+	g.Eventually(func() ([]metav1.Condition, error) {
+		var p bootcv1alpha1.BootcNodePool
+		err := k8sClient.Get(ctx, client.ObjectKey{Name: poolName}, &p)
+		return p.Status.Conditions, err
+	}).Should(ContainElement(And(
+		HaveField("Type", bootcv1alpha1.PoolUpToDate),
+		HaveField("Reason", bootcv1alpha1.PoolRolloutInProgress),
+	)))
+
+	simulateDaemonStatus(g, ctx, nodeName, testDigestB, bootcv1alpha1.NodeReasonIdle)
+	setNodeReady(g, ctx, nodeName)
+
+	g.Eventually(func() ([]metav1.Condition, error) {
+		var p bootcv1alpha1.BootcNodePool
+		err := k8sClient.Get(ctx, client.ObjectKey{Name: poolName}, &p)
+		return p.Status.Conditions, err
+	}).Should(ContainElement(And(
+		HaveField("Type", bootcv1alpha1.PoolUpToDate),
+		HaveField("Status", metav1.ConditionTrue),
+		HaveField("Reason", bootcv1alpha1.PoolAllUpdated),
+	)))
+}
+
 // TestNodeLeavesPoolCancelsDrain verifies that when a node leaves the pool
 // while a drain is in progress, the drain is cancelled and the node is
 // cleaned up: BootcNode deleted, managed label removed, and node uncordoned.
@@ -591,6 +776,9 @@ func TestNodeLeavesPoolCancelsDrain(t *testing.T) {
 		},
 		Spec: corev1.PodSpec{
 			NodeName: nodeName,
+			// envtest has no kubelet to finalize pod deletion, so make
+			// eviction remove the pod immediately.
+			TerminationGracePeriodSeconds: ptr.To[int64](0),
 			Containers: []corev1.Container{{
 				Name:  "pause",
 				Image: "registry.k8s.io/pause:3.9",
