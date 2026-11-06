@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -20,6 +21,7 @@ import (
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
 	"github.com/bootc-dev/bootc-operator/internal/controller"
+	"github.com/bootc-dev/bootc-operator/internal/pullsecret"
 	"github.com/bootc-dev/bootc-operator/internal/registry"
 	"github.com/bootc-dev/bootc-operator/internal/version"
 )
@@ -131,6 +133,14 @@ func main() {
 	})
 	if err != nil {
 		setupLog.Error(err, "Failed to start manager")
+		os.Exit(1)
+	}
+
+	if err := pullsecret.IndexPoolPullSecretRef(
+		context.Background(),
+		mgr.GetFieldIndexer(),
+	); err != nil {
+		setupLog.Error(err, "Failed to index pools by pull secret")
 		os.Exit(1)
 	}
 
