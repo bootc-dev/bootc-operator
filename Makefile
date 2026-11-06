@@ -110,8 +110,17 @@ go-lines-fix: get-golines
 vulncheck: govulncheck ## Check Go code for known vulnerabilities (requires network access to the Go vulnerability database).
 	"$(GOVULNCHECK)" ./...
 
+# Give external-status observation room for provisioning without changing the daemon default.
+E2E_BOOTC_POLL_INTERVAL ?= 10m
+
+# Tests quarantined via testutil.Quarantine are skipped unless this is
+# set to a truthy value (e.g. 1). Works both as a make variable
+# (`make e2e E2E_RUN_QUARANTINED=1`) and via the environment. See
+# CONTRIBUTING.md, "Quarantining Flaky Tests".
+E2E_RUN_QUARANTINED ?=
+
 .PHONY: e2e
-e2e: ## Run e2e tests (requires: make deploy-bink). V=1 for verbose. RUN=<regex> to filter.
+e2e: ## Run e2e tests (requires: make deploy-bink). V=1 for verbose. RUN=<regex> to filter. Set E2E_RUN_QUARANTINED=1 to also run quarantined tests.
 # NB: we `cd` here instead of passing a package path to `go test` so that `-v`
 # actually gives us streaming output (otherwise, it spawns a subprocess for
 # each package, even though we just have one here--but I really like streaming
@@ -119,6 +128,8 @@ e2e: ## Run e2e tests (requires: make deploy-bink). V=1 for verbose. RUN=<regex>
 	rm -rf $(ARTIFACTS)
 	cd test/e2e && KUBECONFIG=$(abspath $(KUBECONFIG_BINK)) \
 		E2E_PROVIDER=bink \
+		E2E_BOOTC_POLL_INTERVAL=$(E2E_BOOTC_POLL_INTERVAL) \
+		E2E_RUN_QUARANTINED=$(E2E_RUN_QUARANTINED) \
 		BINK_CLUSTER_NAME=$(BINK_CLUSTER_NAME) \
 		BINK_NODE_DISK_IMAGE=$(BINK_NODE_DISK_IMAGE) \
 		E2E_NODE_IMAGE_REGISTRY=$(BINK_LOCAL_REGISTRY_NODE_IMAGE) \
@@ -151,6 +162,7 @@ e2e-eks: helm ## Run e2e tests against EKS. V=1 for verbose. RUN=<regex> to filt
 	rm -rf $(ARTIFACTS)
 	cd test/e2e && KUBECONFIG="$(KUBECONFIG)" \
 		E2E_PROVIDER=eks \
+		E2E_RUN_QUARANTINED=$(E2E_RUN_QUARANTINED) \
 		EKS_CLUSTER_NAME="$(EKS_CLUSTER_NAME)" \
 		EKS_NODE_GROUP="$(EKS_NODE_GROUP)" \
 		AWS_REGION="$(AWS_REGION)" \
