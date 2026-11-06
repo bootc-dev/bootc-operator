@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
+	"strings"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
@@ -60,11 +62,50 @@ type dockerConfigJSON struct {
 	Auths map[string]authn.AuthConfig `json:"auths"`
 }
 
+// Resolve returns the credentials for the target's registry. An exact key
+// match wins; otherwise keys are compared after normalization, so that
+// entries such as "https://index.docker.io/v1/", which kubectl and docker
+// write, match the registry host like they do for the node's container
+// runtime.
 func (k *dockerConfigJSON) Resolve(target authn.Resource) (authn.Authenticator, error) {
-	if cfg, ok := k.Auths[target.RegistryStr()]; ok {
+	registry := target.RegistryStr()
+	if cfg, ok := k.Auths[registry]; ok {
 		return authn.FromConfig(cfg), nil
 	}
+	want := normalizeRegistry(registry)
+	keys := make([]string, 0, len(k.Auths))
+	for key := range k.Auths {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	for _, key := range keys {
+		if normalizeAuthKey(key) == want {
+			return authn.FromConfig(k.Auths[key]), nil
+		}
+	}
 	return authn.Anonymous, nil
+}
+
+// normalizeAuthKey reduces an auths key to a registry host the way
+// containers/image does for auth files: the scheme is stripped and, when
+// there was one, so is the path.
+func normalizeAuthKey(key string) string {
+	stripped := strings.TrimPrefix(key, "http://")
+	stripped = strings.TrimPrefix(stripped, "https://")
+	if stripped != key {
+		stripped, _, _ = strings.Cut(stripped, "/")
+	}
+	return normalizeRegistry(stripped)
+}
+
+// normalizeRegistry maps the Docker Hub host names to the one
+// go-containerregistry uses.
+func normalizeRegistry(registry string) string {
+	switch registry {
+	case "docker.io", "registry-1.docker.io":
+		return name.DefaultRegistry
+	}
+	return registry
 }
 
 func keychainFromDockerConfig(data []byte) (authn.Keychain, error) {
