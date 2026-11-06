@@ -374,6 +374,15 @@ func (r *BootcNodeReconciler) populateBootcFields(
 	bn.Status.Staged = convertBootEntry(status.Status.Staged)
 	bn.Status.Rollback = convertBootEntry(status.Status.Rollback)
 
+	// The version is informational; failing to read it must not block
+	// updates, so keep the last reported value and carry on.
+	version, err := r.StatusWatcher.GetVersion(ctx)
+	if err != nil {
+		logf.FromContext(ctx).Error(err, "Failed to get bootc version")
+	} else {
+		bn.Status.BootcVersion = version
+	}
+
 	return nil
 }
 

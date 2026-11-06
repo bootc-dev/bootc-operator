@@ -18,6 +18,10 @@ type fakeExecutor struct {
 	status    bootc.Status
 	statusErr error
 
+	version      string
+	versionErr   error
+	versionCalls int
+
 	stageErr  error
 	stageImg  string
 	stageHook func()
@@ -38,6 +42,16 @@ func (f *fakeExecutor) Status(_ context.Context) ([]byte, error) {
 		return nil, err
 	}
 	return data, nil
+}
+
+func (f *fakeExecutor) Version(_ context.Context) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.versionCalls++
+	if f.versionErr != nil {
+		return nil, f.versionErr
+	}
+	return []byte(f.version), nil
 }
 
 func (f *fakeExecutor) Stage(_ context.Context, image string) error {

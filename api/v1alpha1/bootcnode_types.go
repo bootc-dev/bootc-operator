@@ -140,6 +140,12 @@ type BootcNodeStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
+	// bootcVersion is the version of the bootc binary on the host
+	// (e.g. "1.8.0"), as reported by bootc --version.
+	// +optional
+	// +kubebuilder:validation:MaxLength=256
+	BootcVersion string `json:"bootcVersion,omitempty"`
+
 	// booted describes the currently booted OS image.
 	// +optional
 	Booted *ImageInfo `json:"booted,omitempty"`
