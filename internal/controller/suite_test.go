@@ -22,6 +22,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
+	"github.com/bootc-dev/bootc-operator/internal/pullsecret"
 	testutil "github.com/bootc-dev/bootc-operator/test/util"
 )
 
@@ -75,6 +76,14 @@ func TestMain(m *testing.M) {
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to create manager: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := pullsecret.IndexPoolPullSecretRef(
+		context.Background(),
+		mgr.GetFieldIndexer(),
+	); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to index pools by pull secret: %v\n", err)
 		os.Exit(1)
 	}
 

@@ -112,7 +112,7 @@ func (r *BootcNodePoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&bootcv1alpha1.BootcNodePool{}).
 		Owns(&bootcv1alpha1.BootcNode{}).
 		Watches(&corev1.Node{}, handler.EnqueueRequestsFromMapFunc(r.mapNodeToPoolRequests), builder.WithPredicates(nodePredicates())).
-		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.mapSecretToPoolRequests), builder.WithPredicates(secretTypePredicate())).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.mapSecretToPoolRequests)).
 		WatchesRawSource(source.Channel(r.drainCh, &handler.EnqueueRequestForObject{}))
 
 	// Karpenter is optional. Only register the NodeClaim watch when its CRD is
@@ -269,35 +269,27 @@ func (r *BootcNodePoolReconciler) mapNodeToPoolRequests(
 }
 
 // mapSecretToPoolRequests maps a Secret event to the BootcNodePool(s) that
-// should be reconciled. It enqueues pools whose pullSecretRef matches the
-// changed Secret's name and namespace.
+// should be reconciled: the pools whose pullSecretRef names the Secret,
+// whatever its type or content, so that a Secret gaining, changing or losing
+// its credentials is always noticed. It needs the pullsecret.PoolRefIndex
+// field index.
 func (r *BootcNodePoolReconciler) mapSecretToPoolRequests(
 	ctx context.Context,
 	obj client.Object,
 ) []reconcile.Request {
-	secret, ok := obj.(*corev1.Secret)
-	if !ok {
-		logf.FromContext(ctx).Error(nil, "Unexpected object type in secret mapper", "object", obj)
-		return nil
-	}
-
 	var pools bootcv1alpha1.BootcNodePoolList
-	if err := r.List(ctx, &pools); err != nil {
-		log := logf.FromContext(ctx)
-		log.Error(err, "Failed to list BootcNodePools in secret mapper")
+	if err := r.List(ctx, &pools, client.MatchingFields{
+		pullsecret.PoolRefIndex: pullsecret.PoolRefIndexValue(obj.GetNamespace(), obj.GetName()),
+	}); err != nil {
+		logf.FromContext(ctx).Error(err, "Failed to list BootcNodePools in secret mapper")
 		return nil
 	}
 
-	var requests []reconcile.Request
+	requests := make([]reconcile.Request, 0, len(pools.Items))
 	for i := range pools.Items {
-		pool := &pools.Items[i]
-		if pool.Spec.PullSecretRef != nil &&
-			pool.Spec.PullSecretRef.Name == secret.Name &&
-			pool.Spec.PullSecretRef.Namespace == secret.Namespace {
-			requests = append(requests, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: pool.Name},
-			})
-		}
+		requests = append(requests, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: pools.Items[i].Name},
+		})
 	}
 	return requests
 }
@@ -378,19 +370,6 @@ func hasKarpenterRebootTaint(node *corev1.Node) bool {
 		}
 	}
 	return false
-}
-
-// secretTypePredicate returns a predicate that accepts only Secrets of
-// type kubernetes.io/dockerconfigjson.
-func secretTypePredicate() predicate.Predicate {
-	return predicate.NewPredicateFuncs(func(obj client.Object) bool {
-		secret, ok := obj.(*corev1.Secret)
-		if !ok {
-			logf.Log.Error(nil, "Unexpected object type in secret predicate", "object", obj)
-			return false
-		}
-		return secret.Type == corev1.SecretTypeDockerConfigJson
-	})
 }
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
