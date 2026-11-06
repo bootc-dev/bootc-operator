@@ -39,6 +39,7 @@ import (
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
 	"github.com/bootc-dev/bootc-operator/internal/karpenter"
+	"github.com/bootc-dev/bootc-operator/internal/pullsecret"
 )
 
 // drainStatus tracks an in-progress drain goroutine for a single node.
@@ -111,7 +112,7 @@ func (r *BootcNodePoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&bootcv1alpha1.BootcNodePool{}).
 		Owns(&bootcv1alpha1.BootcNode{}).
 		Watches(&corev1.Node{}, handler.EnqueueRequestsFromMapFunc(r.mapNodeToPoolRequests), builder.WithPredicates(nodePredicates())).
-		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.mapSecretToPoolRequests), builder.WithPredicates(secretTypePredicate())).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.mapSecretToPoolRequests)).
 		WatchesRawSource(source.Channel(r.drainCh, &handler.EnqueueRequestForObject{}))
 
 	// Karpenter is optional. Only register the NodeClaim watch when its CRD is
@@ -268,35 +269,27 @@ func (r *BootcNodePoolReconciler) mapNodeToPoolRequests(
 }
 
 // mapSecretToPoolRequests maps a Secret event to the BootcNodePool(s) that
-// should be reconciled. It enqueues pools whose pullSecretRef matches the
-// changed Secret's name and namespace.
+// should be reconciled: the pools whose pullSecretRef names the Secret,
+// whatever its type or content, so that a Secret gaining, changing or losing
+// its credentials is always noticed. It needs the pullsecret.PoolRefIndex
+// field index.
 func (r *BootcNodePoolReconciler) mapSecretToPoolRequests(
 	ctx context.Context,
 	obj client.Object,
 ) []reconcile.Request {
-	secret, ok := obj.(*corev1.Secret)
-	if !ok {
-		logf.FromContext(ctx).Error(nil, "Unexpected object type in secret mapper", "object", obj)
-		return nil
-	}
-
 	var pools bootcv1alpha1.BootcNodePoolList
-	if err := r.List(ctx, &pools); err != nil {
-		log := logf.FromContext(ctx)
-		log.Error(err, "Failed to list BootcNodePools in secret mapper")
+	if err := r.List(ctx, &pools, client.MatchingFields{
+		pullsecret.PoolRefIndex: pullsecret.PoolRefIndexValue(obj.GetNamespace(), obj.GetName()),
+	}); err != nil {
+		logf.FromContext(ctx).Error(err, "Failed to list BootcNodePools in secret mapper")
 		return nil
 	}
 
-	var requests []reconcile.Request
+	requests := make([]reconcile.Request, 0, len(pools.Items))
 	for i := range pools.Items {
-		pool := &pools.Items[i]
-		if pool.Spec.PullSecretRef != nil &&
-			pool.Spec.PullSecretRef.Name == secret.Name &&
-			pool.Spec.PullSecretRef.Namespace == secret.Namespace {
-			requests = append(requests, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: pool.Name},
-			})
-		}
+		requests = append(requests, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: pools.Items[i].Name},
+		})
 	}
 	return requests
 }
@@ -377,19 +370,6 @@ func hasKarpenterRebootTaint(node *corev1.Node) bool {
 		}
 	}
 	return false
-}
-
-// secretTypePredicate returns a predicate that accepts only Secrets of
-// type kubernetes.io/dockerconfigjson.
-func secretTypePredicate() predicate.Predicate {
-	return predicate.NewPredicateFuncs(func(obj client.Object) bool {
-		secret, ok := obj.(*corev1.Secret)
-		if !ok {
-			logf.Log.Error(nil, "Unexpected object type in secret predicate", "object", obj)
-			return false
-		}
-		return secret.Type == corev1.SecretTypeDockerConfigJson
-	})
 }
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -825,9 +805,11 @@ func (r *BootcNodePoolReconciler) listAllBootcNodes(
 	return all, nil
 }
 
-// fetchPullSecretData fetches the .dockerconfigjson data from the pull
-// secret referenced by the pool. Returns nil if no pull secret is set, and
-// an error if the secret's namespace is not in PullSecretNamespaces.
+// fetchPullSecretData fetches the credentials of the pull secret referenced
+// by the pool, normalized to .dockerconfigjson format (see
+// pullsecret.AuthData). Returns nil if no pull secret is set, and
+// an error if the secret's namespace is not in PullSecretNamespaces or the
+// reference cannot be stored in the aggregated pull secret.
 func (r *BootcNodePoolReconciler) fetchPullSecretData(
 	ctx context.Context,
 	pool *bootcv1alpha1.BootcNodePool,
@@ -844,6 +826,13 @@ func (r *BootcNodePoolReconciler) fetchPullSecretData(
 		)
 	}
 
+	if _, err := pullsecret.Key(
+		pool.Spec.PullSecretRef.Namespace,
+		pool.Spec.PullSecretRef.Name,
+	); err != nil {
+		return nil, err
+	}
+
 	key := types.NamespacedName{
 		Name:      pool.Spec.PullSecretRef.Name,
 		Namespace: pool.Spec.PullSecretRef.Namespace,
@@ -853,14 +842,9 @@ func (r *BootcNodePoolReconciler) fetchPullSecretData(
 		return nil, fmt.Errorf("fetching pull secret %s/%s: %w", key.Namespace, key.Name, err)
 	}
 
-	data, ok := secret.Data[corev1.DockerConfigJsonKey]
-	if !ok {
-		return nil, fmt.Errorf(
-			"pull secret %s/%s missing %s key",
-			key.Namespace,
-			key.Name,
-			corev1.DockerConfigJsonKey,
-		)
+	data, err := pullsecret.AuthData(&secret)
+	if err != nil {
+		return nil, fmt.Errorf("pull secret %s/%s: %w", key.Namespace, key.Name, err)
 	}
 
 	return data, nil

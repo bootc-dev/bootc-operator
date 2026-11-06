@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -20,6 +21,7 @@ import (
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
 	"github.com/bootc-dev/bootc-operator/internal/controller"
+	"github.com/bootc-dev/bootc-operator/internal/pullsecret"
 	"github.com/bootc-dev/bootc-operator/internal/registry"
 	"github.com/bootc-dev/bootc-operator/internal/version"
 )
@@ -105,17 +107,16 @@ func main() {
 	)
 
 	operatorNamespace := detectNamespace()
+	if operatorNamespace == "" {
+		setupLog.Error(nil, "Operator namespace unknown; set POD_NAMESPACE")
+		os.Exit(1)
+	}
 	pullSecretNamespaces, err := controller.ParsePullSecretNamespaces(
 		pullSecretNamespacesFlag,
 		operatorNamespace,
 	)
 	if err != nil {
 		setupLog.Error(err, "Invalid --pull-secret-namespaces")
-		os.Exit(1)
-	}
-	if len(pullSecretNamespaces) == 0 {
-		setupLog.Error(nil, "No pull secret namespaces configured and operator namespace unknown; "+
-			"set --pull-secret-namespaces or POD_NAMESPACE")
 		os.Exit(1)
 	}
 	setupLog.Info("Pull secret namespaces", "namespaces", pullSecretNamespaces)
@@ -131,6 +132,14 @@ func main() {
 	})
 	if err != nil {
 		setupLog.Error(err, "Failed to start manager")
+		os.Exit(1)
+	}
+
+	if err := pullsecret.IndexPoolPullSecretRef(
+		context.Background(),
+		mgr.GetFieldIndexer(),
+	); err != nil {
+		setupLog.Error(err, "Failed to index pools by pull secret")
 		os.Exit(1)
 	}
 
@@ -150,6 +159,15 @@ func main() {
 		PullSecretNamespaces:  pullSecretNamespaces,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "bootcnodepool")
+		os.Exit(1)
+	}
+
+	if err := (&pullsecret.PullSecretAggregator{
+		Client:               mgr.GetClient(),
+		Namespace:            operatorNamespace,
+		PullSecretNamespaces: pullSecretNamespaces,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "pullsecretaggregator")
 		os.Exit(1)
 	}
 
