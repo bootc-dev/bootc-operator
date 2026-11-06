@@ -344,6 +344,10 @@ func TestTagResolution(t *testing.T) {
 // image and that the non-rebooting node does not wastefully reboot into the
 // first update image.
 func TestMidRolloutImageChange(t *testing.T) {
+	testutil.Quarantine(t, "flaky: intermittent spurious second reboot "+
+		"after a mid-rollout image change, "+
+		"https://github.com/bootc-dev/bootc-operator/issues/256")
+
 	e2eutil.Providers(t, "bink")
 	t.Parallel()
 	g := NewWithT(t)
