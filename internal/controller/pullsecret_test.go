@@ -10,7 +10,9 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
 	testutil "github.com/bootc-dev/bootc-operator/test/util"
@@ -310,6 +312,85 @@ func TestParsePullSecretNamespaces(t *testing.T) {
 			}
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(got).To(Equal(tt.want))
+		})
+	}
+}
+
+func TestFetchPullSecretDataNormalizesFormat(t *testing.T) {
+	const (
+		current = `{"auths":{"quay.io":{"auth":"Zm9vOmJhcg=="}}}`
+		legacy  = `{"quay.io":{"auth":"Zm9vOmJhcg==","identitytoken":"tok"}}`
+	)
+	tests := []struct {
+		name    string
+		secret  corev1.Secret
+		want    string
+		wantErr string
+	}{
+		{
+			name: "dockerconfigjson",
+			secret: corev1.Secret{
+				Type: corev1.SecretTypeDockerConfigJson,
+				Data: map[string][]byte{corev1.DockerConfigJsonKey: []byte(current)},
+			},
+			want: current,
+		},
+		{
+			name: "legacy dockercfg",
+			secret: corev1.Secret{
+				Type: corev1.SecretTypeDockercfg,
+				Data: map[string][]byte{corev1.DockerConfigKey: []byte(legacy)},
+			},
+			want: `{"auths":` + legacy + `}`,
+		},
+		{
+			name: "opaque with dockerconfigjson",
+			secret: corev1.Secret{
+				Type: corev1.SecretTypeOpaque,
+				Data: map[string][]byte{corev1.DockerConfigJsonKey: []byte(current)},
+			},
+			want: current,
+		},
+		{
+			name: "no credentials key",
+			secret: corev1.Secret{
+				Data: map[string][]byte{"token": []byte("x")},
+			},
+			wantErr: "pull secret ns/ps: missing .dockerconfigjson or .dockercfg key",
+		},
+		{
+			name: "malformed",
+			secret: corev1.Secret{
+				Data: map[string][]byte{corev1.DockerConfigKey: []byte("nope")},
+			},
+			wantErr: "pull secret ns/ps: .dockercfg is not a JSON object",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewWithT(t)
+			secret := tt.secret.DeepCopy()
+			secret.Name, secret.Namespace = "ps", "ns"
+			r := &BootcNodePoolReconciler{
+				Client: fake.NewClientBuilder().
+					WithScheme(scheme.Scheme).
+					WithObjects(secret).
+					Build(),
+				PullSecretNamespaces: []string{"ns"},
+			}
+			pool := testutil.NewPool(
+				"pool",
+				testutil.ImageDigestRefA,
+				testutil.WithPullSecret("ps", "ns"),
+			)
+
+			got, err := r.fetchPullSecretData(context.Background(), pool)
+			if tt.wantErr != "" {
+				g.Expect(err).To(MatchError(ContainSubstring(tt.wantErr)))
+				return
+			}
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(string(got)).To(MatchJSON(tt.want))
 		})
 	}
 }
