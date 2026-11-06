@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -13,8 +14,10 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
+	"github.com/bootc-dev/bootc-operator/internal/pullsecret"
 	testutil "github.com/bootc-dev/bootc-operator/test/util"
 )
 
@@ -115,6 +118,154 @@ func TestPullSecretMissingDegradedAndRecovery(t *testing.T) {
 		HaveField("Status", metav1.ConditionFalse),
 		HaveField("Reason", bootcv1alpha1.PoolHealthy),
 	)))
+}
+
+// TestPullSecretChangesPropagate checks that a referenced Secret appearing or
+// changing reaches the pool whatever the Secret's type, since the pool goes by
+// the Secret's keys. The pool is created first and must report SecretError,
+// then recover once the Secret is valid, with no other event to trigger it.
+func TestPullSecretChangesPropagate(t *testing.T) {
+	tests := []struct {
+		name       string
+		secretType corev1.SecretType
+		key        string
+		good       string
+		// bad is the data of a Secret present from the start, or empty if
+		// the Secret is created only once the pool reports it missing.
+		bad string
+	}{
+		{
+			"opaque created",
+			corev1.SecretTypeOpaque,
+			corev1.DockerConfigJsonKey,
+			`{"auths":{"registry.example.com":{}}}`,
+			"",
+		},
+		{
+			"opaque rotated",
+			corev1.SecretTypeOpaque,
+			corev1.DockerConfigJsonKey,
+			`{"auths":{"registry.example.com":{}}}`,
+			"not json",
+		},
+		{
+			"dockercfg created",
+			corev1.SecretTypeDockercfg,
+			corev1.DockerConfigKey,
+			`{"registry.example.com":{}}`,
+			"",
+		},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewWithT(t)
+			g.SetDefaultEventuallyTimeout(pollTimeout)
+			g.SetDefaultEventuallyPollingInterval(pollInterval)
+			ctx := context.Background()
+
+			name := fmt.Sprintf("ps-change-%d", i)
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: testutil.OperatorNamespaceName,
+				},
+				Type: tt.secretType,
+				Data: map[string][]byte{tt.key: []byte(tt.bad)},
+			}
+			if tt.bad != "" {
+				g.Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+			}
+			t.Cleanup(func() { _ = k8sClient.Delete(ctx, secret) })
+
+			pool := testutil.NewPool(name, testImageDigestRefA,
+				testutil.WithWorkerSelector(),
+				testutil.WithPullSecret(name, testutil.OperatorNamespaceName),
+			)
+			g.Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+			t.Cleanup(func() { _ = k8sClient.Delete(ctx, pool) })
+
+			conditions := func() ([]metav1.Condition, error) {
+				var p bootcv1alpha1.BootcNodePool
+				err := k8sClient.Get(ctx, client.ObjectKeyFromObject(pool), &p)
+				return p.Status.Conditions, err
+			}
+			g.Eventually(conditions).Should(ContainElement(And(
+				HaveField("Type", bootcv1alpha1.PoolDegraded),
+				HaveField("Status", metav1.ConditionTrue),
+				HaveField("Reason", bootcv1alpha1.PoolSecretError),
+			)))
+
+			secret.Data = map[string][]byte{tt.key: []byte(tt.good)}
+			if tt.bad == "" {
+				g.Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+			} else {
+				g.Expect(k8sClient.Update(ctx, secret)).To(Succeed())
+			}
+
+			g.Eventually(conditions).Should(ContainElement(And(
+				HaveField("Type", bootcv1alpha1.PoolDegraded),
+				HaveField("Status", metav1.ConditionFalse),
+				HaveField("Reason", bootcv1alpha1.PoolHealthy),
+			)))
+		})
+	}
+}
+
+func TestMapSecretToPoolRequests(t *testing.T) {
+	poolA := testutil.NewPool(
+		"pool-a",
+		testutil.ImageDigestRefA,
+		testutil.WithPullSecret("ps", "ns"),
+	)
+	poolB := testutil.NewPool(
+		"pool-b",
+		testutil.ImageDigestRefA,
+		testutil.WithPullSecret("ps", "ns"),
+	)
+	other := testutil.NewPool(
+		"other",
+		testutil.ImageDigestRefA,
+		testutil.WithPullSecret("ps", "other-ns"),
+	)
+	none := testutil.NewPool("none", testutil.ImageDigestRefA)
+	r := &BootcNodePoolReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme.Scheme).
+			WithObjects(poolA, poolB, other, none).
+			WithIndex(&bootcv1alpha1.BootcNodePool{}, pullsecret.PoolRefIndex, pullsecret.PoolRefIndexFunc).
+			Build(),
+	}
+	secret := func(namespace, name string) *corev1.Secret {
+		return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name}}
+	}
+
+	request := func(pool *bootcv1alpha1.BootcNodePool) reconcile.Request {
+		return reconcile.Request{NamespacedName: client.ObjectKeyFromObject(pool)}
+	}
+	tests := []struct {
+		name   string
+		secret *corev1.Secret
+		want   []reconcile.Request
+	}{
+		{
+			"shared by two pools",
+			secret("ns", "ps"),
+			[]reconcile.Request{request(poolA), request(poolB)},
+		},
+		{
+			"same name in another namespace",
+			secret("other-ns", "ps"),
+			[]reconcile.Request{request(other)},
+		},
+		{"unreferenced", secret("ns", "unreferenced"), nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewWithT(t)
+			got := r.mapSecretToPoolRequests(context.Background(), tt.secret)
+			g.Expect(got).To(ConsistOf(tt.want))
+		})
+	}
 }
 
 func TestPullSecretRemovalClearsRef(t *testing.T) {
