@@ -6,10 +6,12 @@
 package pullsecret
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
@@ -52,4 +54,38 @@ func Key(namespace, name string) (string, error) {
 		)
 	}
 	return key, nil
+}
+
+// AuthData returns the pull secret's credentials in .dockerconfigjson format,
+// the one the tag resolver and bootc read, whichever of the two Kubernetes
+// pull secret formats the Secret holds. It goes by the Secret's keys rather
+// than its type, since an Opaque Secret works as well.
+//
+// .dockerconfigjson is returned as is. The legacy .dockercfg, which is the
+// auths map without the wrapper (OpenShift generates such secrets for service
+// accounts), is wrapped in {"auths": ...} without decoding its entries, so
+// that fields like identitytoken survive; the bytes are not re-encoded. If both keys are set,
+// .dockerconfigjson wins. The error names the keys but never includes
+// secret data.
+func AuthData(secret *corev1.Secret) ([]byte, error) {
+	if data, ok := secret.Data[corev1.DockerConfigJsonKey]; ok {
+		if !isJSONObject(data) {
+			return nil, fmt.Errorf("%s is not a JSON object", corev1.DockerConfigJsonKey)
+		}
+		return data, nil
+	}
+	if data, ok := secret.Data[corev1.DockerConfigKey]; ok {
+		if !isJSONObject(data) {
+			return nil, fmt.Errorf("%s is not a JSON object", corev1.DockerConfigKey)
+		}
+		wrapped := append([]byte(`{"auths":`), data...)
+		return append(wrapped, '}'), nil
+	}
+	return nil, fmt.Errorf("missing %s or %s key",
+		corev1.DockerConfigJsonKey, corev1.DockerConfigKey)
+}
+
+func isJSONObject(data []byte) bool {
+	var obj map[string]json.RawMessage
+	return json.Unmarshal(data, &obj) == nil && obj != nil
 }
