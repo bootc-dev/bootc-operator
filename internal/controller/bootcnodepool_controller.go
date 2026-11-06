@@ -827,8 +827,9 @@ func (r *BootcNodePoolReconciler) listAllBootcNodes(
 	return all, nil
 }
 
-// fetchPullSecretData fetches the .dockerconfigjson data from the pull
-// secret referenced by the pool. Returns nil if no pull secret is set, and
+// fetchPullSecretData fetches the credentials of the pull secret referenced
+// by the pool, normalized to .dockerconfigjson format (see
+// pullsecret.AuthData). Returns nil if no pull secret is set, and
 // an error if the secret's namespace is not in PullSecretNamespaces or the
 // reference cannot be stored in the aggregated pull secret.
 func (r *BootcNodePoolReconciler) fetchPullSecretData(
@@ -863,14 +864,9 @@ func (r *BootcNodePoolReconciler) fetchPullSecretData(
 		return nil, fmt.Errorf("fetching pull secret %s/%s: %w", key.Namespace, key.Name, err)
 	}
 
-	data, ok := secret.Data[corev1.DockerConfigJsonKey]
-	if !ok {
-		return nil, fmt.Errorf(
-			"pull secret %s/%s missing %s key",
-			key.Namespace,
-			key.Name,
-			corev1.DockerConfigJsonKey,
-		)
+	data, err := pullsecret.AuthData(&secret)
+	if err != nil {
+		return nil, fmt.Errorf("pull secret %s/%s: %w", key.Namespace, key.Name, err)
 	}
 
 	return data, nil
