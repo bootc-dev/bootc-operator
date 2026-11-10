@@ -18,6 +18,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	bootcv1alpha1 "github.com/bootc-dev/bootc-operator/api/v1alpha1"
@@ -686,15 +687,19 @@ func TestRecordDrainStalls(t *testing.T) {
 	stalledStatus := &drainStatus{startTime: time.Now().Add(-drainStallThreshold)}
 	freshStatus := &drainStatus{startTime: time.Now()}
 	reconciler := &BootcNodePoolReconciler{
-		Recorder: recorder,
+		Recorder:   recorder,
+		KubeClient: fake.NewSimpleClientset(),
 		drains: map[string]*drainStatus{
 			stalledNode.Name: stalledStatus,
 			freshNode.Name:   freshStatus,
 		},
 	}
+	rs := &rolloutState{}
 
 	nextCheck := reconciler.recordDrainStalls(
+		context.Background(),
 		pool,
+		rs,
 		map[string]*bootcv1alpha1.BootcNode{
 			stalledNode.Name: stalledNode,
 			freshNode.Name:   freshNode,
@@ -703,8 +708,7 @@ func TestRecordDrainStalls(t *testing.T) {
 
 	g.Expect(stalledStatus.isStalled).To(BeTrue())
 	g.Expect(freshStatus.isStalled).To(BeFalse())
-	g.Expect(nextCheck).To(BeNumerically(">", drainStallThreshold-time.Second))
-	g.Expect(nextCheck).To(BeNumerically("<=", drainStallThreshold))
+	g.Expect(nextCheck).To(Equal(drainStallRequeueInterval))
 	g.Expect(recorder.events).To(Equal([]capturedEvent{{
 		regarding: stalledNode.Name,
 		related:   pool.Name,
@@ -719,7 +723,9 @@ func TestRecordDrainStalls(t *testing.T) {
 
 	// The isStalled marker suppresses duplicate events on later reconciles.
 	reconciler.recordDrainStalls(
+		context.Background(),
 		pool,
+		rs,
 		map[string]*bootcv1alpha1.BootcNode{stalledNode.Name: stalledNode},
 	)
 	g.Expect(recorder.events).To(HaveLen(1))

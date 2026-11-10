@@ -97,6 +97,61 @@ kubectl get bootcnodes
 Each `BootcNode` status reflects the output of `bootc status` on that node:
 the booted image, any staged image, and the rollback entry.
 
+## Rollout stuck on PodDisruptionBudget
+
+A drain can stall when a `PodDisruptionBudget` (PDB) refuses to let the
+workloads on a node be evicted. Once a drain has been running for five
+minutes, the operator inspects the pods it is trying to evict and reports the
+blocking budget.
+
+The `BootcNode` receives a `DrainBlockedByPDB` warning event:
+
+```shell
+kubectl describe bootcnode workers-w1
+```
+
+```
+Warning  DrainBlockedByPDB  Drain  Drain blocked by PodDisruptionBudget
+default/web: 2 pod(s) not ready
+```
+
+While a drain remains stalled, the event is re-emitted only when the set of
+blocking budgets changes, so it does not hide other events.
+
+When every occupied reboot slot is held by a drain blocked this way, the pool's
+`UpToDate` condition reports `False` with reason `PDBBlocked`:
+
+```shell
+kubectl get bootcnodepool workers -o yaml
+```
+
+```yaml
+conditions:
+- type: UpToDate
+  status: "False"
+  reason: PDBBlocked
+  message: "9/10 updated; 0 pending, 0 staging, 1 staged, 0 rebooting, 0 degraded; workers-w1 blocked by PDB default/web"
+```
+
+If only some slots are blocked, the reason stays `RolloutInProgress`, but the
+message still names each affected node and budget.
+
+The message hint explains why the budget has no disruptions available:
+
+- `N pod(s) not ready`: fewer pods are healthy than the budget expects.
+  Bring the workload back to a healthy state, for example by scaling it up or
+  fixing failing pods.
+- `never allows eviction (desiredHealthy >= expectedPods)`: the budget cannot
+  permit an eviction even when every pod is healthy. Relax the budget's
+  `minAvailable` or `maxUnavailable` for the duration of the rollout.
+- `misconfiguration: pod is selected by multiple PodDisruptionBudgets`:
+  more than one budget selects the pod. Make the selectors mutually exclusive
+  so each pod is covered by a single budget.
+
+The operator keeps retrying the drain while the rollout is blocked and
+continues normally as soon as the budget allows an eviction. The rollout
+concurrency and reboot behavior are otherwise unchanged.
+
 ## Pausing and resuming
 
 To pause a rollout (nodes already staging will complete, but no new reboots

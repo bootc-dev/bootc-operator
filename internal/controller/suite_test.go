@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -96,6 +97,9 @@ func TestMain(m *testing.M) {
 		KubeClient:           kubeClient,
 		EventNamespace:       testutil.OperatorNamespaceName,
 		PullSecretNamespaces: pullSecretNamespaces,
+		// Use a short threshold so envtest can observe stalled drains
+		// without waiting the production default of five minutes.
+		DrainStallThreshold: 500 * time.Millisecond,
 	}
 	if err := testReconciler.SetupWithManager(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to setup reconciler: %v\n", err)
