@@ -19,6 +19,7 @@ import (
 // PID namespaces. Tests can provide a fake implementation.
 type Executor interface {
 	Status(ctx context.Context) ([]byte, error)
+	Version(ctx context.Context) ([]byte, error)
 	Stage(ctx context.Context, image string) error
 	Reboot(ctx context.Context) error
 	ApplyUpdate(ctx context.Context, softReboot bool) error
@@ -28,6 +29,10 @@ type Executor interface {
 
 func bootcStatusArgs() []string {
 	return []string{"bootc", "status", "--json", "--format-version", "1"}
+}
+
+func bootcVersionArgs() []string {
+	return []string{"bootc", "--version"}
 }
 
 func bootcSwitchArgs(image string) []string {
@@ -72,6 +77,15 @@ func (e *HostExecutor) Status(ctx context.Context) ([]byte, error) {
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("running bootc status: %w", err)
+	}
+	return out, nil
+}
+
+func (e *HostExecutor) Version(ctx context.Context) ([]byte, error) {
+	cmd := e.nsenterCmd(ctx, bootcVersionArgs()...)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("running bootc --version: %w", err)
 	}
 	return out, nil
 }

@@ -74,6 +74,7 @@ func TestReconcilePopulatesStatus(t *testing.T) {
 		err := k8sClient.Get(ctx, client.ObjectKeyFromObject(bn), &got)
 		return got.Status, err
 	}).Should(And(
+		HaveField("BootcVersion", testBootcVersion),
 		HaveField("Booted", And(
 			Not(BeNil()),
 			HaveField("Image", testutil.ImageTaggedRef),
@@ -104,6 +105,36 @@ func TestReconcilePopulatesStatus(t *testing.T) {
 				HaveField("Reason", bootcv1alpha1.NodeReasonHealthy),
 			)),
 		)),
+	))
+}
+
+func TestReconcileBootcVersionErrorNotDegraded(t *testing.T) {
+	g := NewWithT(t)
+	g.SetDefaultEventuallyTimeout(pollTimeout)
+	g.SetDefaultEventuallyPollingInterval(pollInterval)
+	ctx := context.Background()
+
+	fake := newTestEnv()
+	fake.status = newBootcStatus(testutil.DigestA)
+	fake.versionErr = errors.New("bootc --version failed")
+
+	bn := testutil.NewBootcNode(testNodeName, testutil.ImageDigestRefA)
+	g.Expect(k8sClient.Create(ctx, bn)).To(Succeed())
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(ctx, bn)
+	})
+
+	g.Eventually(func() (bootcv1alpha1.BootcNodeStatus, error) {
+		var got bootcv1alpha1.BootcNode
+		err := k8sClient.Get(ctx, client.ObjectKeyFromObject(bn), &got)
+		return got.Status, err
+	}).Should(And(
+		HaveField("BootcVersion", BeEmpty()),
+		HaveField("Booted", HaveField("ImageDigest", testutil.DigestA)),
+		HaveField("Conditions", ContainElement(And(
+			HaveField("Type", bootcv1alpha1.NodeDegraded),
+			HaveField("Status", metav1.ConditionFalse),
+		))),
 	))
 }
 
