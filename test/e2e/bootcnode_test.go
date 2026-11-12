@@ -858,7 +858,11 @@ func TestPullSecretAuth(t *testing.T) {
 	// Check Booted.Image (the full ref with manifest digest) rather
 	// than Booted.ImageDigest (the content digest) because they can
 	// differ with remote registries.
-	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 8*time.Minute,
+	//
+	// The budget covers a full authenticated pull (observed to take up
+	// to ~4 minutes in CI) plus one extra stage+reboot cycle in case
+	// the first reboot lands back on the previous deployment.
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 10*time.Minute,
 		HaveField("Booted", HaveField("Image", Equal(authImageRef))),
 	)
 
@@ -922,7 +926,9 @@ func TestPullSecretRotation(t *testing.T) {
 	)
 	g.Expect(env.Client.Create(ctx, pool)).To(Succeed())
 
-	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 8*time.Minute,
+	// The budget covers a full authenticated pull plus one extra
+	// stage+reboot cycle; see TestPullSecretAuth.
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 10*time.Minute,
 		HaveField("Booted", HaveField("Image", Equal(authUpdateRef))),
 	)
 
@@ -984,7 +990,9 @@ func TestPullSecretRotation(t *testing.T) {
 
 	// Phase 4: The upgrade completing proves the daemon re-read the
 	// rotated secret and authenticated with the new registry credentials.
-	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 8*time.Minute,
+	// The budget covers a full authenticated pull plus one extra
+	// stage+reboot cycle; see TestPullSecretAuth.
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 10*time.Minute,
 		HaveField("Booted", HaveField("Image", Equal(authUpdate2Ref))),
 	)
 

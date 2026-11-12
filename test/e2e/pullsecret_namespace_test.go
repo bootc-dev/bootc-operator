@@ -103,7 +103,9 @@ func TestPullSecretNamespaces(t *testing.T) {
 	g.Expect(env.Client.Patch(ctx, modified, client.MergeFrom(pool))).To(Succeed())
 	*pool = *modified
 
-	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 8*time.Minute,
+	// The budget covers a full authenticated pull plus one extra
+	// stage+reboot cycle; see TestPullSecretAuth.
+	testutil.WaitForNodeIdle(t, g, ctx, env.Client, nodeName, 10*time.Minute,
 		HaveField("Booted", HaveField("Image", Equal(authImageRef))),
 	)
 	g.Eventually(fetchPoolStatus(ctx, env.Client, pool)).
