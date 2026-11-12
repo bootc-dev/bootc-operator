@@ -16,6 +16,7 @@ import (
 
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -61,8 +62,17 @@ func TestOperatorUpgrade(t *testing.T) {
 	g.SetDefaultEventuallyTimeout(pollTimeout)
 	g.SetDefaultEventuallyPollingInterval(pollInterval)
 
-	env := e2eutil.New(t)
 	ctx := context.Background()
+	// Registered before the Env so it runs after the Env cleanup removes
+	// the test node. The restored controller may be scheduled on that
+	// node; wait for its replacement to lead before parallel tests start.
+	var env *e2eutil.Env
+	t.Cleanup(func() {
+		if env != nil {
+			waitForOperatorLeader(t, g, ctx, env.Client)
+		}
+	})
+	env = e2eutil.New(t)
 
 	repoRoot := findRepoRoot(t)
 	chartPath := filepath.Join(repoRoot, "chart", "bootc-operator")
@@ -561,6 +571,44 @@ func waitForOperatorReady(
 		g.Expect(d.Status.AvailableReplicas).To(Equal(int32(1)))
 	}).WithTimeout(3*time.Minute).Should(Succeed(),
 		"expected operator deployment to be ready")
+}
+
+// waitForOperatorLeader waits until the only running controller pod holds
+// the leader election lease. A ready pod does not lead until the lease of
+// a terminated predecessor expires.
+func waitForOperatorLeader(
+	t *testing.T,
+	g Gomega,
+	ctx context.Context,
+	c client.Client,
+) {
+	t.Helper()
+	g.Eventually(func(g Gomega) {
+		var pods corev1.PodList
+		g.Expect(c.List(ctx, &pods,
+			client.InNamespace(testutil.OperatorNamespaceName),
+			client.MatchingLabels{
+				"app.kubernetes.io/name":      "bootc-operator",
+				"app.kubernetes.io/component": "controller",
+			},
+		)).To(Succeed())
+		var running []string
+		for _, p := range pods.Items {
+			if p.DeletionTimestamp == nil && p.Status.Phase == corev1.PodRunning {
+				running = append(running, p.Name)
+			}
+		}
+		g.Expect(running).To(HaveLen(1))
+
+		var lease coordinationv1.Lease
+		g.Expect(c.Get(ctx, client.ObjectKey{
+			Namespace: testutil.OperatorNamespaceName,
+			Name:      "bootc-operator.bootc.dev",
+		}, &lease)).To(Succeed())
+		g.Expect(lease.Spec.HolderIdentity).NotTo(BeNil())
+		g.Expect(*lease.Spec.HolderIdentity).To(HavePrefix(running[0] + "_"))
+	}).WithTimeout(3*time.Minute).Should(Succeed(),
+		"expected the running controller to hold the leader election lease")
 }
 
 // readOperatorConfig returns the optional administrator-owned instance. An
