@@ -39,6 +39,7 @@ func newBinkProvider(
 func (p *binkProvider) AddNode(
 	ctx context.Context,
 	labels map[string]string,
+	role string,
 ) (string, error) {
 	prefix := labels[LabelE2ETest]
 	if prefix == "" {
@@ -54,6 +55,9 @@ func (p *binkProvider) AddNode(
 	args := []string{
 		"node", "add", nodeName,
 		"--cluster-name", p.clusterName,
+	}
+	if role != "" {
+		args = append(args, "--role", role)
 	}
 	for k, v := range labels {
 		args = append(args, "--label", k+"="+v)
