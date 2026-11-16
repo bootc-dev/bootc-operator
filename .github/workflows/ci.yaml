@@ -36,8 +36,13 @@ jobs:
 
       - name: Check generated files
         run: |
-          make fmt manifests generate
-          git diff --exit-code || { echo "Run 'make fmt manifests generate' and commit the results"; exit 1; }
+          make fmt manifests generate helm
+          git diff --exit-code || { echo "Run 'make fmt manifests generate helm' and commit the results"; exit 1; }
+          if [[ -n "$(git ls-files --others --exclude-standard -- chart/)" ]]; then
+            git ls-files --others --exclude-standard -- chart/
+            echo "Run 'make helm' and commit the new chart files"
+            exit 1
+          fi
 
       - name: Unit tests
         run: make unit
