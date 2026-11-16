@@ -1,0 +1,30 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "bootc-operator.fullname" . }}-daemon
+  labels:
+    {{- include "bootc-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: daemon
+rules:
+- apiGroups:
+    - node.bootc.dev
+  resources:
+    - bootcoperatorconfigs
+  verbs:
+    - list
+- apiGroups:
+    - node.bootc.dev
+  resources:
+    - bootcnodes
+  verbs:
+    - get
+    - list
+    - watch
+- apiGroups:
+    - node.bootc.dev
+  resources:
+    - bootcnodes/status
+  verbs:
+    - get
+    - update
+    - patch

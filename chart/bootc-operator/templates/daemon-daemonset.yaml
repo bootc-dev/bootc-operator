@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "bootc-operator.fullname" . }}-daemon
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "bootc-operator.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: bootc-operator
+      app.kubernetes.io/component: daemon
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: bootc-operator
+        app.kubernetes.io/component: daemon
+    spec:
+      nodeSelector:
+        bootc.dev/managed: ""
+      hostPID: true
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: daemon
+          command:
+            - daemon
+          {{- with .Values.daemon.extraArgs }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          image: {{ include "bootc-operator.image" . }}
+          {{- with .Values.image.pullPolicy }}
+          imagePullPolicy: {{ . }}
+          {{- end }}
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          securityContext:
+            privileged: true
+            runAsUser: 0
+            runAsGroup: 0
+          resources:
+            limits:
+              cpu: 500m
+              memory: 128Mi
+            requests:
+              cpu: 10m
+              memory: 64Mi
+          volumeMounts:
+            - name: pull-secrets
+              mountPath: /var/run/bootc-pull-secrets
+              readOnly: true
+      volumes:
+        - name: pull-secrets
+          secret:
+            secretName: bootc-pull-secrets
+            optional: true
+      tolerations:
+        - operator: Exists
+      serviceAccountName: {{ include "bootc-operator.fullname" . }}-daemon
+      terminationGracePeriodSeconds: 10
