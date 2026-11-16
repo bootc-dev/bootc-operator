@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "bootc-operator.fullname" . }}-controller
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "bootc-operator.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      control-plane: controller-manager
+      app.kubernetes.io/name: bootc-operator
+      app.kubernetes.io/component: controller
+  replicas: 1
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: manager
+      labels:
+        control-plane: controller-manager
+        app.kubernetes.io/name: bootc-operator
+        app.kubernetes.io/component: controller
+    spec:
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - command:
+            - manager
+          args:
+            - --leader-elect
+            - --health-probe-bind-address=:8081
+            - {{ printf "--pull-secret-namespaces=%s" (include "bootc-operator.pullSecretNamespaces" .) | quote }}
+            {{- range .Values.controller.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          image: {{ include "bootc-operator.image" . }}
+          {{- with .Values.image.pullPolicy }}
+          imagePullPolicy: {{ . }}
+          {{- end }}
+          name: manager
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          ports:
+            - containerPort: 8081
+              name: health
+              protocol: TCP
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - "ALL"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            limits:
+              cpu: 500m
+              memory: 128Mi
+            requests:
+              cpu: 10m
+              memory: 64Mi
+      serviceAccountName: {{ include "bootc-operator.fullname" . }}-controller
+      terminationGracePeriodSeconds: 10

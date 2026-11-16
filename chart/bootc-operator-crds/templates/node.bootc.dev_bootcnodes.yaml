@@ -1,0 +1,299 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: bootcnodes.node.bootc.dev
+spec:
+  group: node.bootc.dev
+  names:
+    kind: BootcNode
+    listKind: BootcNodeList
+    plural: bootcnodes
+    shortNames:
+    - bn
+    singular: bootcnode
+  scope: Cluster
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          BootcNode represents a single node managed by the bootc operator.
+          BootcNode objects are auto-created by the controller (one per managed
+          node) and named after the Node they represent. The controller writes
+          spec, the daemon writes status.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state, written by the controller.
+            properties:
+              desiredImage:
+                description: |-
+                  desiredImage is the image the node should be running, specified
+                  as a pullspec with digest (e.g.
+                  "quay.io/example/myos@sha256:abc123"). Set by the controller
+                  from the owning pool's targetDigest.
+                minLength: 1
+                type: string
+              desiredImageState:
+                description: |-
+                  desiredImageState is the target state the daemon should drive
+                  the node toward. "Staged" means stage the image but do not
+                  reboot. "Booted" means apply the staged image and reboot.
+                enum:
+                - Staged
+                - Booted
+                type: string
+              pullSecretHash:
+                description: |-
+                  pullSecretHash is a hash of the pull secret's content, used to
+                  detect changes. When this value changes, the daemon re-fetches
+                  the secret and updates the host filesystem.
+                type: string
+              pullSecretRef:
+                description: |-
+                  pullSecretRef references a Secret containing image pull
+                  credentials. Copied from the owning pool's spec.
+                properties:
+                  name:
+                    description: name is the name of the Secret.
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: namespace is the namespace of the Secret.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
+              rebootPolicy:
+                description: |-
+                  rebootPolicy defines how the node should be rebooted during
+                  updates. Copied from the owning pool's disruption.rebootPolicy.
+                enum:
+                - RebootOnly
+                - AllowSoftReboot
+                type: string
+            required:
+            - desiredImage
+            - desiredImageState
+            type: object
+          status:
+            description: status defines the observed state, written by the daemon.
+            properties:
+              bootcVersion:
+                description: |-
+                  bootcVersion is the version of the bootc binary on the host
+                  (e.g. "1.8.0"), as reported by bootc --version.
+                maxLength: 256
+                type: string
+              booted:
+                description: booted describes the currently booted OS image.
+                properties:
+                  architecture:
+                    description: |-
+                      architecture is the hardware architecture of the image
+                      (e.g. "amd64").
+                    type: string
+                  image:
+                    description: |-
+                      image is the full image pullspec (e.g.
+                      "quay.io/example/myos@sha256:abc123").
+                    type: string
+                  imageDigest:
+                    description: imageDigest is the image digest (e.g. "sha256:abc123").
+                    type: string
+                  incompatible:
+                    description: |-
+                      incompatible is true if the boot entry has local mutations that
+                      bootc cannot manage (e.g. package layering via rpm-ostree).
+                    type: boolean
+                  softRebootCapable:
+                    description: |-
+                      softRebootCapable is true if this boot entry supports a
+                      userspace-only restart relative to the currently booted system.
+                    type: boolean
+                  timestamp:
+                    description: timestamp is the image build timestamp, if any.
+                    format: date-time
+                    type: string
+                  version:
+                    description: version is the image version string, if any.
+                    type: string
+                required:
+                - image
+                - imageDigest
+                type: object
+              conditions:
+                description: |-
+                  conditions represent the daemon's current state.
+                  Known condition types are "Idle" and "Degraded".
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: |-
+                  observedGeneration is the most recent generation observed by the
+                  daemon. It corresponds to the BootcNode's metadata.generation
+                  which is updated on spec mutations.
+                format: int64
+                type: integer
+              rollback:
+                description: |-
+                  rollback describes the previous OS image available for rollback,
+                  if any.
+                properties:
+                  architecture:
+                    description: |-
+                      architecture is the hardware architecture of the image
+                      (e.g. "amd64").
+                    type: string
+                  image:
+                    description: |-
+                      image is the full image pullspec (e.g.
+                      "quay.io/example/myos@sha256:abc123").
+                    type: string
+                  imageDigest:
+                    description: imageDigest is the image digest (e.g. "sha256:abc123").
+                    type: string
+                  incompatible:
+                    description: |-
+                      incompatible is true if the boot entry has local mutations that
+                      bootc cannot manage (e.g. package layering via rpm-ostree).
+                    type: boolean
+                  softRebootCapable:
+                    description: |-
+                      softRebootCapable is true if this boot entry supports a
+                      userspace-only restart relative to the currently booted system.
+                    type: boolean
+                  timestamp:
+                    description: timestamp is the image build timestamp, if any.
+                    format: date-time
+                    type: string
+                  version:
+                    description: version is the image version string, if any.
+                    type: string
+                required:
+                - image
+                - imageDigest
+                type: object
+              staged:
+                description: staged describes the OS image staged for the next boot,
+                  if any.
+                properties:
+                  architecture:
+                    description: |-
+                      architecture is the hardware architecture of the image
+                      (e.g. "amd64").
+                    type: string
+                  image:
+                    description: |-
+                      image is the full image pullspec (e.g.
+                      "quay.io/example/myos@sha256:abc123").
+                    type: string
+                  imageDigest:
+                    description: imageDigest is the image digest (e.g. "sha256:abc123").
+                    type: string
+                  incompatible:
+                    description: |-
+                      incompatible is true if the boot entry has local mutations that
+                      bootc cannot manage (e.g. package layering via rpm-ostree).
+                    type: boolean
+                  softRebootCapable:
+                    description: |-
+                      softRebootCapable is true if this boot entry supports a
+                      userspace-only restart relative to the currently booted system.
+                    type: boolean
+                  timestamp:
+                    description: timestamp is the image build timestamp, if any.
+                    format: date-time
+                    type: string
+                  version:
+                    description: version is the image version string, if any.
+                    type: string
+                required:
+                - image
+                - imageDigest
+                type: object
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
