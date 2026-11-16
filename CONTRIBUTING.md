@@ -88,7 +88,13 @@ After modifying API types in `api/`, regenerate CRDs and code:
 ```shell
 make manifests       # Regenerate CRD and RBAC manifests
 make generate        # Regenerate DeepCopy implementations
+make helm            # Regenerate the Helm charts from the manifests
 ```
+
+Commit regenerated chart templates and CRDs alongside their sources. Keeping
+them in Git makes chart changes reviewable and lets users verify the chart at a
+given commit without running the generator. CI checks that regeneration leaves
+no changed, new, or missing chart files.
 
 ## Testing
 

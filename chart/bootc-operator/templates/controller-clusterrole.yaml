@@ -1,0 +1,93 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "bootc-operator.fullname" . }}-controller
+  labels:
+    {{- include "bootc-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+rules:
+- apiGroups:
+    - ""
+  resources:
+    - nodes
+  verbs:
+    - get
+    - list
+    - patch
+    - update
+    - watch
+- apiGroups:
+    - ""
+  resources:
+    - pods
+  verbs:
+    - get
+    - list
+- apiGroups:
+    - ""
+  resources:
+    - pods/eviction
+  verbs:
+    - create
+- apiGroups:
+    - ""
+    - events.k8s.io
+  resources:
+    - events
+  verbs:
+    - create
+    - patch
+- apiGroups:
+    - apps
+  resources:
+    - daemonsets
+  verbs:
+    - get
+- apiGroups:
+    - karpenter.sh
+  resources:
+    - nodeclaims
+  verbs:
+    - get
+    - list
+    - patch
+    - watch
+- apiGroups:
+    - node.bootc.dev
+  resources:
+    - bootcnodepools
+    - bootcnodes
+  verbs:
+    - create
+    - delete
+    - get
+    - list
+    - patch
+    - update
+    - watch
+- apiGroups:
+    - node.bootc.dev
+  resources:
+    - bootcnodepools/finalizers
+  verbs:
+    - update
+- apiGroups:
+    - node.bootc.dev
+  resources:
+    - bootcnodepools/status
+  verbs:
+    - get
+    - patch
+    - update
+- apiGroups:
+    - node.bootc.dev
+  resources:
+    - bootcnodes/status
+  verbs:
+    - get
+- apiGroups:
+    - node.bootc.dev
+  resources:
+    - bootcoperatorconfigs
+  verbs:
+    - list
