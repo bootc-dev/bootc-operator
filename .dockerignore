@@ -13,3 +13,6 @@
 # Re-include Go module files
 !go.mod
 !go.sum
+
+# Include the license file
+!LICENSE
