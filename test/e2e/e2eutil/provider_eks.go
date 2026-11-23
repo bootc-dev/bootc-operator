@@ -113,6 +113,7 @@ func newEKSProvider(
 func (p *eksProvider) AddNode(
 	ctx context.Context,
 	labels map[string]string,
+	_ string,
 ) (string, error) {
 	out, err := p.ec2Runner.RunInstances(ctx, &ec2.RunInstancesInput{
 		LaunchTemplate: &ec2types.LaunchTemplateSpecification{
